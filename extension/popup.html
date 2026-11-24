@@ -25,43 +25,48 @@
               <img class="brand-logo" src="icons/icon-32.png" alt="LiveChat" />
               <p class="popup-kicker">LiveChat Extension</p>
             </div>
-            <h1>Envoyer avec texte</h1>
+            <h1>Envoyer un média</h1>
           </header>
 
           <p id="settings-warning" class="status status-warning hidden"></p>
 
           <form id="compose-form" class="compose-form">
-            <label class="field-label" for="compose-url">URL média</label>
+            <label class="field-label" for="compose-url">Lien du média</label>
             <input id="compose-url" name="url" class="field-input" type="url" placeholder="https://..." required />
 
-            <label class="field-label" for="compose-text" id="compose-text-label">Texte (optionnel)</label>
+            <label class="field-label" for="compose-text" id="compose-text-label">Message (optionnel)</label>
             <textarea
               id="compose-text"
               name="text"
               class="field-textarea"
               placeholder="Ton message LiveChat"
-              rows="4"
+              rows="3"
             ></textarea>
 
-            <label class="field-label" for="compose-duration">Durée d'affichage des images (s)</label>
-            <input
-              id="compose-duration"
-              name="durationSec"
-              class="field-input"
-              type="text"
-              inputmode="numeric"
-              placeholder="Par défaut"
-            />
+            <details class="details-panel">
+              <summary>Options</summary>
+              <div class="details-body">
+                <label class="field-label" for="compose-duration">Durée d'affichage des images (s)</label>
+                <input
+                  id="compose-duration"
+                  name="durationSec"
+                  class="field-input"
+                  type="text"
+                  inputmode="numeric"
+                  placeholder="Par défaut"
+                />
 
-            <label class="field-checkbox">
-              <input id="compose-force-refresh" name="forceRefresh" type="checkbox" />
-              Ignorer le cache serveur (`forceRefresh`)
-            </label>
+                <label class="field-checkbox">
+                  <input id="compose-force-refresh" name="forceRefresh" type="checkbox" />
+                  Ignorer le cache du serveur
+                </label>
 
-            <label class="field-checkbox">
-              <input id="compose-save-to-board" name="saveToBoard" type="checkbox" />
-              Sauvegarder dans le board média (`saveToBoard`)
-            </label>
+                <label class="field-checkbox">
+                  <input id="compose-save-to-board" name="saveToBoard" type="checkbox" />
+                  Sauvegarder dans le board média
+                </label>
+              </div>
+            </details>
 
             <div class="actions-row">
               <button id="send-button" class="btn btn-air" type="submit">Envoyer</button>

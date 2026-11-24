@@ -23,10 +23,8 @@ Documentation projet: [`../README.md`](../README.md)
   - `Envoyer vers LiveChat avec texte`
 - Popup d’envoi avec texte (`url`, `text`, `forceRefresh`)
 - Page d’options:
-  - appairage via code Discord (`/pair-code`)
-  - `API_URL`
-  - `INGEST_API_TOKEN`
-  - `guildId`
+  - appairage via code Discord (`/pair-code`) : l’adresse du serveur et le code suffisent
+  - `INGEST_API_TOKEN` et `guildId` restent saisissables dans « Configuration manuelle » (replié)
   - aucun champ auteur : le pseudo et l’avatar viennent du profil du membre lié au client côté serveur
 - Permissions domaine API dynamiques (`browser.permissions`).
 
@@ -97,12 +95,10 @@ chargement temporaire sert au développement, la version publiée passe par AMO
 ## Configuration
 
 1. Ouvrir la page d’options de l’extension.
-2. Saisir **obligatoirement** `API_URL` (URL racine du serveur), par exemple `https://livechat.exemple.com`.
-3. Ne pas mettre `/overlay` ni `/ingest` dans `API_URL`.
-4. Générer un code avec `/pair-code`, puis cliquer `Récupérer la configuration`.
-5. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`) puis sauvegarder si besoin.
-6. Accepter la permission domaine demandée pour l’URL API.
-7. (Optionnel) Cliquer `Tester la config`.
+2. Saisir l’**adresse du serveur** (URL racine), par exemple `https://livechat.exemple.com` — sans `/overlay` ni `/ingest`.
+3. Générer un code avec `/pair-code` (ou Overlay → Mon profil → Appairer l’extension navigateur), le saisir puis cliquer `Connecter` : l’extension récupère le jeton et la guilde du serveur.
+4. Accepter la permission domaine demandée pour l’adresse du serveur.
+5. Si aucun code n’est disponible, ouvrir `Configuration manuelle` et saisir `INGEST_API_TOKEN` et `guildId`, puis cliquer `Enregistrer` (`Tester` vérifie la connexion).
 
 ## Contrat `/ingest` utilisé
 

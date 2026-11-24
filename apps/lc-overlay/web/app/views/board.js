@@ -118,7 +118,7 @@ function openCardMenu(event, item) {
         }
       : null,
     link ? { label: 'Copier le lien d’origine', icon: 'copy', onSelect: () => copyText(link, 'Lien copié.') } : null,
-    link && can('addMedia')
+    link && can('addMedia') && item.media.edited !== true
       ? { label: 'Rafraîchir depuis la source', icon: 'refresh', onSelect: () => refreshSource(item) }
       : null,
     importTargets(state.guilds, state.activeGuildId).length > 0
@@ -130,7 +130,9 @@ function openCardMenu(event, item) {
 }
 
 // C: re-download a card's media from its source. The server updates the asset
-// in place and answers the same item, so the card stays where it is.
+// in place and answers the same item, so the card stays where it is. An edited
+// card is content-addressed: forcing its URL would create the original as a
+// second card, not refresh the edit, so the action is not offered for it.
 function refreshSource(item) {
   if (!startLinkRefresh({ guildId: state.activeGuildId, item })) {
     notify('Ce média ne peut pas être rafraîchi.', true);

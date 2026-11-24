@@ -386,7 +386,7 @@ Payload d'un item (`item_payload`, `media_board.rs:1457-1480`, complété par
   "media": { "id": "<uuid>", "kind": "video", "mime": "video/mp4",
              "durationSec": 30, "width": 1280, "height": 720,
              "isVertical": false, "sizeBytes": 12345,
-             "sourceUrl": "https://…" }
+             "sourceUrl": "https://…", "edited": false }
 }
 ```
 
@@ -413,6 +413,12 @@ La signature est `media_url::sign(MEDIA_URL_SECRET,
 "board:{assetId}", clientId, exp)` : le préfixe `board:` rend une URL de lecture
 inutilisable sur cette route, et inversement. `mediaUrl` ne contient **aucun
 jeton** et s'utilise verbatim dans `src` (`<video>`/`<img>`).
+
+`media.edited` est vrai quand l'asset a été produit par une édition
+(`source_hash = upload:sha256:<hex>`) tout en gardant l'URL d'origine comme
+`sourceUrl`. L'overlay s'en sert pour ne pas confondre cette carte avec le média
+d'origine : réimporter l'URL crée une seconde carte avec l'original, et l'action
+« Rafraîchir depuis la source » n'est pas proposée sur une carte éditée.
 
 ### 7.2 `POST /overlay/media-board/items` (`media_board.rs:189`)
 
@@ -626,7 +632,11 @@ dans le board, puis renvoyées par `upload`). Corps JSON :
   média que l'original ; refus si un autre item de la guilde montre déjà le
   média obtenu ; quota du board vérifié sur la différence de taille ; le nouvel
   asset est épinglé et l'ancien retrouve l'échéance du cache s'il n'est plus
-  montré par aucun item (même transaction que la mise à jour de l'item).
+  montré par aucun item (même transaction que la mise à jour de l'item). Quand
+  l'ancien média venait d'une URL `http(s)`, cette URL est recopiée sur le
+  nouvel asset : l'identité reste `upload:sha256:<hex>`, mais la carte garde sa
+  source et `media.edited` passe à `true`. Un fichier importé localement n'a pas
+  d'URL à conserver.
 
 ### 7.3 `GET`/`HEAD /overlay/media-board/media/{assetId}` (`media_board.rs:get_media`)
 

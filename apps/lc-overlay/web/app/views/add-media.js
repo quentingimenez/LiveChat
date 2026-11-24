@@ -28,6 +28,7 @@ import {
   addPickedFiles,
   boardDuplicateNeedsRefresh,
   boardItemForUrl,
+  boardItemIsEdited,
   cacheBypassVisible,
   cacheLookupUrl,
   defaultAction,
@@ -261,7 +262,15 @@ export function openAddDialog(options) {
       const noFile = mode === 'file' && chosenFiles.length === 0;
       submit.disabled = noFile
         || boardDuplicateNeedsRefresh(action, mode, boardItem, forceRefreshInput.checked);
-      boardHint.hidden = !(action === 'add' && mode === 'link' && boardItem !== null);
+      // An edited card is not the original the URL points at: the add creates
+      // that original as a second card, so the duplicate sentence would be
+      // wrong and must stay hidden.
+      boardHint.hidden = !(
+        action === 'add'
+        && mode === 'link'
+        && boardItem !== null
+        && !boardItemIsEdited(boardItem)
+      );
     }
 
     // The board already showing the typed URL is known without a round trip:

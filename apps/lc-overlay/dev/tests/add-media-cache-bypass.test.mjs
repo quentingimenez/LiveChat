@@ -91,6 +91,7 @@ test('un média déjà sur la board bloque l’envoi et affiche le message', () 
   assert.match(dialog, /onChange: \(\) => updateSubmit\(\)/);
   assert.match(syncBoard, /boardItemForUrl\(state\.items, linkUrl\.value\)/);
   assert.match(updateSubmit, /boardDuplicateNeedsRefresh\(action, mode, boardItem, forceRefreshInput\.checked\)/);
+  assert.match(updateSubmit, /!boardItemIsEdited\(boardItem\)/);
   assert.match(updateSubmit, /boardHint\.hidden/);
   assert.match(syncCache, /boardItem !== null/);
   assert.match(syncCache, /applyCacheVisibility\(true\)/);

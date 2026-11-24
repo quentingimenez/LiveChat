@@ -48,7 +48,7 @@ function balancedBlock(source, marker, openChar, closeChar) {
 test('le menu d’une carte de lien propose le rafraîchissement', () => {
   const menu = balancedBlock(board, 'function openCardMenu(event, item)', '{', '}');
   assert.match(menu, /'Rafraîchir depuis la source'/);
-  assert.match(menu, /link && can\('addMedia'\)/);
+  assert.match(menu, /link && can\('addMedia'\) && item\.media\.edited !== true/);
   assert.match(menu, /refreshSource\(item\)/);
   const helper = balancedBlock(board, 'function refreshSource(item)', '{', '}');
   assert.match(helper, /startLinkRefresh\(\{ guildId: state\.activeGuildId, item \}\)/);

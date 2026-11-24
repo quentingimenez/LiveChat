@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import {
   boardDuplicateNeedsRefresh,
   boardItemForUrl,
+  boardItemIsEdited,
   cacheBypassVisible,
   cacheLookupUrl,
   canBypassServerCache,
@@ -91,10 +92,28 @@ test('la board reconnaît un lien déjà présent, sans confondre deux médias',
 });
 
 test('un média déjà sur la board bloque l’envoi sauf avec le contournement', () => {
-  const item = { id: 'item-1' };
+  const item = { id: 'item-1', media: { sourceUrl: 'https://example.test/watch?v=2' } };
   assert.equal(boardDuplicateNeedsRefresh('add', 'link', item, false), true);
   assert.equal(boardDuplicateNeedsRefresh('add', 'link', item, true), false);
   assert.equal(boardDuplicateNeedsRefresh('play', 'link', item, false), false);
   assert.equal(boardDuplicateNeedsRefresh('add', 'link', null, false), false);
   assert.equal(boardDuplicateNeedsRefresh('add', 'file', item, false), false);
+});
+
+test('un média édité garde son URL mais ne bloque pas le réimport de l’original', () => {
+  const item = {
+    id: 'item-1',
+    media: {
+      sourceUrl: 'https://example.test/watch?v=2',
+      edited: true,
+    },
+  };
+  assert.equal(boardItemIsEdited(item), true);
+  assert.equal(boardItemIsEdited({ id: 'item-2', media: { sourceUrl: 'https://example.test/x' } }), false);
+  assert.equal(boardItemIsEdited(null), false);
+  assert.equal(boardItemForUrl([item], 'https://example.test/watch?v=2'), item);
+  // The edited card and the URL are different assets: a normal add creates the
+  // original as a second card instead of re-pinning the edited one.
+  assert.equal(boardDuplicateNeedsRefresh('add', 'link', item, false), false);
+  assert.equal(boardDuplicateNeedsRefresh('add', 'link', item, true), false);
 });

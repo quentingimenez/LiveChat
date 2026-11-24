@@ -329,6 +329,26 @@ pub async fn pin(
     })
 }
 
+/// Rewrites the display source of an asset without touching its identity.
+///
+/// An edited media is keyed by the hash of its rendered bytes, but it still
+/// comes from the URL the user imported: the board keeps that URL so the card
+/// can be found again from its source. The caller owns the transaction, like
+/// [`pin_on`].
+pub(crate) async fn set_source_url_on(
+    connection: &mut sqlx::SqliteConnection,
+    asset_id: MediaAssetId,
+    source_url: &str,
+) -> lc_db::DbResult<()> {
+    sqlx::query("UPDATE media_assets SET source_url = ? WHERE id = ?")
+        .bind(source_url)
+        .bind(asset_id.to_canonical())
+        .execute(&mut *connection)
+        .await
+        .map_err(lc_db::DbError::from)?;
+    Ok(())
+}
+
 /// Same pin on the connection of an already open transaction.
 ///
 /// The caller owns that transaction: pinning on the same connection as the

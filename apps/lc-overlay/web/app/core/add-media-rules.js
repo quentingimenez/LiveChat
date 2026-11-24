@@ -94,12 +94,26 @@ export function boardItemForUrl(items, value) {
   return items.find((item) => comparableSourceUrl(item && item.media && item.media.sourceUrl) === wanted) || null;
 }
 
+// An edited media is content-addressed (`upload:sha256:…`) but keeps the URL
+// it was imported from. Adding that URL again is not the same media as the
+// edited card: the server creates a second card with the original, so this
+// must not be treated as a duplicate.
+export function boardItemIsEdited(item) {
+  return Boolean(item && item.media && item.media.edited === true);
+}
+
 // Whether the add submit must wait for the bypass: the media is already on the
 // board, and the add would only re-pin the existing card without changing it.
-// A forced refresh makes the submission meaningful again. A play-once is not
-// an add: it may play the card already there without touching the cache.
+// An edited card points at another asset, so the add creates the original as a
+// second card and is allowed without the bypass. A forced refresh makes the
+// submission meaningful again for a real duplicate. A play-once is not an add:
+// it may play the card already there without touching the cache.
 export function boardDuplicateNeedsRefresh(action, mode, item, forceRefresh) {
-  return action === 'add' && mode === 'link' && Boolean(item) && forceRefresh !== true;
+  return action === 'add'
+    && mode === 'link'
+    && Boolean(item)
+    && !boardItemIsEdited(item)
+    && forceRefresh !== true;
 }
 
 // Two picks of the same file hand back two File objects: it is one media, and

@@ -387,6 +387,11 @@ impl AppState {
         self.lock_screen().screen_guild().map(str::to_owned)
     }
 
+    /// `true` quand aucun média n'est affiché ni en attente.
+    pub fn playback_idle(&self) -> bool {
+        self.lock_screen().is_idle()
+    }
+
     /// Guilde propriétaire d'un job : l'écran, puis les derniers affichés.
     pub fn job_owner(&self, job_id: &str) -> Option<String> {
         self.lock_screen().owner_of(job_id).map(str::to_owned)

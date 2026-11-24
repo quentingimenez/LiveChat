@@ -3,21 +3,28 @@
 //! The overlay reads `latest.json` from the GitHub release marked *Latest*
 //! right at start, every time the board opens, and every 6 hours. A newer
 //! version is downloaded and its minisign signature verified in the background,
-//! then kept in memory. Installing stays a user action (tray or Settings) so an
-//! update never cuts a live stream: the NSIS installer then runs in passive mode
-//! and relaunches LiveChat.
+//! then kept in memory. Release builds then install it on their own once the
+//! overlay has stayed free for a minute (no media, no queued play, no upload,
+//! board hidden), and install it when LiveChat quits if that never happened.
+//! Manual installs stay available (tray or Settings), and the NSIS installer
+//! runs in passive mode and relaunches LiveChat; the quit install skips the
+//! relaunch, so the update applies at the next start.
 //!
-//! Debug builds skip the start and 6-hour checks; opening the board and the
-//! Settings button still check.
+//! Debug builds skip the start checks, the 6-hour checks and the automatic
+//! install; opening the board and the Settings button still check.
 
 use std::sync::{Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Wry};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+/// How long the overlay must stay free before installing on its own.
+const AUTO_INSTALL_GRACE: Duration = Duration::from_secs(60);
+/// How often the automatic installer looks at the overlay state.
+const AUTO_INSTALL_POLL: Duration = Duration::from_secs(5);
 
 /// Updater state shown to the board.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -113,7 +120,9 @@ fn describe(state: UpdateState, version: Option<&str>, error: Option<&str>) -> U
         UpdateState::Checking => "Recherche d'une mise à jour…".to_string(),
         UpdateState::Downloading => format!("Téléchargement de la version {version_text}…"),
         UpdateState::UpToDate => "LiveChat est à jour.".to_string(),
-        UpdateState::Ready => format!("La version {version_text} est prête à être installée."),
+        UpdateState::Ready => format!(
+            "La version {version_text} est prête : installation automatique dès que l'overlay est libre."
+        ),
         UpdateState::Error => format!(
             "Échec de la mise à jour : {}",
             error.unwrap_or("erreur inconnue")
@@ -127,18 +136,20 @@ fn describe(state: UpdateState, version: Option<&str>, error: Option<&str>) -> U
     }
 }
 
-/// Tells the board and the tray that the updater state changed.
+/// Tells the board (Settings › À propos) that the updater state changed.
 fn publish(app: &AppHandle<Wry>) {
     if let Err(error) = crate::events::emit_device_settings(app) {
         tracing::debug!(%error, "échec d'émission overlay://device-settings (updater)");
     }
-    crate::tray::refresh_tray(app);
 }
 
-/// Checks right away, then every 6 hours (release builds only).
+/// Checks right away, then every 6 hours, and installs the update on its own
+/// once the overlay is free (release builds only).
 pub fn start(app: &AppHandle<Wry>) {
     if cfg!(debug_assertions) {
-        tracing::info!("build de debug : pas de vérification périodique des mises à jour");
+        tracing::info!(
+            "build de debug : pas de vérification périodique ni d'installation automatique des mises à jour"
+        );
         return;
     }
     let handle = app.clone();
@@ -147,6 +158,10 @@ pub fn start(app: &AppHandle<Wry>) {
             log_check(&check_and_download(&handle).await);
             tokio::time::sleep(CHECK_INTERVAL).await;
         }
+    });
+    let handle = app.clone();
+    tauri::async_runtime::spawn(async move {
+        auto_install(&handle).await;
     });
 }
 
@@ -160,6 +175,62 @@ pub fn check_in_background(app: &AppHandle<Wry>) {
 
 fn log_check(status: &UpdateStatus) {
     tracing::info!(state = ?status.state, message = %status.message, "vérification des mises à jour");
+}
+
+/// Delays the automatic install until the overlay has stayed free long enough.
+#[derive(Debug, Default)]
+struct AutoInstallWindow {
+    since: Option<Instant>,
+}
+
+impl AutoInstallWindow {
+    /// Arms on the first eligible observation, starts over when the overlay
+    /// becomes busy again, and reports `true` once the grace delay elapsed.
+    fn ready(&mut self, eligible: bool, now: Instant) -> bool {
+        if !eligible {
+            self.since = None;
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        now.duration_since(since) >= AUTO_INSTALL_GRACE
+    }
+}
+
+/// Whether installing now would disturb nothing: an update is ready, the board
+/// is hidden, no media plays or waits, no upload runs, and the user is not
+/// placing the overlay zone.
+fn auto_install_eligible(app: &AppHandle<Wry>) -> bool {
+    if app.state::<UpdaterState>().ready_version().is_none() {
+        return false;
+    }
+    if crate::windows::board_visible(app) || crate::placement::is_active() {
+        return false;
+    }
+    if app
+        .state::<crate::net::upload::UploadRegistry>()
+        .has_active()
+    {
+        return false;
+    }
+    app.state::<crate::state::AppState>().playback_idle()
+}
+
+/// Installs the ready update once the overlay has been free for the grace
+/// delay. Nothing is downloaded here: only the package already verified by
+/// `check_and_download` is installed.
+async fn auto_install(app: &AppHandle<Wry>) {
+    let mut window = AutoInstallWindow::default();
+    loop {
+        tokio::time::sleep(AUTO_INSTALL_POLL).await;
+        if window.ready(auto_install_eligible(app), Instant::now()) {
+            match install(app) {
+                Ok(()) => tracing::info!("mise à jour lancée automatiquement"),
+                // The failed phase makes the window empty again; a later check
+                // can download the update anew and retry.
+                Err(error) => tracing::warn!(%error, "installation automatique impossible"),
+            }
+        }
+    }
 }
 
 /// Checks for a newer version and downloads it. Does nothing while a check
@@ -211,9 +282,24 @@ async fn find_update(app: &AppHandle<Wry>) -> Result<Option<Update>, String> {
     updater.check().await.map_err(|error| error.to_string())
 }
 
-/// Installs the downloaded update: the NSIS installer runs in passive mode and
-/// relaunches LiveChat. On Windows this does not return when it succeeds.
+/// Installs the downloaded update and relaunches LiveChat: the NSIS installer
+/// runs in passive mode. On Windows this does not return when it succeeds.
 pub fn install(app: &AppHandle<Wry>) -> Result<(), String> {
+    install_with(app, true)
+}
+
+/// Installs the downloaded update when LiveChat is quitting, without relaunching
+/// it: the update applies at the next start instead of being lost.
+pub fn install_on_quit(app: &AppHandle<Wry>) -> Result<(), String> {
+    if app.state::<UpdaterState>().ready_version().is_none() {
+        return Ok(());
+    }
+    install_with(app, false)
+}
+
+/// Installs the ready update. `restart` relaunches LiveChat once the installer
+/// ran; quitting for good passes `false`.
+fn install_with(app: &AppHandle<Wry>, restart: bool) -> Result<(), String> {
     let state = app.state::<UpdaterState>();
     let (update, bytes) = match std::mem::take(&mut *state.phase()) {
         Phase::Ready { update, bytes } => (update, bytes),
@@ -222,9 +308,10 @@ pub fn install(app: &AppHandle<Wry>) -> Result<(), String> {
             return Err("Aucune mise à jour prête à installer.".to_string());
         }
     };
-    tracing::info!(version = %update.version, "installation de la mise à jour");
+    tracing::info!(version = %update.version, restart, "installation de la mise à jour");
     // The plugin cleans the tray up and exits the process once the installer
     // is launched: Windows then closes the sockets and frees the shortcuts.
+    let update = (*update).restart_after_install(restart);
     if let Err(error) = update.install(&bytes) {
         let message = error.to_string();
         tracing::warn!(%message, "échec du lancement de l'installeur");
@@ -250,12 +337,46 @@ mod tests {
         assert_eq!(value["availableVersion"], "3.2.0");
         assert_eq!(
             value["message"],
-            "La version 3.2.0 est prête à être installée."
+            "La version 3.2.0 est prête : installation automatique dès que l'overlay est libre."
         );
         let value = serde_json::to_value(describe(UpdateState::UpToDate, None, None))
             .expect("sérialisation");
         assert_eq!(value["state"], "up_to_date");
         assert!(value["availableVersion"].is_null());
+    }
+
+    #[test]
+    fn auto_install_waits_for_the_grace_delay() {
+        let mut window = AutoInstallWindow::default();
+        let start = Instant::now();
+        assert!(!window.ready(true, start));
+        assert!(!window.ready(true, start + AUTO_INSTALL_GRACE - Duration::from_millis(1)));
+        assert!(window.ready(true, start + AUTO_INSTALL_GRACE));
+    }
+
+    #[test]
+    fn auto_install_starts_over_when_the_overlay_becomes_busy() {
+        let mut window = AutoInstallWindow::default();
+        let start = Instant::now();
+        assert!(!window.ready(true, start));
+        assert!(!window.ready(false, start + Duration::from_secs(20)));
+        let free_again = start + Duration::from_secs(25);
+        assert!(!window.ready(true, free_again));
+        assert!(!window.ready(
+            true,
+            free_again + AUTO_INSTALL_GRACE - Duration::from_millis(1)
+        ));
+        assert!(window.ready(true, free_again + AUTO_INSTALL_GRACE));
+    }
+
+    #[test]
+    fn auto_install_does_not_arm_without_a_ready_update() {
+        let mut window = AutoInstallWindow::default();
+        let start = Instant::now();
+        assert!(!window.ready(false, start));
+        assert!(!window.ready(false, start + AUTO_INSTALL_GRACE));
+        assert!(!window.ready(true, start + AUTO_INSTALL_GRACE));
+        assert!(window.ready(true, start + 2 * AUTO_INSTALL_GRACE));
     }
 
     #[test]

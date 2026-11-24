@@ -55,7 +55,7 @@ apps/lc-overlay/
     tray.rs               # icône + modèle de menu pur + handlers
     device_settings.rs    # réglages appareil retirés du tray (page Paramètres)
     shortcuts.rs          # global-shortcuts / mediaBindings (squelette)
-    updater.rs            # vérification périodique, téléchargement, installation au clic
+    updater.rs            # vérification périodique, téléchargement, installation automatique au repos
     commands.rs           # commandes bridge (config, télémétrie, appairage, médias du board) + 2 commandes update
 ```
 
@@ -474,7 +474,7 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 - [ ] CSP élargie `{API_URL}`/`{WS_API_URL}` ; CORS serveur pour
       `http://tauri.localhost`.
 - [x] Updater : clé minisign réelle, `latest.json`, check au démarrage +
-      entrée tray d'installation.
+      installation automatique au repos (repli à la fermeture).
 - [ ] Single-instance : `--board`/`--from-autostart` (et `--pairing` en
       compatibilité) et remontée au board.
 - [ ] Coexistence bêta : build `tauri.beta.conf.json` + `LIVECHAT_PRODUCT_NAME`,

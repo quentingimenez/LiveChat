@@ -617,6 +617,11 @@ pub fn show_board(app: &AppHandle<Wry>) {
     crate::updater::check_in_background(app);
 }
 
+/// `true` when the board window is visible (closing it only hides it).
+pub fn board_visible(app: &AppHandle<Wry>) -> bool {
+    window(app, BOARD_LABEL).is_some_and(|window| window.is_visible().unwrap_or(false))
+}
+
 /// Deuxième lancement : ouverture explicite de la board.
 ///
 /// `--pairing` reste accepté pour la compatibilité des raccourcis existants :

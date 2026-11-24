@@ -115,6 +115,12 @@ impl ScreenArbiter {
             .collect()
     }
 
+    /// `true` quand rien n'est affiché et que rien n'attend : l'overlay est
+    /// libre pour une installation de mise à jour.
+    pub fn is_idle(&self) -> bool {
+        self.screen.is_none() && self.queue.is_empty()
+    }
+
     /// Décide du sort d'un `play` : affichage immédiat ou mise en attente.
     ///
     /// `showable` dit si l'overlay peut montrer quelque chose (activé et
@@ -370,6 +376,30 @@ mod tests {
     }
 
     // --- Affichage unique ---------------------------------------------------
+
+    #[test]
+    fn l_arbitre_est_inactif_seulement_sans_media_a_l_ecran_ni_en_file() {
+        let mut arbiter = ScreenArbiter::default();
+        assert!(arbiter.is_idle());
+
+        present(&mut arbiter, GUILD_A, "a1");
+        assert!(!arbiter.is_idle(), "un média à l'écran occupe l'arbitre");
+
+        queue(&mut arbiter, GUILD_B, "b1");
+        assert!(
+            !arbiter.is_idle(),
+            "un média en file occupe aussi l'arbitre"
+        );
+
+        // Fin de a1 : b1 prend l'écran, l'overlay reste occupé.
+        let decision = arbiter.report_stop(Some("a1"), true);
+        assert!(decision.display_cleared);
+        assert!(!arbiter.is_idle(), "le média suivant a pris l'écran");
+
+        let decision = arbiter.report_stop(Some("b1"), true);
+        assert!(decision.display_cleared);
+        assert!(arbiter.is_idle());
+    }
 
     #[test]
     fn deux_plays_simultanes_n_affichent_qu_un_media() {

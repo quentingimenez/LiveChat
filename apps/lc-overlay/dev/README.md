@@ -141,8 +141,8 @@ Options de l'URL :
 | `?covers` | Donne une image de couverture aux vidéos, comme le serveur une fois qu'il en a fait une (vignette de plateforme ou frame de la vidéo) : leurs cartes affichent une image fixe au lieu d'un `<video>` figé sur une frame, et le panneau de détail montre cette image en `poster`. |
 | `?nozone` | Aucun écran connu : l'éditeur image n'a pas de zone d'affichage et son aperçu « Taille à l'affichage » retombe sur l'estimation 1920 × 1080. |
 | `?latency=1500` | Ajoute 1,5 s à chaque appel `guild_api` (les commandes du shell restent immédiates) : le rail change tout de suite, le board et la file montrent leur squelette. |
-| `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : le bandeau de mise à jour s'affiche en haut de la fenêtre, sur toutes les pages. « Plus tard » le masque pour cette version (localStorage) ; « Redémarrer et installer » échoue et montre l'erreur dans le bandeau. |
-| `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : le bandeau montre « Téléchargement de LiveChat 3.2.0… » sans bouton. |
+| `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : Paramètres → À propos affiche le statut et le bouton d'installation. Dans le navigateur, l'installation échoue (pas d'installeur) et l'erreur apparaît sous le bouton. |
+| `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : Paramètres → À propos affiche « Téléchargement de la version 3.2.0… » ; la board ne montre plus de bandeau. |
 
 Depuis la console :
 

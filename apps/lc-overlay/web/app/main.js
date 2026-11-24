@@ -35,7 +35,6 @@ import { tickQueueClock } from './views/queue.js';
 import { renderRail } from './views/rail.js';
 import { initDeviceSettings, openSettings } from './views/settings.js';
 import { showSettingsRemoteUpdate } from './views/settings-banner.js';
-import { initUpdateNotice } from './views/update-notice.js';
 import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
 
@@ -54,9 +53,6 @@ listen('overlay://guilds', applyGuilds);
 
 // Device settings: changes made elsewhere and the tray's « Paramètres… » view.
 initDeviceSettings();
-
-// « Update available » banner at the top of the window, on every page.
-initUpdateNotice();
 
 // Asynchronous media ingestions: conversion results and board resync.
 initUploadIngestion();

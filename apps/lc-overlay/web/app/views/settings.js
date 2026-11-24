@@ -129,8 +129,8 @@ export function initDeviceSettings() {
       return;
     }
     deviceSettings = payload;
-    // The update status lives in core/update-status.js: the Settings page and
-    // the board banner read the same value.
+    // The update status lives in core/update-status.js: the « À propos »
+    // section reads it back from there.
     setUpdateStatus(payload.update);
     loadError = null;
     // Do not rebuild the controls under the pointer while a control is edited.

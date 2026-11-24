@@ -14,90 +14,73 @@
             <img class="brand-logo" src="icons/icon-32.png" alt="LiveChat" />
             <p class="options-kicker">LiveChat Extension</p>
           </div>
-          <h1>Configuration</h1>
+          <h1>Connecter l'extension</h1>
           <p class="options-subtitle">
-            Deux chemins possibles: appairage rapide à gauche, réglage manuel à droite.
+            Colle le code de ton overlay : l'extension récupère sa configuration du serveur.
           </p>
         </header>
 
-        <section class="panels-grid">
-          <form id="pairing-form" class="options-form options-panel pairing-panel">
-            <div class="panel-head">
-              <p class="panel-tag">Rapide</p>
-              <h2 class="section-title">Connexion API + Pair code</h2>
-              <p class="section-subtitle">
-                Renseigne l’URL racine du serveur puis colle le code donné par l’overlay (Mon profil → Appairer l’extension navigateur) ou généré par <code>/pair-code</code> sur Discord.
-              </p>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label" for="api-url">API_URL</label>
-              <input id="api-url" class="field-input" type="url" placeholder="https://livechat.exemple.com" />
-              <p class="api-note">Ne pas mettre <code>/overlay</code> ou <code>/ingest</code> dans l’URL.</p>
-              <p id="permission-state" class="permission-state">Autorisation domaine: non configuré.</p>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label" for="pairing-code">Pair code</label>
-              <input id="pairing-code" class="field-input" type="text" placeholder="AB12CD34" required />
-              <p class="field-hint">Le nom est généré automatiquement au format <code>Extension-&lt;nom&gt;</code>.</p>
-            </div>
-
-            <button id="pair-button" class="btn btn-primary" type="submit">Récupérer la configuration</button>
-          </form>
-
-          <form id="options-form" class="options-form options-panel manual-panel">
-            <div class="panel-head">
-              <p class="panel-tag">Avancé</p>
-              <h2 class="section-title">Configuration manuelle</h2>
-              <p class="section-subtitle">
-                Modifie les champs directement puis sauvegarde.
-              </p>
-            </div>
-
-            <div class="field-group">
-              <label class="field-label" for="api-url-manual">API_URL</label>
-              <input id="api-url-manual" class="field-input" type="url" placeholder="https://livechat.exemple.com" />
-              <p class="field-hint">Ce champ est synchronisé automatiquement avec celui du formulaire de gauche.</p>
-            </div>
-
-            <label class="field-label" for="ingest-token">INGEST_API_TOKEN</label>
-            <input id="ingest-token" class="field-input" type="password" placeholder="token" required />
-
-            <label class="field-label" for="guild-id">guildId</label>
-            <input id="guild-id" class="field-input" type="text" placeholder="123456789012345678" required />
-
+        <form id="pairing-form" class="options-form connect-body">
+          <div class="field-group">
+            <label class="field-label" for="api-url">Adresse du serveur</label>
+            <input id="api-url" class="field-input" type="url" placeholder="https://livechat.exemple.com" />
             <p class="field-hint">
-              Le pseudo et l’avatar des envois sont ceux du profil Discord lié au client d’ingestion :
-              rien à configurer ici.
+              Racine du serveur, sans <code>/overlay</code> ni <code>/ingest</code>.
             </p>
+            <p id="permission-state" class="permission-state">Autorisation de l'adresse : non configurée.</p>
+          </div>
 
-            <div class="actions-row">
-              <button id="save-button" class="btn btn-primary" type="submit">Sauvegarder</button>
-              <button id="test-button" class="btn btn-ghost" type="button">Tester la config</button>
-            </div>
-          </form>
+          <div class="field-group">
+            <label class="field-label" for="pairing-code">Code d'appairage</label>
+            <input id="pairing-code" class="field-input" type="text" placeholder="AB12CD34" required />
+            <p class="field-hint">
+              Overlay → <strong>Mon profil</strong> → <strong>Appairer l'extension navigateur</strong>, ou
+              <code>/pair-code</code> sur Discord.
+            </p>
+          </div>
 
-          <section class="options-panel theme-panel">
-            <div class="panel-head">
-              <p class="panel-tag">Apparence</p>
-              <h2 class="section-title">Thème</h2>
-              <p class="section-subtitle">
-                S’applique au popup, à cette page et aux fenêtres LiveChat injectées dans les pages.
-              </p>
-            </div>
+          <button id="pair-button" class="btn btn-primary" type="submit">Connecter</button>
+        </form>
 
-            <div class="field-group">
-              <label class="field-label" for="theme-select">Thème de l’interface</label>
-              <select id="theme-select" class="field-input">
-                <option value="dark">Sombre</option>
-                <option value="light">Clair</option>
-                <option value="system">Système</option>
-              </select>
-              <p class="field-hint">« Système » suit le thème clair/sombre du navigateur.</p>
-            </div>
-          </section>
-        </section>
+        <details class="details-panel">
+          <summary>Configuration manuelle</summary>
+          <div class="details-body">
+            <p class="field-hint">
+              Dépannage : saisis le token et la guilde à la main, sans passer par un code.
+            </p>
+            <form id="options-form" class="options-form">
+              <div class="field-group">
+                <label class="field-label" for="ingest-token">Token d'ingestion</label>
+                <input
+                  id="ingest-token"
+                  class="field-input"
+                  type="password"
+                  placeholder="INGEST_API_TOKEN"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <div class="field-group">
+                <label class="field-label" for="guild-id">Identifiant de guilde</label>
+                <input id="guild-id" class="field-input" type="text" placeholder="123456789012345678" />
+              </div>
+              <div class="actions-row">
+                <button id="save-button" class="btn btn-primary" type="submit">Enregistrer</button>
+                <button id="test-button" class="btn btn-ghost" type="button">Tester</button>
+              </div>
+            </form>
+          </div>
+        </details>
+
+        <div class="theme-row">
+          <label class="field-label" for="theme-select">Thème</label>
+          <select id="theme-select" class="theme-select">
+            <option value="dark">Sombre</option>
+            <option value="light">Clair</option>
+            <option value="system">Système</option>
+          </select>
+          <span class="field-hint">« Système » suit le navigateur.</span>
+        </div>
 
         <p id="options-status" class="status status-info hidden"></p>
       </section>

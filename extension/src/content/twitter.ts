@@ -15,7 +15,7 @@ import {
 } from './shared';
 import { startObservedScanner } from './scan-scheduler';
 
-// Blocs partagÃ©s importÃ©s du noyau commun.
+// Blocs partagés importés du noyau commun.
 import {
   attachLongPressCompose,
   buttonResetTimers,
@@ -27,11 +27,11 @@ import {
   showToast,
   type ToastLevel,
 } from './shared-core';
-// Divergence par site conservÃ©e volontairement : readRuntime / hasExtensionAuth /
-// registerToastListener / sendQuick / sendCompose gÃ¨rent ici l'invalidation du
+// Divergence par site conservée volontairement : readRuntime / hasExtensionAuth /
+// registerToastListener / sendQuick / sendCompose gèrent ici l'invalidation du
 // contexte extension (TikTok) avec un comportement propre au site.
 // setButtonState / resetButtonStateLater utilisent la taille de logo et le
-// libellÃ© propres au site.
+// libellé propres au site.
 
 const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';

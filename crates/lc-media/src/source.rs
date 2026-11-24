@@ -296,6 +296,40 @@ pub fn tiktok_post_kind(raw: &str) -> Option<TikTokPostKind> {
     .then_some(kind)
 }
 
+/// Identifiant numérique d'une page musique TikTok (`/music/<slug>-<id>`).
+///
+/// Le chemin public est `music/original-sound-<id>` ; l'identifiant est le
+/// suffixe numérique après le dernier tiret. Une URL de profil, de vidéo ou
+/// courte ne désigne pas une page musique et renvoie `None`.
+pub fn tiktok_music_id(raw: &str) -> Option<String> {
+    let parsed = Url::parse(raw.trim()).ok()?;
+    if !tiktok_host(&parsed) {
+        return None;
+    }
+    let segments: Vec<&str> = parsed
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let ["music", slug] = segments.as_slice() else {
+        return None;
+    };
+    let identifier = slug
+        .rsplit_once('-')
+        .map_or(*slug, |(_, identifier)| identifier);
+    (!identifier.is_empty()
+        && identifier.len() <= 32
+        && identifier
+            .chars()
+            .all(|character| character.is_ascii_digit()))
+    .then(|| identifier.to_string())
+}
+
+/// `true` si l'URL désigne une page musique TikTok.
+pub fn is_tiktok_music_url(raw: &str) -> bool {
+    tiktok_music_id(raw).is_some()
+}
+
 /// Identifiant du commentaire partagé d'une URL TikTok, s'il est valide.
 ///
 /// L'application mobile utilise `share_comment_id` (parfois `comment_id` sur
@@ -921,6 +955,32 @@ mod tests {
         ];
         for (url, expected) in cases {
             assert_eq!(tiktok_post_kind(url), expected, "url={url}");
+        }
+    }
+
+    #[test]
+    fn detects_tiktok_music_pages() {
+        assert_eq!(
+            tiktok_music_id("https://www.tiktok.com/music/original-sound-7711501626669845279")
+                .as_deref(),
+            Some("7711501626669845279")
+        );
+        assert_eq!(
+            tiktok_music_id("https://www.tiktok.com/music/7711501626669845279").as_deref(),
+            Some("7711501626669845279")
+        );
+        assert!(is_tiktok_music_url(
+            "https://www.tiktok.com/music/original-sound-7711501626669845279?lang=fr"
+        ));
+        for url in [
+            "https://www.tiktok.com/@user/video/7311111111111111111",
+            "https://www.tiktok.com/@user/photo/7311111111111111112",
+            "https://www.tiktok.com/@user",
+            "https://www.tiktok.com/music/abcd",
+            "https://vm.tiktok.com/ZMabc/",
+            "https://example.com/music/original-sound-1",
+        ] {
+            assert_eq!(tiktok_music_id(url), None, "url={url}");
         }
     }
 

@@ -19,7 +19,9 @@ use crate::download::parse_cookie_pairs;
 use crate::error::MediaResult;
 use crate::html;
 use crate::http;
-use crate::source::{kind_from_url, tiktok_post_kind, MediaSource, SourceKind};
+use crate::source::{
+    is_tiktok_music_url, kind_from_url, tiktok_post_kind, MediaSource, SourceKind,
+};
 
 use super::{encode_query_component, ResolvedMedia};
 
@@ -259,14 +261,24 @@ pub async fn resolve_tiktok(
                 .clone()
                 .unwrap_or_else(|| canonical_url.clone());
             let has_video = !page.video_candidates.is_empty();
+            let music = is_tiktok_music_url(&canonical_url);
             let kind = if has_video || page.should_build_carousel() {
                 MediaKind::Video
             } else if !page.photo_slides.is_empty() {
                 MediaKind::Image
+            } else if music {
+                MediaKind::Audio
             } else {
                 kind_from_url(&canonical_url).unwrap_or(MediaKind::Video)
             };
-            let selected = page.video_candidates.first();
+            // Une page musique n'a pas de flux vidéo : son média principal est
+            // la piste audio exposée par la page. Les publications visuelles
+            // gardent la vidéo comme seul média principal.
+            let selected = page.video_candidates.first().or_else(|| {
+                (music && page.photo_slides.is_empty())
+                    .then(|| page.audio_candidates.first())
+                    .flatten()
+            });
             Ok(ResolvedMedia {
                 source_kind: SourceKind::TikTok,
                 source_hash: source.source_hash.clone(),
@@ -292,7 +304,11 @@ pub async fn resolve_tiktok(
         }
         Err(page_error) => match oembed {
             Some(oembed) => {
-                let kind = kind_from_url(&canonical_url).unwrap_or(MediaKind::Video);
+                let kind = if is_tiktok_music_url(&canonical_url) {
+                    MediaKind::Audio
+                } else {
+                    kind_from_url(&canonical_url).unwrap_or(MediaKind::Video)
+                };
                 Ok(ResolvedMedia {
                     title: oembed.title,
                     author: oembed.author_name,

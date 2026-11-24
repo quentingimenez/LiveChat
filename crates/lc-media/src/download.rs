@@ -20,9 +20,9 @@ use crate::resolve::tenor;
 use crate::resolve::tiktok;
 use crate::resolve::twitter;
 use crate::source::{
-    classify_source, extension_from_mime, is_tiktok_url, is_youtube_url, kind_from_mime,
-    kind_from_url, mime_from_extension, tiktok_comment_id, tiktok_post_kind, tweet_status_id,
-    MediaSource, SourceKind,
+    classify_source, extension_from_mime, is_tiktok_music_url, is_tiktok_url, is_youtube_url,
+    kind_from_mime, kind_from_url, mime_from_extension, tiktok_comment_id, tiktok_post_kind,
+    tweet_status_id, MediaSource, SourceKind,
 };
 use crate::storage::MediaStorage;
 use crate::tiktok_comment;
@@ -1162,6 +1162,7 @@ pub(crate) async fn download_tiktok_media(
 ) -> MediaResult<DownloadResult> {
     let page = tiktok::fetch_tiktok_page(config, &source.canonical_url).await?;
     let expects_visual = tiktok_post_kind(&source.canonical_url).is_some();
+    let music = is_tiktok_music_url(&source.canonical_url);
     let mut last_error: Option<MediaError> = None;
     for candidate in &page.video_candidates {
         let owned_headers = tiktok::media_headers(config, &page, candidate);
@@ -1184,6 +1185,28 @@ pub(crate) async fn download_tiktok_media(
                     Some(previous) => previous.most_relevant(error),
                     None => error,
                 });
+            }
+        }
+    }
+    if music && !expects_visual {
+        // Page musique : le média demandé est la piste audio elle-même, pas
+        // une vidéo. On la télécharge directement quand la page l'expose,
+        // avant de retomber sur `yt-dlp` (qui ne sait pas toujours résoudre
+        // les pages `/music/`).
+        for candidate in &page.audio_candidates {
+            let owned_headers = tiktok::media_headers(config, &page, candidate);
+            let headers = tiktok::header_pairs(&owned_headers);
+            match download_http(config, &candidate.url, temp_dir, &headers).await {
+                Ok(download) => return Ok(download),
+                Err(error) => {
+                    if error.is(MediaErrorCode::FileTooLarge) {
+                        return Err(error);
+                    }
+                    last_error = Some(match last_error {
+                        Some(previous) => previous.most_relevant(error),
+                        None => error,
+                    });
+                }
             }
         }
     }
@@ -1280,15 +1303,20 @@ fn ensure_tiktok_visual_media(
     source: &MediaSource,
     download: DownloadResult,
 ) -> MediaResult<DownloadResult> {
-    if tiktok_post_kind(&source.canonical_url).is_none() || !is_audio_only_download(&download) {
+    if !is_audio_only_download(&download) || is_tiktok_music_url(&source.canonical_url) {
         return Ok(download);
     }
     if let Err(error) = fs::remove_file(&download.path) {
         tracing::debug!("suppression du fichier TikTok audio-only impossible : {error}");
     }
+    let message = if tiktok_post_kind(&source.canonical_url).is_some() {
+        "TikTok n'a fourni qu'une piste audio pour une publication vidéo/photo ; le flux visuel nécessite une session valide"
+    } else {
+        "TikTok n'a fourni qu'une piste audio hors page musique ; seules les pages musique sont acceptées en audio seul"
+    };
     Err(MediaError::new(
         MediaErrorCode::PrivateOrAuthRequired,
-        "TikTok n'a fourni qu'une piste audio pour une publication vidéo/photo ; le flux visuel nécessite une session valide",
+        message,
     ))
 }
 
@@ -1833,6 +1861,22 @@ mod tests {
             Some("image/jpeg"),
         );
         assert!(ensure_tiktok_visual_media(&source, download).is_ok());
+    }
+
+    #[test]
+    fn refuses_audio_only_download_outside_a_tiktok_music_page() {
+        let source = tiktok_source("https://www.tiktok.com/@somebody");
+        let temp = tempfile::TempDir::new().unwrap();
+        let download = fake_download(
+            temp.path(),
+            "audio.m4a",
+            Some(MediaKind::Audio),
+            Some("audio/mp4"),
+        );
+        let path = download.path.clone();
+        let error = ensure_tiktok_visual_media(&source, download).unwrap_err();
+        assert!(error.is(MediaErrorCode::PrivateOrAuthRequired), "{error}");
+        assert!(!path.exists(), "le fichier audio doit être supprimé");
     }
 
     #[test]

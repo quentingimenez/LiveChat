@@ -4,14 +4,16 @@ import { toNonEmptyString } from './utils';
 const SETTINGS_STORAGE_KEY = 'lce.settings.v1';
 const DRAFT_STORAGE_KEY = 'lce.compose-draft.v1';
 
-export const DEFAULT_AUTHOR_NAME = 'LiveChat Extension';
-
+/**
+ * Réglages strictement techniques : l'auteur d'un envoi (pseudo, avatar) est
+ * résolu côté serveur à partir du profil du membre lié au client d'ingestion,
+ * l'extension ne le connaît ni ne le transmet. Les anciennes versions stockaient
+ * `authorName`/`authorImage` : ces clés sont ignorées puis effacées au chargement.
+ */
 export interface ExtensionSettings {
   apiUrl: string;
   ingestToken: string;
   guildId: string;
-  authorName: string;
-  authorImage: string | null;
 }
 
 export interface ComposeDraft {
@@ -81,17 +83,12 @@ export const normalizeSettingsInput = (input: Partial<ExtensionSettings>): Setti
     };
   }
 
-  const authorName = toNonEmptyString(input.authorName) || DEFAULT_AUTHOR_NAME;
-  const authorImage = toNonEmptyString(input.authorImage) || null;
-
   return {
     ok: true,
     value: {
       apiUrl,
       ingestToken,
-      guildId,
-      authorName,
-      authorImage
+      guildId
     }
   };
 };
@@ -104,21 +101,31 @@ export const isSettingsComplete = (value: ExtensionSettings | null): value is Ex
   return !!(
     toNonEmptyString(value.apiUrl) &&
     toNonEmptyString(value.ingestToken) &&
-    toNonEmptyString(value.guildId) &&
-    toNonEmptyString(value.authorName)
+    toNonEmptyString(value.guildId)
   );
 };
 
 export const getSettings = async (): Promise<ExtensionSettings | null> => {
   const payload = await browser.storage.local.get(SETTINGS_STORAGE_KEY);
-  const candidate = payload[SETTINGS_STORAGE_KEY] as Partial<ExtensionSettings> | undefined;
+  const stored: unknown = payload[SETTINGS_STORAGE_KEY];
 
-  if (!candidate) {
+  if (!stored || typeof stored !== 'object') {
     return null;
   }
 
-  const normalized = normalizeSettingsInput(candidate);
-  return normalized.ok ? normalized.value : null;
+  const normalized = normalizeSettingsInput(stored as Partial<ExtensionSettings>);
+  if (!normalized.ok) {
+    return null;
+  }
+
+  // Les versions précédentes stockaient un pseudo et un avatar : ils ne sont
+  // plus lus, on les efface dès le premier chargement pour ne pas les laisser
+  // traîner dans le navigateur.
+  if ('authorName' in stored || 'authorImage' in stored) {
+    await saveSettings(normalized.value);
+  }
+
+  return normalized.value;
 };
 
 export const saveSettings = async (settings: ExtensionSettings): Promise<void> => {

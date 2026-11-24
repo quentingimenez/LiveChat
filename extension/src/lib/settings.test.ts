@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { DEFAULT_AUTHOR_NAME, normalizeSettingsInput } from './settings';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { getSettings, normalizeSettingsInput } from './settings';
 
 describe('settings validation', () => {
   it('normalise une config valide', () => {
@@ -7,34 +7,38 @@ describe('settings validation', () => {
       apiUrl: 'https://livechat.example.com/',
       ingestToken: ' abc ',
       guildId: '123',
-      authorName: 'Mon extension',
-      authorImage: 'https://cdn.example.com/avatar.png',
     });
 
     expect(result.ok).toBe(true);
 
     if (result.ok) {
-      expect(result.value.apiUrl).toBe('https://livechat.example.com');
-      expect(result.value.ingestToken).toBe('abc');
-      expect(result.value.guildId).toBe('123');
-      expect(result.value.authorName).toBe('Mon extension');
-      expect(result.value.authorImage).toBe('https://cdn.example.com/avatar.png');
+      expect(result.value).toEqual({
+        apiUrl: 'https://livechat.example.com',
+        ingestToken: 'abc',
+        guildId: '123',
+      });
     }
   });
 
-  it('applique un authorName par défaut si vide', () => {
-    const result = normalizeSettingsInput({
+  it('ignore les anciens champs auteur', () => {
+    const legacy = {
       apiUrl: 'https://livechat.example.com',
       ingestToken: 'token',
       guildId: '123',
-      authorName: '   ',
-    });
+      authorName: 'Ancien pseudo',
+      authorImage: 'data:image/png;base64,AAAA',
+    };
+
+    const result = normalizeSettingsInput(legacy);
 
     expect(result.ok).toBe(true);
 
     if (result.ok) {
-      expect(result.value.authorName).toBe(DEFAULT_AUTHOR_NAME);
-      expect(result.value.authorImage).toBeNull();
+      expect(result.value).toEqual({
+        apiUrl: 'https://livechat.example.com',
+        ingestToken: 'token',
+        guildId: '123',
+      });
     }
   });
 
@@ -78,5 +82,62 @@ describe('settings validation', () => {
     if (!result.ok) {
       expect(result.message).toContain('INGEST_API_TOKEN');
     }
+  });
+});
+
+describe('getSettings', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const stubStorage = (stored: unknown) => {
+    const set = vi.fn(async () => undefined);
+    vi.stubGlobal('browser', {
+      storage: {
+        local: {
+          get: vi.fn(async () => ({ 'lce.settings.v1': stored })),
+          set,
+        },
+      },
+    });
+    return set;
+  };
+
+  it('efface les champs auteur hérités du stockage', async () => {
+    const set = stubStorage({
+      apiUrl: 'https://livechat.example.com',
+      ingestToken: 'token',
+      guildId: '123',
+      authorName: 'Ancien pseudo',
+      authorImage: 'data:image/png;base64,AAAA',
+    });
+
+    const settings = await getSettings();
+
+    expect(settings).toEqual({
+      apiUrl: 'https://livechat.example.com',
+      ingestToken: 'token',
+      guildId: '123',
+    });
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(set).toHaveBeenCalledWith({
+      'lce.settings.v1': {
+        apiUrl: 'https://livechat.example.com',
+        ingestToken: 'token',
+        guildId: '123',
+      },
+    });
+  });
+
+  it('ne réécrit pas un stockage déjà propre', async () => {
+    const set = stubStorage({
+      apiUrl: 'https://livechat.example.com',
+      ingestToken: 'token',
+      guildId: '123',
+    });
+
+    await getSettings();
+
+    expect(set).not.toHaveBeenCalled();
   });
 });

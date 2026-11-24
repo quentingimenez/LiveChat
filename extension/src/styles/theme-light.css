@@ -18,7 +18,8 @@
   --amber-ink: #2a1d02;
   --amber-hover: #e8ae3f;
   --red: #ec6a70;
-  --green: #5fc9a3;
+  /* Vert assombri : la pastille d'autorisation doit rester lisible sur blanc. */
+  --green: #2f9f7c;
   --blue: #7fa8f5;
   --shadow-card: 0 12px 28px rgba(24, 32, 60, 0.14);
 }

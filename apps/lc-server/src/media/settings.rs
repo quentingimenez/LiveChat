@@ -13,8 +13,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use lc_media::config::{
-    sanitize_tiktok_cookie, DownloadConfig, LoudnormTargets, MediaConfig, ResolveConfig,
-    StorageConfig, ToolsConfig, TranslateConfig, VideoConfig, VideoEncoder,
+    sanitize_tiktok_cookie, sanitize_youtube_cookie, DownloadConfig, LoudnormTargets, MediaConfig,
+    ResolveConfig, StorageConfig, ToolsConfig, TranslateConfig, VideoConfig, VideoEncoder,
 };
 
 use crate::app::AppState;
@@ -41,6 +41,9 @@ pub fn media_config_with_runtime(config: &Config, runtime: &Runtime) -> MediaCon
     // l'utiliser sans redémarrage. Un cookie vidé désactive le passage de
     // `--cookies` à yt-dlp au lieu de retomber silencieusement sur l'env.
     media.tools.tiktok_cookie = sanitize_tiktok_cookie(&runtime.tiktok_cookie());
+    // Même contrat pour YouTube : la console admin peut définir ou retirer le
+    // cookie à chaud, sans redémarrage.
+    media.tools.youtube_cookie = sanitize_youtube_cookie(&runtime.youtube_cookie());
     media
 }
 
@@ -90,6 +93,7 @@ pub fn media_config(config: &Config) -> MediaConfig {
             ytdlp_concurrent_fragments: config.ytdlp_concurrent_fragments,
             ytdlp_format: config.ytdlp_format.clone(),
             tiktok_cookie: optional_secret(&config.tiktok_cookie),
+            youtube_cookie: optional_secret(&config.youtube_cookie),
         },
         resolve: ResolveConfig {
             youtube_oembed_endpoint: defaults.resolve.youtube_oembed_endpoint,
@@ -210,6 +214,7 @@ mod tests {
             ("YTDLP_BINARY", "/opt/yt-dlp"),
             ("YTDLP_CONCURRENT_FRAGMENTS", "4"),
             ("TIKTOK_COOKIE", "session=abc"),
+            ("YOUTUBE_COOKIE", "SAPISID=xyz"),
         ]);
         let media = media_config(&server);
 
@@ -222,6 +227,15 @@ mod tests {
         assert_eq!(media.tools.ytdlp, PathBuf::from("/opt/yt-dlp"));
         assert_eq!(media.tools.ytdlp_concurrent_fragments, 4);
         assert_eq!(media.tools.tiktok_cookie.as_deref(), Some("session=abc"));
+        assert_eq!(media.tools.youtube_cookie.as_deref(), Some("SAPISID=xyz"));
+    }
+
+    #[test]
+    fn empty_youtube_cookie_is_disabled() {
+        let server = config(&[("API_URL", "http://localhost:3000")]);
+        let media = media_config(&server);
+
+        assert!(media.tools.youtube_cookie.is_none());
     }
 
     #[test]
@@ -305,6 +319,51 @@ mod tests {
         assert_eq!(
             media.tools.tiktok_cookie.as_deref(),
             Some("session=environment")
+        );
+    }
+
+    #[test]
+    fn runtime_youtube_cookie_overrides_the_environment_value() {
+        use std::sync::Arc;
+
+        use crate::runtime::{Runtime, RuntimeOverrides};
+
+        let server = config(&[
+            ("API_URL", "http://localhost:3000"),
+            ("YOUTUBE_COOKIE", "SAPISID=environment"),
+        ]);
+        let runtime = Runtime::new(Arc::new(server.clone()));
+
+        runtime.apply(RuntimeOverrides {
+            youtube_cookie: Some("SAPISID=runtime".to_owned()),
+            ..RuntimeOverrides::default()
+        });
+        let media = media_config_with_runtime(&server, &runtime);
+        assert_eq!(
+            media.tools.youtube_cookie.as_deref(),
+            Some("SAPISID=runtime")
+        );
+        assert!(media.tools.tiktok_cookie.is_none());
+
+        runtime.apply(RuntimeOverrides {
+            youtube_cookie: Some(String::new()),
+            ..RuntimeOverrides::default()
+        });
+        let media = media_config_with_runtime(&server, &runtime);
+        assert!(media.tools.youtube_cookie.is_none());
+
+        runtime.apply(RuntimeOverrides {
+            youtube_cookie: Some("SAPISID=runtime\ninjected=1".to_owned()),
+            ..RuntimeOverrides::default()
+        });
+        let media = media_config_with_runtime(&server, &runtime);
+        assert!(media.tools.youtube_cookie.is_none());
+
+        runtime.apply(RuntimeOverrides::default());
+        let media = media_config_with_runtime(&server, &runtime);
+        assert_eq!(
+            media.tools.youtube_cookie.as_deref(),
+            Some("SAPISID=environment")
         );
     }
 

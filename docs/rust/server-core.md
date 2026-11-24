@@ -170,7 +170,8 @@ global) : c'est elle qu'utilisent les tests.
 | `YTDLP_BINARY` | `yt-dlp` | |
 | `YTDLP_CONCURRENT_FRAGMENTS` | `1` | |
 | `YTDLP_FORMAT` | format legacy long | valeur par défaut reprise telle quelle |
-| `TIKTOK_COOKIE` | `""` | secret masqué |
+| `TIKTOK_COOKIE` | `""` | secret masqué, site-scopé, envoyé à toutes les URLs TikTok |
+| `YOUTUBE_COOKIE` | `""` | secret masqué, utilisé après un échec d'authentification YouTube |
 | `FFMPEG_BINARY` | `ffmpeg` | |
 | `FFPROBE_BINARY` | `ffprobe` | |
 | `ADDITIONAL_CORS_ORIGINS` | `""` | origines séparées par des virgules |

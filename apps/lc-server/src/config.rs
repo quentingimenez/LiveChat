@@ -343,6 +343,8 @@ pub struct Config {
     pub ytdlp_format: String,
     /// `TIKTOK_COOKIE` (défaut vide).
     pub tiktok_cookie: Secret,
+    /// `YOUTUBE_COOKIE` (défaut vide).
+    pub youtube_cookie: Secret,
     /// `FFMPEG_BINARY` (défaut `ffmpeg`).
     pub ffmpeg_binary: String,
     /// `FFPROBE_BINARY` (défaut `ffprobe`).
@@ -561,6 +563,7 @@ impl Config {
             env.parsed("YTDLP_CONCURRENT_FRAGMENTS", 1, "entier positif", parse_u32)?;
         let ytdlp_format = env.string("YTDLP_FORMAT", DEFAULT_YTDLP_FORMAT);
         let tiktok_cookie = env.secret("TIKTOK_COOKIE");
+        let youtube_cookie = env.secret("YOUTUBE_COOKIE");
         let ffmpeg_binary = env.string("FFMPEG_BINARY", "ffmpeg");
         let ffprobe_binary = env.string("FFPROBE_BINARY", "ffprobe");
         let additional_cors_origins = env.origin_list("ADDITIONAL_CORS_ORIGINS")?;
@@ -633,6 +636,7 @@ impl Config {
             ytdlp_concurrent_fragments,
             ytdlp_format,
             tiktok_cookie,
+            youtube_cookie,
             ffmpeg_binary,
             ffprobe_binary,
             additional_cors_origins,
@@ -1076,6 +1080,7 @@ mod tests {
             ("YTDLP_CONCURRENT_FRAGMENTS", "3"),
             ("YTDLP_FORMAT", "best"),
             ("TIKTOK_COOKIE", "sessionid=abc"),
+            ("YOUTUBE_COOKIE", "SAPISID=secret"),
             ("FFMPEG_BINARY", "C:/tools/ffmpeg.exe"),
             ("FFPROBE_BINARY", "C:/tools/ffprobe.exe"),
             (
@@ -1178,6 +1183,7 @@ mod tests {
         assert_eq!(config.ytdlp_concurrent_fragments, 3);
         assert_eq!(config.ytdlp_format, "best");
         assert_eq!(config.tiktok_cookie.expose_secret(), "sessionid=abc");
+        assert_eq!(config.youtube_cookie.expose_secret(), "SAPISID=secret");
         assert_eq!(config.ffmpeg_binary, "C:/tools/ffmpeg.exe");
         assert_eq!(config.ffprobe_binary, "C:/tools/ffprobe.exe");
         assert_eq!(config.additional_cors_origins.len(), 2);

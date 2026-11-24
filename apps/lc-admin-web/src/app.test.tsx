@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { App } from './app';
+import runtimeSettingsFixture from './api/fixtures/runtime-settings.json';
 import {
   auditFixture,
   guildDetailFixture,
@@ -35,6 +36,9 @@ function mockAdminApi(userName = session.user.name) {
     }
     if (url === '/admin/api/health') {
       return response(healthFixture);
+    }
+    if (url === '/admin/api/runtime-settings') {
+      return response(runtimeSettingsFixture);
     }
     if (url === '/admin/api/ingestions?limit=50') {
       return response({ items: [] });
@@ -187,6 +191,36 @@ describe('App', () => {
       window.dispatchEvent(new Event('hashchange'));
       await waitFor(() => expect(document.title).toContain(title));
     }
+  });
+
+  it('saves the YouTube cookie from the settings screen', async () => {
+    const fetchMock = mockAdminApi();
+    window.scrollTo = vi.fn();
+    window.location.hash = '#/settings';
+
+    render(<App />);
+
+    const field = await screen.findByLabelText('Cookie YouTube');
+    fireEvent.input(field, { target: { value: 'SAPISID=runtime-secret' } });
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: 'Enregistrer les paramètres' }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Enregistrer les paramètres' }));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([url, init]) =>
+          String(url) === '/admin/api/runtime-settings' &&
+          (init as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(patch).toBeTruthy();
+      expect(JSON.parse(String((patch?.[1] as RequestInit | undefined)?.body))).toMatchObject({
+        youtubeCookie: 'SAPISID=runtime-secret',
+      });
+    });
   });
 
   it('shows the login screen when the session is missing', async () => {

@@ -52,7 +52,7 @@ Test-Case 'Docs secrets - aucun jeton littéral assigné dans le bloc PowerShell
     # \x27 = apostrophe : évite de doubler les guillemets dans le motif PS.
     $conversion = '\[Net\.NetworkCredential\]::new\(\x27\x27,\s*\$secure\)\.Password'
     Assert-True ($ps -match $conversion) `
-        'le bloc PowerShell doit convertir la SecureString via [Net.NetworkCredential]::new('' '', $secure).Password (compatible PS 5.1)'
+        'le bloc PowerShell doit convertir la SecureString via [Net.NetworkCredential]::new('''', $secure).Password (compatible PS 5.1)'
     # L'invariant doit mordre : la conversion autorisée ne doit pas être
     # confondue avec un littéral, et l'ancien example doit être détecté.
     $old = '$token = "abcdefghij1234567890"'

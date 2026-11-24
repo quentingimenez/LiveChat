@@ -166,6 +166,9 @@
   // has made one (the platform thumbnail, or a frame of the video). Its card
   // then shows a still image instead of a `<video>` frozen on a frame.
   const withCovers = new URLSearchParams(location.search).has('covers');
+  // `?edited` : one link card is an edited media (content hash, URL kept), so
+  // the dialog can prove that re-importing its URL is not a duplicate.
+  const withEdited = new URLSearchParams(location.search).has('edited');
   const REAL_MEDIA = { 0: 'sample.mp4', 1: 'media-1.jpg', 2: 'sample.mp3', 3: 'seg-3.mp4', 4: 'media-4.jpg', 5: 'seg-5.mp4', 6: 'seg-6.mp4', 8: 'media-8.jpg' };
   const titles = ['Chat qui tombe', 'Bruh', 'Vine boom', 'Directed by Robert B. Weide', 'Stonks', 'Ah shit, here we go again', null, 'Fanfare de la victoire totale et définitive', 'Nope', 'Sad violin'];
   const kinds = ['video', 'image', 'audio', 'video', 'image', 'video', 'video', 'audio', 'image', 'audio'];
@@ -182,7 +185,7 @@
     createdByMemberId: index % 2 ? 'm-lea' : 'm-111',
     canEdit: isAdmin || (!isGuest && index % 2 === 0),
     createdAt: new Date(Date.now() - index * 86400000).toISOString(),
-    media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: sizeOf(index)[0], height: sizeOf(index)[1], isVertical: sizeOf(index)[1] > sizeOf(index)[0], sizeBytes: 420000 * (index + 1), sourceUrl: index === 2 ? 'upload:vine-boom.mp3' : index === 3 ? 'https://youtu.be/x' + index : 'https://www.tiktok.com/@x/video/' + index },
+    media: { id: 'a' + index, kind: kinds[index], mime: 'x', durationSec: kinds[index] === 'image' ? null : 3 + index * 7, width: sizeOf(index)[0], height: sizeOf(index)[1], isVertical: sizeOf(index)[1] > sizeOf(index)[0], sizeBytes: 420000 * (index + 1), sourceUrl: index === 2 ? 'upload:vine-boom.mp3' : index === 3 ? 'https://youtu.be/x' + index : 'https://www.tiktok.com/@x/video/' + index, edited: withEdited && index === 3 },
     favorite: index === 1 || index === 7,
     // « Fanfare… » and « Vine boom » (audio) have an embedded cover.
     artwork: index === 7 || (realMedia && index === 2)
@@ -540,13 +543,48 @@
   function api(payload) {
     const { method, path } = payload;
     const ok = (body) => ({ ok: true, status: 200, body });
+    function sameSourceUrl(left, right) {
+      try {
+        const a = new URL(left);
+        const b = new URL(right);
+        if (a.protocol !== 'http:' && a.protocol !== 'https:') {
+          return false;
+        }
+        if (b.protocol !== 'http:' && b.protocol !== 'https:') {
+          return false;
+        }
+        a.hash = '';
+        b.hash = '';
+        return a.href === b.href;
+      } catch {
+        return false;
+      }
+    }
+    if (path === '/overlay/media-board/cache' && method === 'POST') {
+      // Global lookup: every source on the board, plus one media cached by an
+      // ingest client that never reached this board. This second URL is what
+      // distinguishes a real server lookup from the old board-only check.
+      const url = String((payload.body && payload.body.url) || '');
+      const cached = items.some((item) => sameSourceUrl(item.media.sourceUrl, url))
+        || sameSourceUrl(url, 'https://www.tiktok.com/@cached/video/9');
+      return ok({ cached });
+    }
     if (path === '/overlay/media-board/items' && method === 'POST') {
       const body = payload.body || {};
       const duration = playOnceDisplayDuration(body);
       if (!duration.ok) {
         return { ok: false, status: 400, body: { error: 'invalid_payload', message: duration.message } };
       }
-      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce), displayDurationSec: duration.value });
+      const url = String(body.url || '');
+      // A bypass refreshes the original card in place. An edited card points a
+      // different asset, so re-importing its URL adds the original as a second
+      // card, exactly like the server's `(guild, asset)` deduplication.
+      const refreshed = body.forceRefresh
+        ? items.find((item) => item.guildId === payload.guildId
+          && item.media.edited !== true
+          && sameSourceUrl(item.media.sourceUrl, url))
+        : null;
+      return acceptIngestion({ guildId: payload.guildId, name: url, url, title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce), displayDurationSec: duration.value, forceRefresh: Boolean(body.forceRefresh), refreshItemId: refreshed ? refreshed.id : null });
     }
     if (path === '/overlay/say' && method === 'POST') {
       // Speech synthesis (/dire). A text containing "panne" fails like a
@@ -1072,7 +1110,7 @@
       createdByMemberId: 'm-111',
       canEdit: true,
       createdAt: new Date().toISOString(),
-      media: { id: 'a' + index, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', mime: source.contentType || 'x', durationSec: kind === 'image' ? null : 6, width: 1280, height: 720, isVertical: false, sizeBytes: source.received, sourceUrl: null },
+      media: { id: 'a' + index, kind: ['video', 'image', 'audio'].includes(kind) ? kind : 'video', mime: source.contentType || 'x', durationSec: kind === 'image' ? null : 6, width: 1280, height: 720, isVertical: false, sizeBytes: source.received, sourceUrl: null, edited: false },
       displayDurationSec: null,
       displayScalePercent: null,
     };
@@ -1134,7 +1172,37 @@
       if (item) {
         const assetId = 'a' + nextItem++;
         item.mediaAssetId = assetId;
-        item.media = { ...item.media, id: assetId, durationSec: source.durationSec === undefined ? item.media.durationSec : source.durationSec, sizeBytes: source.received || item.media.sizeBytes };
+        item.media = {
+          ...item.media,
+          id: assetId,
+          durationSec: source.durationSec === undefined ? item.media.durationSec : source.durationSec,
+          sizeBytes: source.received || item.media.sizeBytes,
+          // An edit keeps the imported URL but is a new content-addressed
+          // media: importing that URL again adds the original as a second card.
+          edited: Boolean(item.media.sourceUrl && /^https?:/i.test(item.media.sourceUrl)),
+        };
+        Object.assign(ingestion, { status: 'ready', created: false, itemId: item.id });
+        boardChanged(ingestion.guildId, 'updated', item.id);
+      } else {
+        Object.assign(ingestion, { status: 'failed', error: { code: 'item_not_found' } });
+      }
+    } else if (source.refreshItemId) {
+      // A cache bypass updates the existing card in place: same item, new
+      // media file, `created: false` so the client can toast instead of
+      // adding a second card.
+      const item = items.find((candidate) => candidate.id === source.refreshItemId);
+      if (item) {
+        const index = nextItem++;
+        item.mediaAssetId = 'a' + index;
+        item.mediaUrl = svg(index);
+        item.mediaUrlExpiresAt = Date.now() + 3600000;
+        item.media = {
+          ...item.media,
+          id: 'a' + index,
+          sourceUrl: source.url || item.media.sourceUrl,
+          sizeBytes: source.received || item.media.sizeBytes,
+          edited: item.media.edited === true,
+        };
         Object.assign(ingestion, { status: 'ready', created: false, itemId: item.id });
         boardChanged(ingestion.guildId, 'updated', item.id);
       } else {

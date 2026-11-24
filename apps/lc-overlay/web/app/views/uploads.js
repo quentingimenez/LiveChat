@@ -16,6 +16,7 @@ import {
   chunkRanges,
   defaultTitle,
   ingestionErrorMessage,
+  linkUploadBody,
   uploadErrorMessage,
   uploadStatusLabel,
 } from '../core/upload-helpers.js';
@@ -94,6 +95,10 @@ export function uploadsForGuild(guildId) {
 // `playOnce: true` sends the link to the overlays without adding it to the
 // board: the provisional card disappears once the playback job is created.
 // `displayDurationSec` is the display time of that play, for an image only.
+// `forceRefresh` asks the server to download the link again even when it
+// already has the media, instead of reusing its cached copy.
+// `refreshItemId` marks an ingestion started from an existing card: the server
+// updates that card's media in place and answers `created: false`.
 export function startLinkUpload({
   guildId,
   url,
@@ -101,6 +106,8 @@ export function startLinkUpload({
   message = '',
   playOnce = false,
   displayDurationSec = null,
+  forceRefresh = false,
+  refreshItemId = null,
 }) {
   if (!guildId || !url) {
     return null;
@@ -116,6 +123,8 @@ export function startLinkUpload({
     message: playOnce ? message || '' : '',
     // Likewise, a display time only belongs to a play-once.
     displayDurationSec: playOnce ? displayDurationSec ?? null : null,
+    forceRefresh: Boolean(forceRefresh),
+    refreshItemId: refreshItemId || null,
     playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
@@ -128,6 +137,23 @@ export function startLinkUpload({
   uploadsChanged(entry);
   pump();
   return entry;
+}
+
+// Refresh an existing link card from its source URL: the server re-downloads
+// the media, replaces the cover and keeps the same item. Returns null when the
+// item has no http source (an uploaded file, for instance).
+export function startLinkRefresh({ guildId, item }) {
+  const url = item && item.media && item.media.sourceUrl;
+  if (!guildId || typeof url !== 'string' || !/^https?:\/\//i.test(url.trim())) {
+    return null;
+  }
+  return startLinkUpload({
+    guildId,
+    url: url.trim(),
+    title: item.title || '',
+    forceRefresh: true,
+    refreshItemId: item.id,
+  });
 }
 
 // `replaceItemId`: the file replaces the media of that board item (an edited
@@ -318,6 +344,24 @@ async function finishIngestion(entry, result) {
         removeEntry(entry);
         notify(`« ${title} » a été mis à jour.`);
       }
+    };
+    if (entry.guildId === state.activeGuildId) {
+      requestItemsReload().then(done);
+    } else {
+      done();
+    }
+    return;
+  }
+  // A forced refresh of a card already on the board is not an add: the server
+  // updated the media in place and returned the existing item. Reload it before
+  // removing the provisional card, so the new file and cover appear.
+  if (entry.forceRefresh && result.created === false) {
+    const done = () => {
+      if (!isLive(entry)) {
+        return;
+      }
+      removeEntry(entry);
+      notify(`« ${title} » rafraîchi depuis sa source.`);
     };
     if (entry.guildId === state.activeGuildId) {
       requestItemsReload().then(done);
@@ -544,14 +588,7 @@ async function runUpload(entry) {
 async function sendLink(entry) {
   let response;
   try {
-    const body = { url: entry.url, title: entry.title };
-    if (entry.playOnce) {
-      body.playOnce = true;
-      body.message = entry.message;
-      if (entry.displayDurationSec) {
-        body.displayDurationSec = entry.displayDurationSec;
-      }
-    }
+    const body = linkUploadBody(entry);
     response = await invoke('guild_api', {
       payload: {
         guildId: entry.guildId,

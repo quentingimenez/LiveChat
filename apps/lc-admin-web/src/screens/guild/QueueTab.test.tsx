@@ -88,6 +88,24 @@ describe('QueueTab', () => {
     });
   });
 
+  it('envoie la file entière après un clic sur Monter', async () => {
+    renderQueue();
+    fireEvent.click(screen.getByRole('button', { name: 'Monter Bravo dans la file' }));
+    await waitFor(() => {
+      expect(mocks.reorderQueue).toHaveBeenCalledWith(guildFixture.id, ['b', 'a', 'c']);
+    });
+  });
+
+  it('désactive Monter sur le premier média et Descendre sur le dernier', () => {
+    renderQueue();
+    expect((screen.getByRole('button', { name: 'Monter Alpha dans la file' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole('button', { name: 'Descendre Charlie dans la file' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   it('recharge la file quand le serveur la juge périmée', async () => {
     const refresh = vi.fn(async () => {});
     const rows = renderQueue(refresh);

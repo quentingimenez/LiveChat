@@ -17,6 +17,24 @@ export function chunkRanges(size, chunkSize) {
   return ranges;
 }
 
+// Body of the board's link ingestion request. `forceRefresh` asks the server
+// to download the link again instead of reusing the media it already has; it
+// is only sent when set, so an ordinary add keeps its usual body.
+export function linkUploadBody(entry) {
+  const body = { url: entry.url, title: entry.title };
+  if (entry.playOnce) {
+    body.playOnce = true;
+    body.message = entry.message;
+    if (entry.displayDurationSec) {
+      body.displayDurationSec = entry.displayDurationSec;
+    }
+  }
+  if (entry.forceRefresh) {
+    body.forceRefresh = true;
+  }
+  return body;
+}
+
 // Default title of an uploaded file: its name without the extension. A leading
 // dot does not make an extension (".env" keeps its name).
 export function defaultTitle(filename) {
@@ -26,8 +44,12 @@ export function defaultTitle(filename) {
 }
 
 // Status label of a provisional upload card. A play-once says "Lecture…"
-// while it is prepared: nothing will join the board.
+// while it is prepared: nothing will join the board. A refresh of an existing
+// card downloads again but does not add anything.
 export function uploadStatusLabel(entry) {
+  if (entry.refreshItemId && (entry.status === 'sending' || entry.status === 'converting')) {
+    return 'Rafraîchissement…';
+  }
   if (entry.status === 'sending') {
     return entry.kind === 'link' ? 'Téléchargement…' : 'Envoi…';
   }

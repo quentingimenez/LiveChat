@@ -141,7 +141,12 @@ test('la fenêtre pose son puits de dépôt et le retire en se fermant', () => {
   // Une fenêtre fermée ne prend plus rien : le puits n'existe que tant que son
   // formulaire est dans le document.
   assert.match(addMedia, /isOpen: \(\) => form\.isConnected/);
-  assert.match(addMedia, /onClose: \(\) => \{ dropSurface = null; \}/);
+  // La fermeture annule aussi le lookup de cache en attente : un timer ou une
+  // réponse tardive ne doit pas toucher un formulaire qui n'existe plus.
+  assert.match(addMedia, /onClose: \(\) => \{/);
+  assert.match(addMedia, /clearTimeout\(cacheTimer\)/);
+  assert.match(addMedia, /cacheToken \+= 1;/);
+  assert.match(addMedia, /dropSurface = null;/);
   assert.match(ui, /options\.onClose\(\)/);
 });
 

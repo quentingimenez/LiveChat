@@ -45,6 +45,18 @@
                   },
                   {
                       "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "un_forcage_remplace_la_cover_et_supprime_l_ancien_fichier",
+                      "filter":  "media::thumbnails::tests::un_forcage_remplace_la_cover_et_supprime_l_ancien_fichier",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
+                      "function":  "une_ingestion_normale_garde_la_cover_existante",
+                      "filter":  "media::thumbnails::tests::une_ingestion_normale_garde_la_cover_existante",
+                      "category":  "local"
+                  },
+                  {
+                      "file":  "apps/lc-server/src/media/thumbnails.rs",
                       "function":  "le_rattrapage_regenere_une_image_disparue",
                       "filter":  "media::thumbnails::tests::le_rattrapage_regenere_une_image_disparue",
                       "category":  "local"

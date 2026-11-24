@@ -86,6 +86,7 @@ Conventions appliquées dans tout le module :
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |
+| `POST` | `/overlay/media-board/cache` | `Authorization: Bearer` (`AddMedia` ou `TriggerPlayback`, refusé en lecture seule) | `media_cache.rs:lookup_cache` | `200 {cached:bool}` |
 | `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` | `media_upload.rs:create_upload` | `201 {uploadId}` |
 | `PUT` | `/overlay/media-board/uploads/{uploadId}/parts?offset=` | `Authorization: Bearer` | `media_upload.rs:put_part` | `200 {received}` |
 | `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` | `media_upload.rs:complete_upload` | `202 {ingestionId}` |
@@ -385,7 +386,7 @@ Payload d'un item (`item_payload`, `media_board.rs:1457-1480`, complété par
   "media": { "id": "<uuid>", "kind": "video", "mime": "video/mp4",
              "durationSec": 30, "width": 1280, "height": 720,
              "isVertical": false, "sizeBytes": 12345,
-             "sourceUrl": "https://…" }
+             "sourceUrl": "https://…", "edited": false }
 }
 ```
 
@@ -412,6 +413,12 @@ La signature est `media_url::sign(MEDIA_URL_SECRET,
 "board:{assetId}", clientId, exp)` : le préfixe `board:` rend une URL de lecture
 inutilisable sur cette route, et inversement. `mediaUrl` ne contient **aucun
 jeton** et s'utilise verbatim dans `src` (`<video>`/`<img>`).
+
+`media.edited` est vrai quand l'asset a été produit par une édition
+(`source_hash = upload:sha256:<hex>`) tout en gardant l'URL d'origine comme
+`sourceUrl`. L'overlay s'en sert pour ne pas confondre cette carte avec le média
+d'origine : réimporter l'URL crée une seconde carte avec l'original, et l'action
+« Rafraîchir depuis la source » n'est pas proposée sur une carte éditée.
 
 ### 7.2 `POST /overlay/media-board/items` (`media_board.rs:189`)
 
@@ -451,7 +458,9 @@ connecté au moment de la fin.
 
 `forceRefresh` est interprété par `coerce_flag` (booléen JSON, `"true"`,
 `"1"`, `"yes"`, `"on"`, casse ignorée) — parité `toBooleanFlag` legacy
-(AUD-A2-014).
+(AUD-A2-014). Un bypass remplace aussi la cover : la miniature de plateforme
+est redemandée (à défaut, une frame du nouveau média), l'ancienne image reste
+affichée tant que la nouvelle n'est pas attachée, puis son fichier est supprimé.
 
 ### 7.2.1 `GET /overlay/media-board/ingestions`
 
@@ -476,6 +485,29 @@ Réponse `200` :
 - session invitée autorisée (lecture) ;
 - but : après une reconnexion WebSocket, le board récupère un `media.ingestion`
   manqué. La purge est paresseuse (insertion/lecture), aucun timer.
+
+### 7.2.1.1 `POST /overlay/media-board/cache` (`media_cache.rs`)
+
+Lookup global, en lecture seule : le dialogue Ajouter demande au serveur s'il
+possède déjà un média réutilisable pour l'URL, pour n'offrir « Ignorer le cache
+serveur » que dans ce cas. Le client ne consulte pas la board locale : un média
+ingéré par une autre guilde ou par un client ingest est vu.
+
+- **Autorisation** : Bearer ; une session `INVITE_READ_ONLY` reçoit
+  `403 read_only_session` **avant la lecture du corps**. Il faut `AddMedia` ou
+  `TriggerPlayback`, puis la visibilité de la board de sa guilde (`403
+  forbidden` sinon). Le lookup est global mais ne renvoie aucune métadonnée.
+- **Corps** `{"url":"…"}`, limite 8 Kio ; URL trim ≤ 2 048 caractères,
+  `http(s)` seulement, hôte public, sans credentials, sans résolution DNS.
+  `400 invalid_payload` sinon.
+- **Réponse** `200 {"cached": bool}`, jamais d'id, titre, chemin, guilde ou
+  horodatage ; `Cache-Control: no-store`. L'URL n'est pas journalisée.
+- **Lecture pure** : mêmes conditions qu'un cache hit (`READY`, non expiré,
+  fichier présent) via `assets::is_cached`, sans repousser `expires_at` ni
+  `last_accessed_at` ; une consultation ne prolonge pas la vie du média.
+- Un lien court TikTok ne correspond qu'à l'asset écrit pour l'URL courte, pas
+  à celui obtenu après résolution réseau (le lookup ne fait aucun réseau). Le
+  rate limit IP global de l'overlay s'applique.
 
 ### 7.2.2 `/overlay/media-board/uploads` (`media_upload.rs`)
 
@@ -600,7 +632,11 @@ dans le board, puis renvoyées par `upload`). Corps JSON :
   média que l'original ; refus si un autre item de la guilde montre déjà le
   média obtenu ; quota du board vérifié sur la différence de taille ; le nouvel
   asset est épinglé et l'ancien retrouve l'échéance du cache s'il n'est plus
-  montré par aucun item (même transaction que la mise à jour de l'item).
+  montré par aucun item (même transaction que la mise à jour de l'item). Quand
+  l'ancien média venait d'une URL `http(s)`, cette URL est recopiée sur le
+  nouvel asset : l'identité reste `upload:sha256:<hex>`, mais la carte garde sa
+  source et `media.edited` passe à `true`. Un fichier importé localement n'a pas
+  d'URL à conserver.
 
 ### 7.3 `GET`/`HEAD /overlay/media-board/media/{assetId}` (`media_board.rs:get_media`)
 

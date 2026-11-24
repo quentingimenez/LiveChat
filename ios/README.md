@@ -2,9 +2,9 @@
 
 Trois raccourcis **signés**, prêts à importer, sont fournis ici :
 
-- [LiveChat-Photo.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Photo.shortcut) : partage une image depuis Photos.
-- [LiveChat-Video.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Video.shortcut) : partage une vidéo depuis Photos.
-- [LiveChat-Lien.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/main/ios/LiveChat-Lien.shortcut) : partage un lien YouTube, TikTok, X, Instagram, etc.
+- [LiveChat-Photo.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/4999c5d1de2397dbc6719fc607a5a60f661d8823/ios/LiveChat-Photo.shortcut) : partage une image depuis Photos.
+- [LiveChat-Video.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/4999c5d1de2397dbc6719fc607a5a60f661d8823/ios/LiveChat-Video.shortcut) : partage une vidéo depuis Photos.
+- [LiveChat-Lien.shortcut](https://raw.githubusercontent.com/quentingimenez/LiveChat/4999c5d1de2397dbc6719fc607a5a60f661d8823/ios/LiveChat-Lien.shortcut) : partage un lien YouTube, TikTok, X, Instagram, etc.
 
 Chaque raccourci ne reçoit qu'un seul type de média. Dans la feuille de partage,
 iOS n'affiche donc que celui qui correspond à ce que tu partages : une image
@@ -16,6 +16,29 @@ Les deux premiers envoient le fichier partagé à `POST /ingest/file`. Le troisi
 envoie `{"url": "<lien partagé>"}` à `POST /ingest` : le serveur télécharge le
 média avec yt-dlp, comme pour l'extension navigateur. Tous utilisent le jeton
 d'ingestion comme `Authorization: Bearer ...`.
+
+## Épinglage des raccourcis
+
+Les liens d'import sont épinglés sur le SHA de commit
+`4999c5d1de2397dbc6719fc607a5a60f661d8823` (celui qui a touché les trois
+fichiers le 2026-11-20), et non sur `main` : une URL qui suit une branche peut
+changer de contenu sans que personne ne le voie. Il n'existe aucun tag de
+version (`v*`) dans ce dépôt : le SHA de commit est donc la seule référence
+immuable disponible.
+
+**Règle de mise à jour.** Quand un `.shortcut` change, mettre à jour **ensemble**,
+dans le **même commit** : le SHA des trois liens (aligné sur le nouveau dernier
+commit des fichiers) **et** les trois empreintes du tableau ci-dessous. Un lien
+épinglé dont l'empreinte documentée diverge du fichier local est un bug : le test
+`scripts/release/tests/IosShortcuts.Tests.ps1` le refuse.
+
+Empreintes **SHA-256** des fichiers distribués (`Get-FileHash -Algorithm SHA256`) :
+
+| Fichier | Empreinte SHA-256 |
+| --- | --- |
+| `LiveChat-Photo.shortcut` | `7C65ACDB4ECC51965F74872AF4E2BAA64C5D41ACEAB8732F2CC814C521A1B153` |
+| `LiveChat-Video.shortcut` | `98C4DA45EF2BE8FFDFCAD54A138892BB3B4390A5DBF9F0A5ACFCB06DE582898B` |
+| `LiveChat-Lien.shortcut` | `32D43E3B95B536BC78CC9E754729877F43C877262D3E5B627DA0FA9DF7C60603` |
 
 ## Importer sur l'iPhone
 

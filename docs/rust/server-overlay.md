@@ -451,7 +451,9 @@ connecté au moment de la fin.
 
 `forceRefresh` est interprété par `coerce_flag` (booléen JSON, `"true"`,
 `"1"`, `"yes"`, `"on"`, casse ignorée) — parité `toBooleanFlag` legacy
-(AUD-A2-014).
+(AUD-A2-014). Un bypass remplace aussi la cover : la miniature de plateforme
+est redemandée (à défaut, une frame du nouveau média), l'ancienne image reste
+affichée tant que la nouvelle n'est pas attachée, puis son fichier est supprimé.
 
 ### 7.2.1 `GET /overlay/media-board/ingestions`
 

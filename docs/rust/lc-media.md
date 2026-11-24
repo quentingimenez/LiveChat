@@ -492,7 +492,10 @@ paramétrable en interne (`run_command_with_limit`, privé) pour les tests.
   `READY`/`source_hash`, sémaphore, budget cache, `record_failure` ;
   l'asset existant est rafraîchi par le pipeline puis épinglé via `assets::pin`,
   et un échec `forceRefresh` supprime les variantes partielles
-  (`discard_partial_files`). Les variantes périmées restent nettoyées lors d'une
+  (`discard_partial_files`). Un `forceRefresh` remplace aussi la cover
+  (`spawn_cover_refresh`) : miniature de plateforme ou frame du nouveau média,
+  l'ancienne restant en place jusqu'à l'attachement de la nouvelle, puis son
+  fichier est supprimé. Les variantes périmées restent nettoyées lors d'une
   publication réussie (`remove_other_variants`) ; le worker de purge serveur
   traite le reste.
 - **Durcissement sécurité COR-15 (task-49)** : SVG refusé et jamais servi, MIME

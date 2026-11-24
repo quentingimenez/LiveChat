@@ -8,6 +8,11 @@
 //! (fade-in, title card, encoder warm-up): taking the first frame is what made
 //! black cards, so the frame is chosen among several moments of the video.
 //!
+//! A forced re-ingestion (cache bypass) calls [`spawn_cover_refresh`] instead:
+//! the old picture is not trusted, the platform or the new media is asked
+//! again, and the previous cover file is removed once the replacement is
+//! stored. The old picture stays in place if the new one cannot be made.
+//!
 //! The picture is recorded as the asset's cover (`media_assets.cover_asset_id`,
 //! see [`assets::attach_cover`]). The board then shows it on the video's card,
 //! and every guild with that video on its board gets a `board_changed`
@@ -62,11 +67,20 @@ fn attempted() -> &'static Mutex<HashSet<String>> {
     ATTEMPTED.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-fn first_attempt(source_hash: &str) -> bool {
-    match attempted().lock() {
-        Ok(mut set) => set.insert(source_hash.to_owned()),
-        Err(poisoned) => poisoned.into_inner().insert(source_hash.to_owned()),
+/// Claims the cover attempt for `source_hash`.
+///
+/// An ordinary ingestion is tried once per process. A forced re-ingestion
+/// clears that mark first: the point of the bypass is to ask the platform (or
+/// extract a frame) again, even when the previous attempt left a picture.
+fn claim_attempt(source_hash: &str, force: bool) -> bool {
+    let mut set = match attempted().lock() {
+        Ok(set) => set,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if force {
+        set.remove(source_hash);
     }
+    set.insert(source_hash.to_owned())
 }
 
 /// `true` when an asset gets a cover: every video, from its platform when it
@@ -86,13 +100,45 @@ pub fn spawn_cover_fetch(
     source: Option<MediaSource>,
     resolved: Option<ResolvedMedia>,
 ) {
-    if !wants_cover(asset) || !first_attempt(&asset.source_hash) {
+    spawn_cover_task(context, asset, source, resolved, false);
+}
+
+/// Starts a fresh cover for a forced re-ingestion (cache bypass).
+///
+/// Unlike [`spawn_cover_fetch`], this ignores both the "already tried" mark
+/// and an existing cover file: the source is asked again, and a frame of the
+/// newly ingested media replaces a platform picture that may have changed.
+/// The previous picture is removed only after the replacement is stored.
+pub fn spawn_cover_refresh(
+    context: &ThumbnailContext,
+    asset: &MediaAsset,
+    source: Option<MediaSource>,
+    resolved: Option<ResolvedMedia>,
+) {
+    spawn_cover_task(context, asset, source, resolved, true);
+}
+
+fn spawn_cover_task(
+    context: &ThumbnailContext,
+    asset: &MediaAsset,
+    source: Option<MediaSource>,
+    resolved: Option<ResolvedMedia>,
+    force: bool,
+) {
+    if !wants_cover(asset) || !claim_attempt(&asset.source_hash, force) {
         return;
     }
     let context = context.clone();
     let asset_id = asset.id;
     tokio::spawn(async move {
-        fetch_and_attach(&context, asset_id, source.as_ref(), resolved.as_ref()).await;
+        fetch_and_attach(
+            &context,
+            asset_id,
+            source.as_ref(),
+            resolved.as_ref(),
+            force,
+        )
+        .await;
     });
 }
 
@@ -103,6 +149,7 @@ async fn fetch_and_attach(
     asset_id: MediaAssetId,
     source: Option<&MediaSource>,
     resolved: Option<&ResolvedMedia>,
+    force: bool,
 ) {
     let assets_repo = context.db.media_assets();
     let (asset, existing_cover) = match (
@@ -118,13 +165,18 @@ async fn fetch_and_attach(
     };
     // A cover row without its file is a broken card (an older build deleted the
     // file, or a storage restore lost it): make the picture again instead of
-    // trusting the row.
+    // trusting the row. A forced re-ingestion always makes it again, even when
+    // the old picture is still on disk.
+    let mut previous_cover_path = None;
     if let Some(cover_id) = existing_cover {
         match assets_repo.get(cover_id).await {
             Ok(Some(cover))
                 if cover_file_present(context, cover.is_ready(), Some(&cover.storage_path)) =>
             {
-                return;
+                if !force {
+                    return;
+                }
+                previous_cover_path = Some(cover.storage_path);
             }
             Ok(_) => {
                 tracing::info!(
@@ -164,7 +216,35 @@ async fn fetch_and_attach(
             return;
         }
     };
-    store_cover(context, &asset, &cover, origin).await;
+    if !store_cover(context, &asset, &cover, origin).await {
+        return;
+    }
+    // The old file is removed only once the replacement is attached: a failed
+    // platform fetch or poster extraction leaves the card's picture in place.
+    if force {
+        if let Some(previous) = previous_cover_path {
+            if !previous.trim().is_empty() && Path::new(&previous) != cover.storage_path.as_path() {
+                match context.storage.remove_path(Path::new(&previous)) {
+                    Ok(true) => {
+                        tracing::info!(
+                            asset_id = %asset.id.to_canonical(),
+                            path = %previous,
+                            "ancienne image de la vidéo supprimée"
+                        );
+                    }
+                    Ok(false) => {}
+                    Err(error) => {
+                        tracing::warn!(
+                            asset_id = %asset.id.to_canonical(),
+                            path = %previous,
+                            error = %error,
+                            "ancienne image de la vidéo non supprimée"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Records a cover that already exists for `asset` and tells the boards.
@@ -460,7 +540,7 @@ pub fn spawn_cover_backfill(state: &AppState) {
 /// covered like a link: there is no platform to ask, so its own frames are
 /// used.
 ///
-/// The pass does not go through `first_attempt`: it is the repair path, and a
+/// The pass does not go through `claim_attempt`: it is the repair path, and a
 /// source tried earlier by an ingestion may still have no file on disk.
 pub(crate) async fn backfill_covers(context: &ThumbnailContext) {
     let videos = match videos_without_cover(&context.db).await {
@@ -475,7 +555,7 @@ pub(crate) async fn backfill_covers(context: &ThumbnailContext) {
             continue;
         }
         let source = MediaSource::from_raw(&source_url);
-        fetch_and_attach(context, asset_id, source.as_ref(), None).await;
+        fetch_and_attach(context, asset_id, source.as_ref(), None, false).await;
     }
 }
 
@@ -598,6 +678,23 @@ mod tests {
         let mut image = uploaded_video("upload:sha256:photo", Path::new("photo.jpg"), now);
         image.kind = MediaKind::Image;
         assert!(!wants_cover(&image));
+    }
+
+    #[test]
+    fn un_forcage_reclame_une_nouvelle_tentative_d_image() {
+        // Without this, a cache bypass would keep the cover made by the first
+        // ingestion: the process-global mark would skip the refresh.
+        let hash = format!(
+            "test:cover-attempt:{}",
+            MediaAssetId::new_v4().to_canonical()
+        );
+        assert!(claim_attempt(&hash, false));
+        assert!(!claim_attempt(&hash, false));
+        assert!(
+            claim_attempt(&hash, true),
+            "le bypass doit pouvoir redemander une image"
+        );
+        assert!(!claim_attempt(&hash, false));
     }
 
     /// The context a background task would get, without the admin hub.
@@ -875,6 +972,29 @@ mod tests {
         panic!("aucune image produite pour la vidéo");
     }
 
+    async fn wait_for_cover_replacement(
+        db: &Db,
+        asset_id: MediaAssetId,
+        previous_path: &str,
+    ) -> MediaAsset {
+        for _ in 0..400 {
+            if let Some(cover_id) = db.media_assets().cover_of(asset_id).await.expect("lecture") {
+                if let Some(cover) = db
+                    .media_assets()
+                    .get(cover_id)
+                    .await
+                    .expect("lecture de l'image")
+                {
+                    if cover.storage_path != previous_path && !Path::new(previous_path).exists() {
+                        return cover;
+                    }
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("l'image de la vidéo n'a pas été remplacée");
+    }
+
     #[tokio::test]
     #[ignore = "nécessite ffmpeg installé"]
     async fn une_video_televersee_recoit_une_frame_de_elle_meme() {
@@ -914,6 +1034,124 @@ mod tests {
             "le fichier de l'image existe"
         );
         assert!(cover.source_hash.starts_with("upload:sha256:frame#cover"));
+    }
+
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn un_forcage_remplace_la_cover_et_supprime_l_ancien_fichier() {
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("force-cover.mp4");
+        black_intro(&fixture.config, &input);
+        let video = uploaded_video("upload:sha256:force-cover", &input, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+
+        // The old picture is present and READY: without the force flag the
+        // cover task would stop here and keep it.
+        let previous_path = fixture.storage.root().join("ancienne.cover.png");
+        std::fs::write(&previous_path, b"ancienne image").expect("ancienne image");
+        let mut previous_cover = uploaded_video(
+            &format!("{}#cover", video.source_hash),
+            &previous_path,
+            fixture.now,
+        );
+        previous_cover.kind = MediaKind::Image;
+        previous_cover.mime = "image/png".into();
+        fixture
+            .db
+            .media_assets()
+            .insert(&previous_cover)
+            .await
+            .expect("image");
+        fixture
+            .db
+            .media_assets()
+            .set_cover(video.id, Some(previous_cover.id))
+            .await
+            .expect("liaison");
+        let context = context(&fixture);
+        assert!(
+            cover_file_present(&context, true, Some(&previous_cover.storage_path)),
+            "l'ancienne image est bien présente avant le forcage"
+        );
+
+        spawn_cover_refresh(&context, &video, None, None);
+        let replaced =
+            wait_for_cover_replacement(&fixture.db, video.id, &previous_cover.storage_path).await;
+
+        assert_eq!(
+            replaced.id, previous_cover.id,
+            "la ligne d'image est réutilisée"
+        );
+        assert_ne!(replaced.storage_path, previous_cover.storage_path);
+        assert!(
+            Path::new(&replaced.storage_path).is_file(),
+            "la nouvelle image est écrite"
+        );
+        assert!(!previous_path.exists(), "l'ancien fichier est supprimé");
+        assert!(replaced.size_bytes > 0, "la version board change");
+    }
+
+    #[tokio::test]
+    #[ignore = "nécessite ffmpeg installé"]
+    async fn une_ingestion_normale_garde_la_cover_existante() {
+        let fixture = fixture().await;
+        let input = fixture.storage.root().join("garde-cover.mp4");
+        black_intro(&fixture.config, &input);
+        let video = uploaded_video("upload:sha256:keep-cover", &input, fixture.now);
+        fixture
+            .db
+            .media_assets()
+            .insert(&video)
+            .await
+            .expect("vidéo");
+
+        let previous_path = fixture.storage.root().join("garde.cover.png");
+        std::fs::write(&previous_path, b"image conservee").expect("ancienne image");
+        let mut previous_cover = uploaded_video(
+            &format!("{}#cover", video.source_hash),
+            &previous_path,
+            fixture.now,
+        );
+        previous_cover.kind = MediaKind::Image;
+        previous_cover.mime = "image/png".into();
+        fixture
+            .db
+            .media_assets()
+            .insert(&previous_cover)
+            .await
+            .expect("image");
+        fixture
+            .db
+            .media_assets()
+            .set_cover(video.id, Some(previous_cover.id))
+            .await
+            .expect("liaison");
+
+        spawn_cover_fetch(&context(&fixture), &video, None, None);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        let cover_id = fixture
+            .db
+            .media_assets()
+            .cover_of(video.id)
+            .await
+            .expect("lecture")
+            .expect("image liée");
+        let cover = fixture
+            .db
+            .media_assets()
+            .get(cover_id)
+            .await
+            .expect("lecture")
+            .expect("image");
+        assert_eq!(cover.id, previous_cover.id);
+        assert_eq!(cover.storage_path, previous_cover.storage_path);
+        assert!(previous_path.exists(), "l'ancienne image est conservée");
     }
 
     #[tokio::test]

@@ -8,8 +8,8 @@
 // Paramètres est demandée au démarrage via board_take_pending_view),
 // ?nozone (le shell ne connaît aucun écran : l'éditeur image n'a alors pas de
 // zone d'affichage et retombe sur son estimation 1920 × 1080),
-// ?update=ready|downloading (état de l'updater au démarrage, pour voir le
-// bandeau de mise à jour de la board).
+// ?update=ready|downloading (état de l'updater au démarrage, visible dans
+// Paramètres → À propos).
 // Depuis la console : `__mock.emit(event, payload)`,
 // `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`,
 // `__mock.reconnect(guildId)` (coupure puis retour du WebSocket),
@@ -105,9 +105,8 @@
   // value right after one click, not the previous guild's until the next one.
   const GUILD_VOLUMES = { 111: 0.4, 222: 0.75, 333: 0.5, 444: 1, 555: 1 };
 
-  // `?update=ready|downloading` : état de l'updater au démarrage, pour prévoir
-  // le bandeau de mise à jour de la board (« Plus tard » et l'erreur
-  // d'installation sont testables aussi).
+  // `?update=ready|downloading` : état de l'updater au démarrage, visible dans
+  // Paramètres → À propos (l'erreur d'installation y est testable aussi).
   const UPDATE_VERSION = '3.2.0';
 
   function initialUpdate() {
@@ -119,7 +118,7 @@
       state: flag,
       currentVersion: '3.1.0',
       availableVersion: UPDATE_VERSION,
-      message: flag === 'ready' ? `La version ${UPDATE_VERSION} est prête à être installée.` : `Téléchargement de la version ${UPDATE_VERSION}…`,
+      message: flag === 'ready' ? `La version ${UPDATE_VERSION} est prête : installation automatique dès que l'overlay est libre.` : `Téléchargement de la version ${UPDATE_VERSION}…`,
     };
   }
 
@@ -537,7 +536,7 @@
     return delay(300)
       .then(() => setUpdate('downloading', '3.2.0', 'Téléchargement de la version 3.2.0…'))
       .then(() => delay(600))
-      .then(() => setUpdate('ready', '3.2.0', 'La version 3.2.0 est prête à être installée.'));
+      .then(() => setUpdate('ready', '3.2.0', "La version 3.2.0 est prête : installation automatique dès que l'overlay est libre."));
   }
 
   function api(payload) {

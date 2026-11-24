@@ -44,7 +44,6 @@ const STYLESHEETS = [
   'contextmenu.css',
   'toast.css',
   'say.css',
-  'update-notice.css',
   'settings.css',
   'editor.css',
 ];

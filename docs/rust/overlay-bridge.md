@@ -633,20 +633,25 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 ### 12.5 Updater (actif depuis 3.1.1)
 
 - `updater.rs` vérifie à chaque ouverture de la board (`windows::show_board`),
-  au démarrage puis toutes les 6 h (builds release), télécharge et vérifie la mise à jour en arrière-plan, puis attend un
-  clic pour l'installer (voir `docs/rust/overlay-release.md` §6).
+  au démarrage puis toutes les 6 h (builds release), télécharge et vérifie la
+  mise à jour en arrière-plan. En release, il l'installe ensuite tout seul dès
+  que l'overlay est resté libre 60 s (aucun média à l'écran ni en file, aucun
+  envoi en cours, board masquée, aucune pose de zone) ; si l'overlay n'a jamais
+  été libre, il l'installe à la fermeture sans relancer LiveChat, pour qu'elle
+  s'applique au démarrage suivant (voir `docs/rust/overlay-release.md` §6).
 - `overlay_check_updates` (board) lance une vérification tout de suite et renvoie
   l'`UpdateStatus` final ; rien ne se passe si une vérification tourne déjà ou si
   une version attend d'être installée.
-- `overlay_install_update` (board) installe la version prête : l'installeur
-  passif quitte l'overlay et le relance. Sans version prête : erreur
-  « Aucune mise à jour prête à installer. ».
+- `overlay_install_update` (board) installe la version prête immédiatement :
+  l'installeur passif quitte l'overlay et le relance. Sans version prête :
+  erreur « Aucune mise à jour prête à installer. ».
 - `UpdateStatus` = `{state, currentVersion, availableVersion, message}` avec
   `state` ∈ `idle`, `checking`, `downloading`, `up_to_date`, `ready`, `error` ;
   il est aussi publié dans `settings.update` à chaque changement
   (`overlay://device-settings`).
-- Tray : entrée « Redémarrer et installer la version X » avant « Quitter » tant
-  qu'une version est prête.
+- L'état n'est affiché que dans Paramètres → À propos : la board n'a plus de
+  bandeau de mise à jour et le tray n'a plus d'entrée d'installation. Le bouton
+  « Redémarrer et installer la version X » des Paramètres installe tout de suite.
 
 ### 12.6 Harnais de développement hors bundle (A6-015)
 

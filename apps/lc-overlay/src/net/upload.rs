@@ -96,6 +96,17 @@ impl UploadRegistry {
         self.lock().remove(upload_id)
     }
 
+    /// `true` while at least one upload is still in flight.
+    ///
+    /// Entries whose request already ended are ignored: a board reloaded
+    /// mid-upload never calls `finish`, and such a stale entry must not block
+    /// an automatic overlay update forever.
+    pub(crate) fn has_active(&self) -> bool {
+        self.lock()
+            .values()
+            .any(|entry| !entry.task.inner().is_finished())
+    }
+
     /// Cancels an upload; `false` when the id is unknown. The aborted task
     /// abandons the server-side upload.
     pub(crate) fn cancel(&self, upload_id: &str) -> bool {
@@ -649,6 +660,41 @@ mod tests {
         registry
             .insert("after-free".to_string(), dummy_entry())
             .expect("envoi accepté après libération");
+    }
+
+    #[tokio::test]
+    async fn registry_reports_only_uploads_still_in_flight() {
+        let registry = UploadRegistry::default();
+        assert!(!registry.has_active());
+
+        registry
+            .insert("pending".to_string(), dummy_entry())
+            .expect("envoi accepté");
+        assert!(registry.has_active());
+
+        registry
+            .insert("finished".to_string(), finished_entry())
+            .expect("envoi accepté");
+        while !registry
+            .lock()
+            .get("finished")
+            .is_some_and(|entry| entry.task.inner().is_finished())
+        {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            registry.has_active(),
+            "un envoi encore en cours doit compter"
+        );
+
+        assert!(registry.cancel("pending"));
+        assert!(
+            !registry.has_active(),
+            "un envoi terminé ne doit pas bloquer l'installation"
+        );
+
+        assert!(registry.take("finished").is_some());
+        assert!(!registry.has_active());
     }
 
     #[tokio::test]

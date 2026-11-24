@@ -160,10 +160,23 @@ Preuves collectées sur les artefacts de la build du 2026-11-10 :
   bouton « Rechercher une mise à jour » des Paramètres marche partout). Une version
   plus récente est téléchargée et sa signature vérifiée en arrière-plan, puis
   gardée en mémoire.
-- L'installation reste un clic de l'utilisateur, pour ne jamais couper un live :
-  entrée tray « Redémarrer et installer la version X » ou bouton des Paramètres.
-  L'installeur NSIS tourne en mode passif (`installMode: passive`, barre de
-  progression sans question) et relance LiveChat.
+- En build release, l'installation est automatique, sans clic. Dès qu'une
+  version est prête, un superviseur l'installe quand l'overlay est resté libre
+  60 s : aucun média à l'écran ni en file, aucun envoi en cours, board masquée,
+  aucune pose de zone en cours. Il reprend l'attente dès que l'overlay redevient
+  occupé, et un échec ne boucle pas (la vérification suivante peut retélécharger
+  la mise à jour).
+- Si l'overlay n'a jamais été libre, la mise à jour est installée à la fermeture
+  (« Quitter ») sans relancer LiveChat : elle s'applique au démarrage suivant.
+  L'installation manuelle et l'état de la mise à jour sont regroupés dans
+  Paramètres → À propos ; la board n'affiche plus de bandeau et le tray n'a plus
+  d'entrée d'installation. L'installeur NSIS tourne en mode passif
+  (`installMode: passive`, barre de progression sans question) et relance
+  LiveChat, sauf à la fermeture.
+- Limite Windows : un arrêt ou une déconnexion peut terminer le process sans
+  passer par « Quitter » ; le paquet gardé en mémoire est alors perdu, et la
+  mise à jour est retéléchargée puis installée au démarrage suivant (l'overlay
+  doit de nouveau rester libre 60 s).
 - L'état (`idle`, `checking`, `downloading`, `up_to_date`, `ready`, `error`) est
   exposé dans `settings.update` (`overlay://device-settings`).
 

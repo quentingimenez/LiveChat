@@ -495,6 +495,7 @@ mod tests {
     fn pinned_client_builds_for_public_target() {
         let config = DownloadConfig {
             timeout: Duration::from_secs(5),
+            ingest_timeout: Duration::from_secs(60),
             short_url_timeout: Duration::from_secs(3),
             max_size_bytes: 1024,
             max_concurrent_ingestions: 1,
@@ -532,6 +533,7 @@ mod tests {
         });
         let config = DownloadConfig {
             timeout: Duration::from_secs(5),
+            ingest_timeout: Duration::from_secs(60),
             short_url_timeout: Duration::from_secs(3),
             max_size_bytes: 1024,
             max_concurrent_ingestions: 1,

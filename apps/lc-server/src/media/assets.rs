@@ -226,6 +226,14 @@ pub async fn begin_processing(
 
 /// Passe un asset en `READY` avec les métadonnées du fichier normalisé.
 ///
+/// L'identité de la ligne (`source_hash`) reste celle fixée par
+/// [`begin_processing`] : elle n'est jamais réécrite. Le pipeline résout parfois
+/// la source en une autre URL que celle écrite par l'appelant (lien court
+/// TikTok `vm.tiktok.com` → `/@…/video/<id>`) ; recopier l'empreinte résolue
+/// heurtait la contrainte `UNIQUE` dès que le même média existait déjà sous sa
+/// forme canonique, et `/ingest` répondait 500. Seule `source_url` suit l'URL
+/// canonique résolue.
+///
 /// L'échéance ne remplace que si elle est plus lointaine (`MAX`) : le `now`
 /// d'une ingestion qui a démarré avant l'épinglage du board ne doit pas écraser
 /// l'échéance à 100 ans posée entre-temps.
@@ -238,13 +246,12 @@ pub async fn mark_ready(
 ) -> MediaServiceResult<MediaAsset> {
     sqlx::query(
         "UPDATE media_assets \
-            SET source_hash = ?, source_url = ?, source_title = ?, kind = ?, mime = ?, \
+            SET source_url = ?, source_title = ?, kind = ?, mime = ?, \
                 duration_sec = ?, width = ?, height = ?, is_vertical = ?, storage_path = ?, \
                 size_bytes = ?, status = 'READY', error = NULL, last_accessed_at = ?, \
                 expires_at = MAX(expires_at, ?) \
           WHERE id = ?",
     )
-    .bind(ready.source_hash.as_str())
     .bind(ready.source_url.as_str())
     .bind(ready.source_title.as_deref())
     .bind(ready.kind.as_db_str())
@@ -639,6 +646,58 @@ mod tests {
         assert_eq!(asset.source_title.as_deref(), Some("video"));
         assert!(asset.error.is_none());
         assert!(asset.is_ready());
+    }
+
+    /// Le pipeline résout un lien court en son URL canonique : l'empreinte
+    /// résolue ne doit jamais être recopiée sur la ligne créée pour le lien
+    /// court, sinon la même vidéo déjà ingérée sous sa forme canonique fait
+    /// échouer l'ingestion (violation `UNIQUE`, 500 sur `/ingest` pour un
+    /// partage `vm.tiktok.com`).
+    #[tokio::test]
+    async fn mark_ready_keeps_the_identity_of_the_processing_row() {
+        let (_dir, db) = database().await;
+        let now = test_now();
+        let canonical = source("https://www.tiktok.com/@alexandro.dance/video/7706300590749535495");
+        let short = source("https://vm.tiktok.com/ZGdXTEuAQ/");
+        assert_ne!(
+            short.source_hash, canonical.source_hash,
+            "le lien court garde sa propre identité tant qu'il n'est pas suivi"
+        );
+
+        // La même vidéo est déjà en cache sous son URL canonique.
+        let existing = begin_processing(&db, &canonical, now, cache_ttl(&config()))
+            .await
+            .expect("ligne canonique");
+        let processing = begin_processing(&db, &short, now, cache_ttl(&config()))
+            .await
+            .expect("ligne du lien court");
+
+        // Le pipeline a suivi le lien court : l'asset prêt porte l'empreinte
+        // canonique, celle de la ligne déjà présente.
+        let ready = ReadyAsset::from_ingested(&ingested(
+            "https://www.tiktok.com/@alexandro.dance/video/7706300590749535495",
+            PathBuf::from("/tmp/video.mp4"),
+        ));
+        assert_eq!(ready.source_hash, existing.source_hash);
+
+        let asset = mark_ready(&db, processing.id, &ready, now, cache_ttl(&config()))
+            .await
+            .expect(
+                "la ligne du lien court est mise à jour sans revendiquer l'empreinte canonique",
+            );
+
+        assert_eq!(asset.id, processing.id);
+        assert_eq!(asset.source_hash, short.source_hash);
+        assert_eq!(asset.source_url, canonical.canonical_url);
+        assert!(asset.is_ready());
+        // La ligne canonique n'a pas bougé.
+        let untouched = db
+            .media_assets()
+            .get(existing.id)
+            .await
+            .expect("lecture")
+            .expect("ligne canonique");
+        assert_eq!(untouched.source_hash, ready.source_hash);
     }
 
     #[tokio::test]

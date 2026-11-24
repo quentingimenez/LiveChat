@@ -66,6 +66,7 @@ propre à chaque ingestion.
 | `storage.cache_max_total_bytes` | `MEDIA_CACHE_MAX_TOTAL_MB` | 5120 Mo |
 | `storage.board_max_total_bytes` | `MEDIA_BOARD_MAX_TOTAL_MB` | 15360 Mo |
 | `download.timeout` | `MEDIA_DOWNLOAD_TIMEOUT_MS` | 180 s |
+| `download.ingest_timeout` | `MEDIA_INGEST_TIMEOUT_MS` | 240 s |
 | `download.max_size_bytes` | `MEDIA_MAX_SIZE_MB` | 2048 Mo |
 | `download.max_concurrent_ingestions` | `MEDIA_MAX_CONCURRENT_INGESTIONS` | 2 |
 | `download.user_agent` | `MEDIA_USER_AGENT` | Chrome/133 |

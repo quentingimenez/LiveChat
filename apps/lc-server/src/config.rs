@@ -295,6 +295,8 @@ pub struct Config {
     pub media_board_max_total_mb: u64,
     /// `MEDIA_DOWNLOAD_TIMEOUT_MS` (défaut `180000`).
     pub media_download_timeout_ms: u64,
+    /// `MEDIA_INGEST_TIMEOUT_MS` (défaut `240000`).
+    pub media_ingest_timeout_ms: u64,
     /// `MEDIA_TRANSLATE_ENABLED` (défaut `true`).
     pub media_translate_enabled: bool,
     /// `MEDIA_TRANSLATE_ENDPOINT` (facultatif).
@@ -481,6 +483,12 @@ impl Config {
             "entier positif",
             parse_u64,
         )?;
+        let media_ingest_timeout_ms = env.parsed(
+            "MEDIA_INGEST_TIMEOUT_MS",
+            240_000,
+            "entier positif",
+            parse_u64,
+        )?;
         let media_translate_enabled =
             env.parsed("MEDIA_TRANSLATE_ENABLED", true, "true ou false", parse_bool)?;
         let media_translate_endpoint = env.optional_string("MEDIA_TRANSLATE_ENDPOINT");
@@ -601,6 +609,7 @@ impl Config {
             media_cache_max_total_mb,
             media_board_max_total_mb,
             media_download_timeout_ms,
+            media_ingest_timeout_ms,
             media_translate_enabled,
             media_translate_endpoint,
             media_translate_timeout_ms,
@@ -978,6 +987,7 @@ mod tests {
         assert_eq!(config.media_cache_max_total_mb, 5120);
         assert_eq!(config.media_board_max_total_mb, 15360);
         assert_eq!(config.media_download_timeout_ms, 180_000);
+        assert_eq!(config.media_ingest_timeout_ms, 240_000);
         assert!(config.media_translate_enabled);
         assert_eq!(config.media_translate_endpoint, None);
         assert_eq!(config.media_translate_timeout_ms, 3_000);
@@ -1042,6 +1052,7 @@ mod tests {
             ("MEDIA_CACHE_MAX_TOTAL_MB", "1024"),
             ("MEDIA_BOARD_MAX_TOTAL_MB", "2048"),
             ("MEDIA_DOWNLOAD_TIMEOUT_MS", "60000"),
+            ("MEDIA_INGEST_TIMEOUT_MS", "90000"),
             ("MEDIA_TRANSLATE_ENABLED", "false"),
             ("MEDIA_TRANSLATE_ENDPOINT", "https://translate.example/gtx"),
             ("MEDIA_TRANSLATE_TIMEOUT_MS", "4200"),
@@ -1134,6 +1145,7 @@ mod tests {
         assert_eq!(config.media_cache_max_total_mb, 1024);
         assert_eq!(config.media_board_max_total_mb, 2048);
         assert_eq!(config.media_download_timeout_ms, 60_000);
+        assert_eq!(config.media_ingest_timeout_ms, 90_000);
         assert!(!config.media_translate_enabled);
         assert_eq!(
             config.media_translate_endpoint.as_deref(),

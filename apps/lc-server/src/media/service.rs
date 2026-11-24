@@ -101,7 +101,9 @@ impl MediaService {
     ///
     /// `media` est prioritaire sur `url` (sémantique legacy). `force_refresh`
     /// ignore le cache et ré-ingère la source. Un asset réutilisé est touché
-    /// (expiration prolongée) mais n'est pas re-téléchargé.
+    /// (expiration prolongée) mais n'est pas re-téléchargé. Un lien court TikTok
+    /// est résolu avant la lecture du cache : le lien et son URL canonique
+    /// désignent le même asset (voir [`Self::resolve_ingest_source`]).
     pub async fn ingest(
         &self,
         url: Option<&str>,
@@ -119,12 +121,7 @@ impl MediaService {
                 ))
             })?;
 
-        let source = MediaSource::from_raw(raw).ok_or_else(|| {
-            MediaServiceError::Media(MediaError::new(
-                MediaErrorCode::UnsupportedSource,
-                format!("source média non supportée : {raw}"),
-            ))
-        })?;
+        let source = self.resolve_ingest_source(raw).await?;
 
         let now = self.clock.now();
         let ttl = assets::cache_ttl(&self.config);
@@ -157,13 +154,15 @@ impl MediaService {
         let ready = ReadyAsset::from_ingested(&ingested);
 
         // Vérifie le budget AVANT de persister le fichier normalisé en base,
-        // comme le legacy (en cas d'échec, l'asset reste FAILED).
+        // comme le legacy (en cas d'échec, l'asset reste FAILED). L'asset écarté
+        // du budget est celui de la ligne écrite, pas l'empreinte résolue par le
+        // pipeline : les deux peuvent différer (lien court non suivi).
         if let Err(error) = quotas::enforce_cache_budget(
             &self.db,
             &self.storage,
             &self.config,
             ready.size_bytes_u64(),
-            Some(ready.source_hash.as_str()),
+            Some(asset.source_hash.as_str()),
         )
         .await
         {
@@ -185,6 +184,42 @@ impl MediaService {
             ingested.resolved.clone(),
         );
         Ok(ready_asset)
+    }
+
+    /// Source écrite en base pour une URL brute d'ingestion.
+    ///
+    /// Un lien court TikTok est suivi avant toute écriture : la ligne créée
+    /// doit porter l'empreinte de l'URL canonique que le pipeline résoudra.
+    /// Sans cela, le lien court et son URL longue créaient deux assets pour le
+    /// même média — puis `mark_ready` recopiait l'empreinte résolue sur la
+    /// ligne du lien court, heurtait la contrainte `UNIQUE` et `/ingest`
+    /// répondait 500. La résolution est best-effort : un lien non suivi garde
+    /// son identité brute, que le pipeline résoudra de son côté.
+    async fn resolve_ingest_source(&self, raw: &str) -> MediaServiceResult<MediaSource> {
+        let fallback = MediaSource::from_raw(raw).ok_or_else(|| {
+            MediaServiceError::Media(MediaError::new(
+                MediaErrorCode::UnsupportedSource,
+                format!("source média non supportée : {raw}"),
+            ))
+        })?;
+
+        if !lc_media::source::is_tiktok_short_url(raw) {
+            return Ok(fallback);
+        }
+
+        match lc_media::source::resolve_source(&self.config, raw).await {
+            Ok(Some(resolved)) => Ok(resolved),
+            // `resolve_short_url` rend l'URL d'origine quand elle n'a pas pu
+            // être suivie : l'identité brute reste alors celle de la ligne.
+            Ok(None) => Ok(fallback),
+            Err(error) => {
+                tracing::debug!(
+                    source = %raw,
+                    "lien court non résolu, identité brute conservée : {error}"
+                );
+                Ok(fallback)
+            }
+        }
     }
 
     /// What the background thumbnail tasks need.
@@ -518,6 +553,37 @@ mod tests {
             .expect("cache hit");
         assert_eq!(ingested.id, asset.id);
         assert_eq!(ingested.status, MediaStatus::Ready);
+    }
+
+    /// Hors lien court, l'identité écrite est celle de `MediaSource` : la
+    /// résolution n'est tentée que pour `vm.tiktok.com` et consorts. Sinon une
+    /// source locale (`file:`, `gtts:`) ou une URL canonique passerait par la
+    /// garde d'ingestion, qui les refuse.
+    #[tokio::test]
+    async fn resolve_ingest_source_only_follows_short_links() {
+        let fixture = fixture().await;
+        let service = MediaService::new(
+            fixture.config.clone(),
+            fixture.db.clone(),
+            Arc::new(SystemClock),
+        )
+        .expect("service");
+
+        for raw in [
+            "https://www.tiktok.com/@alexandro.dance/video/7706300590749535495?_r=1&_t=ZG-9Beyix5zRNQ",
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=42",
+            "file:/chemin/video.mp4",
+        ] {
+            let source = service
+                .resolve_ingest_source(raw)
+                .await
+                .expect("source d'ingestion");
+            assert_eq!(
+                source,
+                MediaSource::from_raw(raw).expect("source brute"),
+                "identité brute conservée pour {raw}"
+            );
+        }
     }
 
     #[tokio::test]

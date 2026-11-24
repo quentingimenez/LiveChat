@@ -785,6 +785,10 @@
   border: 1px solid #000;
   border-radius: 3px;
   background: #fff;
+  cursor: nwse-resize;
+  /* The box ignores the pointer, the handle must not: it is the only target
+     left when the object overflows the media. */
+  pointer-events: auto;
 }
 
 /* ------------------------------------------------------------- recadrage */
@@ -792,6 +796,7 @@
   position: absolute;
   inset: 0;
   overflow: hidden;
+  pointer-events: auto;
 }
 
 .crop-box {
@@ -856,6 +861,9 @@
 .av-frame-layer {
   position: absolute;
   z-index: 1;
+  /* Empty outside the crop: it must let the annotation surface take the
+     pointer. The crop layer turns the pointer back on for itself. */
+  pointer-events: none;
 }
 
 /* ------------------------------------------------- annotations de la vidéo */

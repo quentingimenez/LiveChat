@@ -15,12 +15,14 @@ import {
   annotationStyle,
   annotationsToDataUrl,
   boundsOf,
+  clampedDelta,
+  clampedMask,
   colorRow,
   ensureSize,
   makeCanvas,
   paintAnnotationsOn,
   paintObject,
-  scaled,
+  resized,
   translated,
 } from './annotations.js';
 import {
@@ -409,18 +411,28 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
       } else {
         object.x2 = point.x;
         object.y2 = point.y;
+        if (object.type === 'mask') {
+          const { width, height } = bounds();
+          Object.assign(object, clampedMask(object, width, height));
+        }
       }
       syncMasks();
       paint();
     } else if (drag.kind === 'move') {
       drag.moved = true;
-      replaceObject(translated(drag.origin, point.x - drag.start.x, point.y - drag.start.y));
+      const dx = point.x - drag.start.x;
+      const dy = point.y - drag.start.y;
+      const delta = object.type === 'mask'
+        ? clampedDelta(boundsOf(drag.origin), bounds().width, bounds().height, dx, dy)
+        : { dx, dy };
+      replaceObject(translated(drag.origin, delta.dx, delta.dy));
       syncMasks();
       paint();
     } else {
       drag.moved = true;
       const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
-      replaceObject(scaled(drag.origin, drag.anchor, factor));
+      const next = resized(drag.origin, drag.anchor, point, factor, 8 * point.per);
+      replaceObject(next.type === 'mask' ? clampedMask(next, bounds().width, bounds().height) : next);
       syncMasks();
       paint();
     }

@@ -129,6 +129,34 @@ describe('ingest client', () => {
     }
   });
 
+  it('ne laisse pas fuir le jeton dans les logs ni dans le message d’erreur réseau', async () => {
+    const token = settings.ingestToken;
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockRejectedValue(new Error(`Échec pour Authorization: Bearer ${token} sur ${settings.apiUrl}`)),
+    );
+
+    const result = await sendToIngest(
+      {
+        mode: 'quick',
+        url: 'https://www.youtube.com/watch?v=abc123',
+      },
+      settings,
+    );
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(JSON.stringify(result.error)).not.toContain(token);
+    }
+    for (const spy of [errorSpy, warnSpy, logSpy]) {
+      const logs = JSON.stringify(spy.mock.calls);
+      expect(logs, `Le jeton apparaît dans un log console (${spy.mock.calls.length} appels)`).not.toContain(token);
+    }
+  });
+
   it('retourne un succès 201', async () => {
     vi.stubGlobal(
       'fetch',

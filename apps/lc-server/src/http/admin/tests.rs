@@ -872,11 +872,16 @@ async fn auth_403_pour_un_client_non_loopback() {
 #[tokio::test]
 async fn auth_401_without_session_and_bearer_ignored() {
     let harness = Harness::new().await;
-    let (status, _, bytes) = harness
+    let (status, headers, bytes) = harness
         .send(harness.request_without_session(Method::GET, "/admin/api/overview"))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "un 401 sans cookie ne doit pas en effacer un ; reçu: {:?}",
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME)
+    );
 
     // The legacy Bearer token is gone entirely.
     let mut request = harness.request_without_session(Method::GET, "/admin/api/overview");
@@ -884,18 +889,26 @@ async fn auth_401_without_session_and_bearer_ignored() {
         header::AUTHORIZATION,
         header::HeaderValue::from_str(&format!("Bearer {TOKEN}")).expect("en-tête valide"),
     );
-    let (status, _, bytes) = harness.send(request).await;
+    let (status, headers, bytes) = harness.send(request).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     assert_eq!(json_or_null(&bytes)["error"], "unauthorized");
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "un jeton Bearer ignoré ne doit pas non plus effacer de cookie"
+    );
 
     // The session endpoint reports the configured methods.
-    let (status, _, bytes) = harness
+    let (status, headers, bytes) = harness
         .send(harness.request_without_session(Method::GET, "/admin/auth/session"))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let body = json_or_null(&bytes);
     assert_eq!(body["error"], "unauthorized");
     assert_eq!(body["methods"], json!({ "discord": false, "secret": true }));
+    assert!(
+        set_cookie_headers(&headers, session::SESSION_COOKIE_NAME).is_empty(),
+        "GET /admin/auth/session sans cookie ne doit rien effacer"
+    );
 }
 
 #[tokio::test]
@@ -1052,6 +1065,69 @@ async fn auth_expired_sessions_are_purged_at_startup() {
         .execute(harness.db().pool())
         .await
         .expect("expiration forcée");
+
+    let removed = super::purge_expired_sessions(harness.db())
+        .await
+        .expect("nettoyage de démarrage");
+    assert_eq!(removed, 1);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions")
+        .fetch_one(harness.db().pool())
+        .await
+        .expect("comptage des sessions");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
+async fn auth_idle_session_is_refused_and_deleted() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    sqlx::query("UPDATE admin_sessions SET last_seen_at = 0 WHERE token_hash = ?1")
+        .bind(sha256_hex(&token))
+        .execute(harness.db().pool())
+        .await
+        .expect("inactivité forcée");
+
+    let cookie = format!("{}={token}", session::SESSION_COOKIE_NAME);
+    let (status, headers, _) = harness
+        .send(harness.request_with_cookie(Method::GET, "/admin/auth/session", &cookie))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let cleared = set_cookie_headers(&headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(cleared.len(), 1, "le cookie mort doit être effacé");
+    assert!(
+        cleared[0].contains("Max-Age=0"),
+        "cookie effacé attendu, reçu: {}",
+        cleared[0]
+    );
+    let (status, api_headers, _) = harness
+        .send(harness.request_with_cookie(Method::GET, "/admin/api/overview", &cookie))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let api_cleared = set_cookie_headers(&api_headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(
+        api_cleared.len(),
+        1,
+        "l'extracteur doit aussi effacer le cookie mort"
+    );
+    assert!(api_cleared[0].contains("Max-Age=0"));
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions")
+        .fetch_one(harness.db().pool())
+        .await
+        .expect("comptage des sessions");
+    assert_eq!(count, 0, "la session inactive est supprimée à la lecture");
+}
+
+#[tokio::test]
+async fn auth_idle_sessions_are_purged_at_startup() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    sqlx::query("UPDATE admin_sessions SET last_seen_at = 0 WHERE token_hash = ?1")
+        .bind(sha256_hex(&token))
+        .execute(harness.db().pool())
+        .await
+        .expect("inactivité forcée");
 
     let removed = super::purge_expired_sessions(harness.db())
         .await

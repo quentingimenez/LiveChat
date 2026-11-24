@@ -1,6 +1,6 @@
 import { Window } from 'happy-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { OpenComposeModalParams } from './composeModalYoutube';
+import type { OpenComposeModalParams } from './composeModal';
 
 /**
  * Ce que ce fichier protège : une page ne doit pas pouvoir envoyer un

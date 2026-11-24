@@ -65,6 +65,19 @@ pub(crate) fn simple_error(status: StatusCode, code: &str) -> Response {
     error_response(status, json!({ "error": code }))
 }
 
+/// Jeton d'ingestion inactif depuis trop longtemps : 401 distinct du 503
+/// « ingestion désactivée ». Le message invite à ré-appairer depuis la board,
+/// sans promettre qu'un ancien jeton puisse être réutilisé.
+pub(crate) fn expired_token_error() -> Response {
+    error_response(
+        StatusCode::UNAUTHORIZED,
+        json!({
+            "error": "ingest_token_expired",
+            "message": "Ce jeton d'ingestion a expiré après 180 jours sans activité. Ré-appairez l'appareil depuis la board pour obtenir un nouveau jeton ; l'ancien jeton n'est plus valable sur l'ancien appareil."
+        }),
+    )
+}
+
 /// `{"error":"invalid_payload","message":...}` (message optionnel).
 pub(crate) fn invalid_payload(message: Option<&str>) -> Response {
     let payload = match message {

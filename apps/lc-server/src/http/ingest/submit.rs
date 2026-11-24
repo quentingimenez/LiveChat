@@ -47,7 +47,10 @@ use crate::media::MediaService;
 
 use super::auth::{self, IngestAuth};
 use super::body::NormalizedIngest;
-use super::{invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME};
+use super::{
+    expired_token_error, invalid_payload, media_service_error, simple_error,
+    DEFAULT_INGEST_AUTHOR_NAME,
+};
 
 /// Author prefix of an ingest client paired from the overlay (`member:<id>`).
 ///
@@ -136,6 +139,7 @@ pub async fn submit(
     // 1. Authentification — toujours avant la validation du corps.
     let client = match auth::resolve(&state, &headers).await {
         Ok(IngestAuth::Client(client)) => client,
+        Ok(IngestAuth::Expired) => return expired_token_error(),
         Ok(IngestAuth::Missing { enabled: true }) => {
             return simple_error(StatusCode::UNAUTHORIZED, "unauthorized");
         }
@@ -884,6 +888,60 @@ mod tests {
         let (status, body) = post_raw(fixture.app.clone(), Some(TOKEN), "{\"text\": ").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "invalid_payload", "{body}");
+    }
+
+    #[tokio::test]
+    async fn idle_expired_client_returns_401_ingest_token_expired() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let client = fixture
+            .db
+            .ingest_clients()
+            .list()
+            .await
+            .expect("clients")
+            .into_iter()
+            .next()
+            .expect("client");
+        // Force l'inactivité : last_seen_at et created_at trop anciens.
+        let stale = UtcDateTime::now() - Duration::days(181);
+        sqlx::query("UPDATE ingest_clients SET created_at = ?, last_seen_at = ? WHERE id = ?")
+            .bind(lc_domain::datetime_to_ms(stale))
+            .bind(lc_domain::datetime_to_ms(stale))
+            .bind(client.id.to_canonical())
+            .execute(fixture.db.pool())
+            .await
+            .expect("inactivité forcée");
+
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "ingest_token_expired");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("board"),
+            "un message de ré-appairage est attendu"
+        );
+
+        // Aucune écriture de heartbeat sur un client expiré.
+        let stored = fixture
+            .db
+            .ingest_clients()
+            .get(client.id)
+            .await
+            .expect("lecture")
+            .expect("client");
+        // La precision SQLite est la milliseconde : comparer en ms tronqués.
+        assert_eq!(
+            stored.last_seen_at.map(lc_domain::datetime_to_ms),
+            Some(lc_domain::datetime_to_ms(stale))
+        );
     }
 
     #[tokio::test]

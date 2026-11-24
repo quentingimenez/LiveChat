@@ -113,6 +113,99 @@ chargement temporaire sert au développement, la version publiée passe par AMO
 - Navigateurs supportés : Chromium ≥ 148 (namespace `browser` avec promesses) et Firefox ≥ 140.
 - Certificats TLS invalides/self-signed non supportés côté extension.
 
+### Jeton d'ingestion et stockage local — décision C-03
+
+`INGEST_API_TOKEN` est sauvegardé en clair dans `browser.storage.local` avec la
+configuration. Au démarrage du service worker, l'extension appelle
+`setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })` sur cette area (Chrome ≥ 102)
+pour la rendre illisible depuis les content scripts injectés sur les pages tierces.
+L'API est absente sur Firefox et sur Chrome < 102 : l'appel est alors un no-op
+documenté, sans erreur. Les content scripts n'accèdent plus au stockage : la
+préférence de thème leur est fournie par messages runtime.
+
+**Limite technique assumée, pas une acceptation de confort :** ce n'est pas du
+chiffrement. `storage.local` reste en clair dans le profil du navigateur
+(sauvegarde de profil, synchro, autre processus local). Chiffrer le jeton avec
+une clé conservée dans la même extension ne protégerait de rien : en MV3, sans
+keystore OS ni native messaging dans cette extension, toute clé stockée à côté
+du chiffré est lisible par le même adversaire. Le backlog autorise explicitement
+« chiffrer **ou** documenter l'acceptation » ; la réduction de surface above
+est le correctif réel, la limitation de stockage est documentée avec sa preuve :
+la [documentation Chrome de `StorageArea.setAccessLevel`](https://developer.chrome.com/docs/extensions/reference/api/storage/StorageArea#method-setAccessLevel)
+indique que `local` autorise par défaut les contextes fiables *et* non fiables,
+et que `TRUSTED_CONTEXTS` restreint l'accès aux contextes de l'extension.
+
+Le jeton n'est jamais journalisé : sur le chemin d'erreur d'`ingestClient`, les
+messages d'erreur réseau sont filtrés (`lib/redact.ts`) avant d'être exposés,
+et le champ « Tester la config » des options applique le même masquage.
+
+**Suivi :** la protection dépend du niveau d'accès fourni par le navigateur ;
+si un moteur expose un stockage sécurisé (keystore OS ou native messaging), le
+chiffrement redevient envisageable et cette note devra être révisée.
+
+### Durée de vie du jeton d'ingestion
+
+Comme pour le raccourci iOS, le serveur refuse le jeton d'ingestion de
+l'extension après **180 jours sans activité** : la requête échoue alors avec
+`ingest_token_expired`. Tant que l'extension envoie régulièrement du contenu,
+chaque envoi remet le compteur à zéro (aucune date d'expiration n'est stockée).
+Un jeton déjà expiré ne peut pas être réactivé : génère un nouveau code
+d'appairage (`/pair-code`) depuis la board, puis récupère la configuration dans
+les options de l'extension pour obtenir un nouveau jeton. Le jeton reste stocké
+en clair dans le profil comme décrit ci-dessus ; cette limite d'inactivité
+s'applique côté serveur et ne modifie pas ce mode de stockage.
+
+### Permissions d'hôte optionnelles — décision C-05
+
+`manifests/base.json` déclare `optional_host_permissions: ["https://*/*"]`. Ce
+motif paraît large, mais c'est le **motif déclaratif minimal** pour cette
+extension, et il ne dit pas ce qui est effectivement accordé à l'exécution.
+
+**Pourquoi `https://*/*` et pas plus étroit.** Le serveur LiveChat est
+auto-hébergé : l'administrateur choisit une origine HTTPS arbitraire pour
+`API_URL`, inconnue au moment de la compilation de l'extension. En MV3,
+`permissions.request({ origins: [...] })` ne peut accorder que des motifs
+**déjà déclarés** dans le manifeste (les `host_permissions` statiques sont
+accordées à l'installation, ce qui donnerait accès à l'API sans geste
+utilisateur, et les hôtes média listés plus haut ne sont pas l'API). Le motif
+`https://*/*` est donc la plus petite déclaration adéquate : il couvre toutes
+les origines HTTPS, **jamais** `http:`. Un motif déclaratif plus étroit
+(`<all_urls>`, `*://*/*`) serait au contraire un élargissement ; il est interdit
+par les tests d'invariant (`src/manifests.test.ts`).
+
+**Ce qui est réellement demandé.** La demande est toujours rétrécie à l'origine
+configurée, au moment du geste utilisateur : `requestApiHostPermission` et
+`ensureApiPermissionTransition` (`src/lib/settings.ts`) appellent
+`browser.permissions.request({ origins: [toApiOriginPattern(apiUrl)] })`.
+`toApiOriginPattern` (`src/lib/url.ts`) n'utilise que l'origine de l'URL via
+`normalizeApiUrl`, donc chemin, query et slash final sont ignorés : par exemple
+`https://board.example.com/ingest` demande uniquement
+`https://board.example.com/*`. Lors d'un changement d'API,
+`ensureApiPermissionTransition` demande la **nouvelle** origine en premier
+(Firefox exige le geste utilisateur), puis retire l'ancienne uniquement si la
+demande a été accordée.
+
+**`http:` est refusé.** `normalizeApiUrl` lève `URL API invalide. Utilise
+https://.` pour toute URL `http:` ; la validation de la configuration et
+`toApiOriginPattern` héritent de ce refus. Aucune permission `http:` n'est donc
+jamais demandée, y compris pour `localhost`.
+
+**Ce que voit l'utilisateur.** Au moment où il sauvegarde la configuration, le
+navigateur affiche une invite d'autorisation ciblant uniquement l'origine de
+l'`API_URL` (pas « tous les sites »). L'utilisateur peut refuser : la
+configuration n'est alors pas sauvegardée et l'extension n'obtient aucun accès
+supplémentaire. La page d'options affiche l'état réel via
+`hasApiHostPermission` (`Accordée` / `Manquante` pour cette origine). Aucune
+autorisation n'est demandée au chargement de l'extension ni pendant la navigation
+sur les sites média : les permissions de ces derniers sont statiques et
+déclarées dans `host_permissions`.
+
+**Garde-fous.** `src/manifests.test.ts` épingle les listes exactes des
+permissions, hôtes et motif optionnel, et rejette tout motif large dans les
+trois manifestes ; `src/lib/settings.test.ts` vérifie que la demande ne contient
+que l'origine configurée. Élargir les permissions d'hôte exige une revue de
+sécurité et la mise à jour de ces tests.
+
 ## CI / Release GitHub
 
 Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monorepo)

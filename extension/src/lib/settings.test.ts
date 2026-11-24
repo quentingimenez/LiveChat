@@ -1,5 +1,11 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { getSettings, normalizeSettingsInput } from './settings';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  ensureApiPermissionTransition,
+  getSettings,
+  hasApiHostPermission,
+  normalizeSettingsInput,
+  requestApiHostPermission,
+} from './settings';
 
 describe('settings validation', () => {
   it('normalise une config valide', () => {
@@ -82,6 +88,84 @@ describe('settings validation', () => {
     if (!result.ok) {
       expect(result.message).toContain('INGEST_API_TOKEN');
     }
+  });
+});
+
+describe('rétrécissement de la demande de permission d’hôte (C-05)', () => {
+  const permissionsRequest = vi.fn(async (permissions: { origins: string[] }) => permissions.origins.length > 0);
+  const permissionsContains = vi.fn(async (permissions: { origins: string[] }) => permissions.origins.length === 0);
+  const permissionsRemove = vi.fn(async () => false);
+  const storageGet = vi.fn(async () => ({}));
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    permissionsRequest.mockImplementation(async () => true);
+    permissionsContains.mockImplementation(async () => false);
+    permissionsRemove.mockImplementation(async () => false);
+    storageGet.mockImplementation(async () => ({}));
+
+    const storageArea = {
+      get: storageGet,
+      set: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined),
+    };
+
+    vi.stubGlobal('browser', {
+      permissions: {
+        contains: permissionsContains,
+        request: permissionsRequest,
+        remove: permissionsRemove,
+      },
+      storage: {
+        local: storageArea,
+        session: storageArea,
+        onChanged: { addListener: vi.fn(), removeListener: vi.fn() },
+      },
+      runtime: { lastError: undefined },
+    });
+  });
+
+  it('demande uniquement l’origine configurée, pas le motif déclaratif large', async () => {
+    await expect(requestApiHostPermission('https://board.example.com')).resolves.toBe(true);
+
+    expect(permissionsRequest).toHaveBeenCalledTimes(1);
+    expect(permissionsRequest).toHaveBeenCalledWith({ origins: ['https://board.example.com/*'] });
+  });
+
+  it('ignore chemin, query et slash final : seule l’origine est demandée', async () => {
+    await expect(
+      ensureApiPermissionTransition(' HTTPS://Board.Example.Com:8443/ingest?token=abc/ '),
+    ).resolves.toMatchObject({ granted: true, pattern: 'https://board.example.com:8443/*' });
+
+    expect(permissionsRequest).toHaveBeenCalledTimes(1);
+    expect(permissionsRequest).toHaveBeenCalledWith({ origins: ['https://board.example.com:8443/*'] });
+  });
+
+  it('ne fait aucune demande pour une URL API en http (refus de normalizeApiUrl)', async () => {
+    await expect(requestApiHostPermission('http://board.example.com')).rejects.toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+    await expect(ensureApiPermissionTransition('http://localhost:3000')).rejects.toThrow(
+      'URL API invalide. Utilise https://.',
+    );
+
+    expect(permissionsRequest).not.toHaveBeenCalled();
+  });
+
+  it('sonde uniquement l’origine configurée sans émettre de demande', async () => {
+    // Les fonctions de demande restent idempotentes (Firefox impose le geste
+    // utilisateur) : aucune ne court-circuite `request`. L'invariant vérifiable
+    // est que la lecture d'état `hasApiHostPermission` ne sonde QUE l'origine
+    // configurée — jamais le motif déclaratif large — et qu'aucune demande
+    // n'est émise sur ce chemin de vérification.
+    permissionsContains.mockImplementationOnce(async () => true);
+
+    await expect(hasApiHostPermission('https://board.example.com')).resolves.toBe(true);
+
+    expect(permissionsContains).toHaveBeenCalledTimes(1);
+    expect(permissionsContains).toHaveBeenCalledWith({ origins: ['https://board.example.com/*'] });
+    expect(permissionsRequest).not.toHaveBeenCalled();
   });
 });
 

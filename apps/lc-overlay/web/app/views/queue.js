@@ -409,6 +409,28 @@ export function renderQueue() {
                     'button',
                     {
                       class: 'btn is-quiet icon-btn',
+                      'aria-label': `Monter ${jobTitle(job)} dans la file`,
+                      title: 'Monter',
+                      disabled: index === 0,
+                      onClick: (event) => moveJob(job, -1, event.currentTarget),
+                    },
+                    icon('up'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      class: 'btn is-quiet icon-btn',
+                      'aria-label': `Descendre ${jobTitle(job)} dans la file`,
+                      title: 'Descendre',
+                      disabled: index === pending.length - 1,
+                      onClick: (event) => moveJob(job, 1, event.currentTarget),
+                    },
+                    icon('down'),
+                  ),
+                  h(
+                    'button',
+                    {
+                      class: 'btn is-quiet icon-btn',
                       'aria-label': `Retirer ${jobTitle(job)} de la file`,
                       title: 'Retirer',
                       onClick: (event) => removeJob(job, event.currentTarget),

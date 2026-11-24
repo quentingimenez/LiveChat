@@ -163,6 +163,7 @@ export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: 
   };
 
   // Déplacement clavier (flèches haut/bas sur la poignée) : un cran.
+  // Les boutons Monter/Descendre utilisent aussi ce chemin.
   const move = async (job: QueueJob, delta: number) => {
     const index = pending.findIndex((entry) => entry.id === job.id);
     const target = index + delta;
@@ -327,6 +328,28 @@ export function QueueTab({ guild, detail, detailUnavailable, refresh, notify }: 
               <td class="is-actions">
                 {job.status === 'playing' ? null : (
                   <span class="queue-actions">
+                    <button
+                      class="btn is-small is-quiet"
+                      type="button"
+                      title="Monter"
+                      aria-label={`Monter ${jobName(job)} dans la file`}
+                      disabled={reorderBusy || pending.findIndex((entry) => entry.id === job.id) === 0}
+                      onClick={() => void move(job, -1)}
+                    >
+                      <Icon name="up" />
+                    </button>
+                    <button
+                      class="btn is-small is-quiet"
+                      type="button"
+                      title="Descendre"
+                      aria-label={`Descendre ${jobName(job)} dans la file`}
+                      disabled={
+                        reorderBusy || pending.findIndex((entry) => entry.id === job.id) === pending.length - 1
+                      }
+                      onClick={() => void move(job, 1)}
+                    >
+                      <Icon name="down" />
+                    </button>
                     <button class="btn is-small is-quiet is-danger" type="button" onClick={() => void remove(job)}>
                       Retirer
                     </button>

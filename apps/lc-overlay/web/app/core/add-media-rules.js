@@ -21,6 +21,101 @@ export function showsPlayFields(action, canPlay) {
   return Boolean(canPlay) && action === 'play';
 }
 
+// The server cache bypass (`forceRefresh`) belongs to a link ingestion: the
+// server can download a link again even when it already holds the media. An
+// uploaded file has no such cache (it is keyed by its content), so the option
+// never applies to the file source.
+export function canBypassServerCache(mode) {
+  return mode === 'link';
+}
+
+// The bypass only makes sense when the server already holds the media: a new
+// link has no cached copy to ignore. `cached` comes from the server lookup;
+// a board hit is handled separately because the card itself proves the media
+// exists without another round trip.
+export function cacheBypassVisible(mode, cached) {
+  return canBypassServerCache(mode) && cached === true;
+}
+
+export function forceRefreshFor(mode, checked) {
+  return canBypassServerCache(mode) && checked === true;
+}
+
+// The URL worth a cache lookup: a trimmed http(s) link on the link source.
+// A file import is keyed by its content and has no server cache. The full
+// validation (public host, credentials, length) belongs to the server.
+export function cacheLookupUrl(mode, value) {
+  if (mode !== 'link') {
+    return null;
+  }
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+// A source URL as the board stores it: http(s) only, trimmed, without its
+// fragment. The query is kept: a TikTok clip id lives there.
+function comparableSourceUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+// The board item already showing `value`, when it is a link. Used by the add
+// dialog before it submits: adding the same link again would be a no-op, so the
+// submit stays disabled until a forced refresh is asked for. An uploaded media
+// has no http source URL and never matches a typed link.
+export function boardItemForUrl(items, value) {
+  const wanted = comparableSourceUrl(value);
+  if (!wanted || !Array.isArray(items)) {
+    return null;
+  }
+  return items.find((item) => comparableSourceUrl(item && item.media && item.media.sourceUrl) === wanted) || null;
+}
+
+// An edited media is content-addressed (`upload:sha256:…`) but keeps the URL
+// it was imported from. Adding that URL again is not the same media as the
+// edited card: the server creates a second card with the original, so this
+// must not be treated as a duplicate.
+export function boardItemIsEdited(item) {
+  return Boolean(item && item.media && item.media.edited === true);
+}
+
+// Whether the add submit must wait for the bypass: the media is already on the
+// board, and the add would only re-pin the existing card without changing it.
+// An edited card points at another asset, so the add creates the original as a
+// second card and is allowed without the bypass. A forced refresh makes the
+// submission meaningful again for a real duplicate. A play-once is not an add:
+// it may play the card already there without touching the cache.
+export function boardDuplicateNeedsRefresh(action, mode, item, forceRefresh) {
+  return action === 'add'
+    && mode === 'link'
+    && Boolean(item)
+    && !boardItemIsEdited(item)
+    && forceRefresh !== true;
+}
+
 // Two picks of the same file hand back two File objects: it is one media, and
 // the import must not list it twice. Name, size, type and last modified date
 // are what the picker gives to tell one file from another.

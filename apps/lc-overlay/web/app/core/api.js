@@ -14,6 +14,10 @@ const READ_TIMEOUT_MS = 15_000;
 // `options.silent` skips the activity bar (background prefetch).
 export async function apiForGuild(guildId, method, path, body, options = {}) {
   const silent = Boolean(options && options.silent === true);
+  const timeoutMs =
+    options && Number.isFinite(options.timeoutMs) && options.timeoutMs > 0
+      ? options.timeoutMs
+      : null;
   if (!silent) {
     beginActivity();
   }
@@ -21,7 +25,9 @@ export async function apiForGuild(guildId, method, path, body, options = {}) {
     const pending = invoke('guild_api', {
       payload: { guildId, method, path, body: body ?? null },
     });
-    const response = await (method === 'GET' ? withDeadline(pending, READ_TIMEOUT_MS) : pending);
+    const response = await (method === 'GET' || timeoutMs
+      ? withDeadline(pending, timeoutMs || READ_TIMEOUT_MS)
+      : pending);
     if (!response) {
       throw new Error('Le serveur n’a pas répondu.');
     }
@@ -52,6 +58,16 @@ export async function apiForGuild(guildId, method, path, body, options = {}) {
 
 export function api(method, path, body) {
   return apiForGuild(state.activeGuildId, method, path, body);
+}
+
+// Global, read-only cache probe used by the add dialog. The server answers
+// only whether it can reuse a media for this URL: no title, id or guild.
+export async function lookupMediaCache(guildId, url) {
+  const body = await apiForGuild(guildId, 'POST', '/overlay/media-board/cache', { url }, {
+    silent: true,
+    timeoutMs: 5000,
+  });
+  return body.cached === true;
 }
 
 // Runs an action, shows its error as a toast and returns `undefined` on

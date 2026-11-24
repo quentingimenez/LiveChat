@@ -20,13 +20,20 @@ import {
   MAX_DISPLAY_DURATION_SEC,
   parseDisplayDuration,
 } from '../core/format.js';
+import { lookupMediaCache } from '../core/api.js';
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import {
   addPickedFiles,
+  boardDuplicateNeedsRefresh,
+  boardItemForUrl,
+  boardItemIsEdited,
+  cacheBypassVisible,
+  cacheLookupUrl,
   defaultAction,
   duplicatePickMessage,
+  forceRefreshFor,
   initialSource,
   removePickedFile,
   showsPlayFields,
@@ -73,6 +80,12 @@ export function highlightAddDialog(active) {
 export function openAddDialog(options) {
   const prefill = options && typeof options.url === 'string' ? options.url : '';
   const prefillFiles = options && Array.isArray(options.files) ? options.files : [];
+  // The lookup outlives a single keystroke but not the dialog: both the
+  // debounce and a late response are dropped when it closes.
+  let cacheTimer = null;
+  let cacheToken = 0;
+  let lastCacheUrl = null;
+  let lastCached = false;
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = prefillFiles.slice();
@@ -88,8 +101,35 @@ export function openAddDialog(options) {
     const dualAction = canAdd && canPlay;
 
     // --- link fields ---
-    const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
+    const linkUrl = h('input', {
+      class: 'field',
+      type: 'url',
+      placeholder: 'https://…',
+      required: true,
+      value: prefill,
+      onInput: () => syncCacheOption(),
+    });
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre du média', maxlength: '240' });
+    // The server can download the link again instead of reusing its cached
+    // copy. The option belongs to a link ingestion and is only offered when
+    // the server global lookup says it already holds the media. The file
+    // source hides and disables it, and `forceRefreshFor` keeps a stale choice
+    // out of the body.
+    const forceRefreshInput = h('input', {
+      type: 'checkbox',
+      id: 'add-media-force-refresh',
+      onChange: () => updateSubmit(),
+    });
+    const forceRefreshOption = h(
+      'div',
+      { hidden: true },
+      h(
+        'label',
+        { class: 'switch cache-switch' },
+        forceRefreshInput,
+        h('span', null, 'Ignorer le cache serveur'),
+      ),
+    );
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
     const linkMessageLabel = h(
       'label',
@@ -173,6 +213,7 @@ export function openAddDialog(options) {
       { class: 'stack' },
       h('label', null, 'Lien du média', linkUrl),
       h('label', null, 'Titre (facultatif)', linkTitle),
+      forceRefreshOption,
       linkMessageLabel,
       linkDurationField,
     );
@@ -210,9 +251,95 @@ export function openAddDialog(options) {
         h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Action' }, addActionButton, playActionButton))
       : null;
     const submit = h('button', { class: 'btn is-primary', type: 'submit' }, action === 'play' ? 'Jouer une fois' : 'Ajouter au board');
+    const boardHint = h(
+      'p',
+      { class: 'add-media-board-hint', role: 'status', hidden: true },
+      'Le média est déjà présent sur la board.',
+    );
+    let boardItem = null;
 
     function updateSubmit() {
-      submit.disabled = mode === 'file' && chosenFiles.length === 0;
+      const noFile = mode === 'file' && chosenFiles.length === 0;
+      submit.disabled = noFile
+        || boardDuplicateNeedsRefresh(action, mode, boardItem, forceRefreshInput.checked);
+      // An edited card is not the original the URL points at: the add creates
+      // that original as a second card, so the duplicate sentence would be
+      // wrong and must stay hidden.
+      boardHint.hidden = !(
+        action === 'add'
+        && mode === 'link'
+        && boardItem !== null
+        && !boardItemIsEdited(boardItem)
+      );
+    }
+
+    // The board already showing the typed URL is known without a round trip:
+    // the add would only re-pin that card, so the submit waits for the bypass.
+    function syncBoardItem() {
+      boardItem = mode === 'link' ? boardItemForUrl(state.items, linkUrl.value) : null;
+      updateSubmit();
+    }
+
+    // The bypass is offered when the media is already on the board, or when
+    // the server global lookup says it holds a reusable copy. A short debounce
+    // groups keystrokes; the token drops a response that no longer matches the
+    // field. While a lookup is pending the switch stays hidden, and hiding it
+    // clears a choice made for a previous URL.
+    function applyCacheVisibility(visible) {
+      forceRefreshOption.hidden = !visible;
+      forceRefreshInput.disabled = !visible;
+      if (!visible) {
+        forceRefreshInput.checked = false;
+      }
+      updateSubmit();
+    }
+
+    function syncCacheOption() {
+      if (cacheTimer) {
+        clearTimeout(cacheTimer);
+        cacheTimer = null;
+      }
+      syncBoardItem();
+      const url = cacheLookupUrl(mode, linkUrl.value);
+      if (!url) {
+        cacheToken += 1;
+        lastCacheUrl = null;
+        lastCached = false;
+        applyCacheVisibility(false);
+        return;
+      }
+      // A board hit is immediate and does not depend on the server cache TTL:
+      // the card exists, so a forced refresh is meaningful.
+      if (mode === 'link' && boardItem !== null) {
+        applyCacheVisibility(true);
+        return;
+      }
+      if (url === lastCacheUrl) {
+        applyCacheVisibility(cacheBypassVisible(mode, lastCached));
+        return;
+      }
+      applyCacheVisibility(false);
+      const token = ++cacheToken;
+      cacheTimer = setTimeout(() => {
+        cacheTimer = null;
+        lookupMediaCache(state.activeGuildId, url)
+          .then((cached) => {
+            if (token !== cacheToken) {
+              return;
+            }
+            lastCacheUrl = url;
+            lastCached = cached;
+            applyCacheVisibility(cacheBypassVisible(mode, cached));
+          })
+          .catch(() => {
+            if (token !== cacheToken) {
+              return;
+            }
+            lastCacheUrl = null;
+            lastCached = false;
+            applyCacheVisibility(false);
+          });
+      }, 300);
     }
 
     // A field that does not apply is hidden *and* disabled: an invalid value
@@ -230,6 +357,7 @@ export function openAddDialog(options) {
       const showFile = play && mode === 'file' && chosenFiles.some(mayBeImage);
       fileDuration.disabled = !showFile;
       fileDurationField.hidden = !showFile;
+      syncCacheOption();
     }
 
     function setAction(next) {
@@ -366,6 +494,7 @@ export function openAddDialog(options) {
               message: playOnce ? linkMessage.value : '',
               playOnce,
               displayDurationSec,
+              forceRefresh: forceRefreshFor(mode, forceRefreshInput.checked),
             };
             close();
             startLinkUpload(payload);
@@ -398,6 +527,7 @@ export function openAddDialog(options) {
       h(
         'div',
         { class: 'actions' },
+        boardHint,
         h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
         submit,
       ),
@@ -448,5 +578,15 @@ export function openAddDialog(options) {
       }
     }, 0);
     return [h('h2', null, 'Ajouter un média'), form];
-  }, { width: 'wide', onClose: () => { dropSurface = null; } });
+  }, {
+    width: 'wide',
+    onClose: () => {
+      if (cacheTimer) {
+        clearTimeout(cacheTimer);
+        cacheTimer = null;
+      }
+      cacheToken += 1;
+      dropSurface = null;
+    },
+  });
 }

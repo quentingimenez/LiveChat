@@ -22,6 +22,7 @@
         "mime": "image/png",
         "sizeBytes": 2000002,
         "sourceUrl": "https://example.invalid/media.png",
+        "edited": false,
         "width": 640
       },
       "mediaAssetId": "e3a6ca5c-c3dd-47e4-9b1a-8560345e604a",
@@ -53,6 +54,7 @@
         "mime": "image/png",
         "sizeBytes": 2000001,
         "sourceUrl": "https://example.invalid/media.png",
+        "edited": false,
         "width": 640
       },
       "mediaAssetId": "7f9ee899-bc36-4882-8ebf-a172846aea4a",
@@ -84,6 +86,7 @@
         "mime": "image/png",
         "sizeBytes": 2000000,
         "sourceUrl": "https://example.invalid/media.png",
+        "edited": false,
         "width": 640
       },
       "mediaAssetId": "b59262b0-8cdf-434b-baca-415ee31b8cea",

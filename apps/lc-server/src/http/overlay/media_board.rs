@@ -40,7 +40,7 @@
 //!
 //! - item : `{id, guildId, mediaAssetId, title, message, createdByName, createdAt,
 //!   mediaUrl, mediaUrlExpiresAt,
-//!   media:{id,kind,mime,durationSec,width,height,isVertical,sizeBytes,sourceUrl}}`
+//!   media:{id,kind,mime,durationSec,width,height,isVertical,sizeBytes,sourceUrl,edited}}`
 //!   (`createdAt` en ISO-8601 UTC millisecondes, comme le JSON du legacy).
 //!   `mediaUrl` est une URL absolue signée une heure pour le client demandeur
 //!   (`board:{assetId}`), utilisable verbatim par `<img>`/`<video>` ;
@@ -80,6 +80,7 @@ use lc_protocol::{BoardChange, BoardChangedPayload, ServerMessage};
 use serde::Deserialize;
 use serde_json::Value;
 use time::UtcDateTime;
+use url::Url;
 
 use crate::app::AppState;
 use crate::ingestions::{IngestionEntry, StartIngestionError};
@@ -859,8 +860,8 @@ async fn replace_board_item_media_locked(
     now: UtcDateTime,
     released_expiry: UtcDateTime,
 ) -> Result<MediaAssetId, IngestionFailure> {
-    let previous_bytes: Option<i64> = sqlx::query_scalar(
-        "SELECT a.size_bytes FROM media_board_items b \
+    let previous: Option<(i64, String)> = sqlx::query_as(
+        "SELECT a.size_bytes, a.source_url FROM media_board_items b \
            JOIN media_assets a ON a.id = b.media_asset_id \
           WHERE b.id = ? AND b.guild_id = ?",
     )
@@ -874,7 +875,7 @@ async fn replace_board_item_media_locked(
             &lc_db::DbError::from(error),
         )
     })?;
-    let Some(previous_bytes) = previous_bytes else {
+    let Some((previous_bytes, previous_source_url)) = previous else {
         return Err(replace_failure(
             "le média à remplacer n'est plus sur le board",
         ));
@@ -933,6 +934,16 @@ async fn replace_board_item_media_locked(
         .map_err(|db_error| {
             completion_db_failure("overlay_media_board.replace_pin_asset", &db_error)
         })?;
+    // An edited link keeps the URL it came from: the rendered file has its own
+    // content hash, but the card must still be reachable from its source. A
+    // plain upload (`upload:…`) or an already-remote replacement is left as is.
+    if is_http_source_url(&previous_source_url) && !is_http_source_url(&asset.source_url) {
+        assets::set_source_url_on(connection, asset.id, &previous_source_url)
+            .await
+            .map_err(|db_error| {
+                completion_db_failure("overlay_media_board.replace_source_url", &db_error)
+            })?;
+    }
     Ok(previous)
 }
 
@@ -1716,8 +1727,24 @@ fn item_payload(item: &MediaBoardItem, asset: &MediaAsset) -> serde_json::Value 
             "isVertical": asset.is_vertical,
             "sizeBytes": asset.size_bytes,
             "sourceUrl": asset.source_url,
+            "edited": is_edited_asset(asset),
         },
     })
+}
+
+/// Whether the asset is an edited version of a link.
+///
+/// The rendered bytes are content-addressed (`upload:sha256:…`) while the
+/// imported URL is kept as the display source, so the board can still find the
+/// card from that link without pretending the original cache entry is the
+/// edited media.
+fn is_edited_asset(asset: &MediaAsset) -> bool {
+    asset.source_hash.starts_with("upload:sha256:") && is_http_source_url(&asset.source_url)
+}
+
+/// A public `http(s)` source, as stored for an imported link.
+fn is_http_source_url(raw: &str) -> bool {
+    matches!(Url::parse(raw), Ok(url) if matches!(url.scheme(), "http" | "https"))
 }
 
 /// Nom d'auteur affiché d'un client overlay (repli label legacy).

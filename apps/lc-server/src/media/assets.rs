@@ -117,14 +117,13 @@ pub fn cache_ttl(config: &MediaConfig) -> TimeDuration {
     TimeDuration::seconds(i64::try_from(config.storage.cache_ttl.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// Cherche un asset réutilisable pour cette empreinte de source.
+/// Returns the cached `READY` asset for this source, without touching it.
 ///
-/// Conditions identiques au legacy : statut `READY`, non expiré et fichier
-/// toujours présent sur disque. Un asset réutilisé voit son expiration repoussée
-/// (`touchMediaAsset`).
-pub async fn find_reusable(
+/// The same conditions as the legacy cache hit: `READY`, not expired, and the
+/// file is still on disk. Shared by the download cache hit and the read-only
+/// lookup route so they can never disagree.
+async fn ready_cached_asset(
     db: &Db,
-    config: &MediaConfig,
     source_hash: &str,
     now: UtcDateTime,
 ) -> MediaServiceResult<Option<MediaAsset>> {
@@ -144,13 +143,40 @@ pub async fn find_reusable(
         return Ok(None);
     }
 
+    Ok(Some(asset))
+}
+
+/// Cherche un asset réutilisable pour cette empreinte de source.
+///
+/// Conditions identiques au legacy : statut `READY`, non expiré et fichier
+/// toujours présent sur disque. Un asset réutilisé voit son expiration repoussée
+/// (`touchMediaAsset`).
+pub async fn find_reusable(
+    db: &Db,
+    config: &MediaConfig,
+    source_hash: &str,
+    now: UtcDateTime,
+) -> MediaServiceResult<Option<MediaAsset>> {
+    let Some(asset) = ready_cached_asset(db, source_hash, now).await? else {
+        return Ok(None);
+    };
+
     // La nouvelle expiration ne raccourcit jamais celle déjà accordée.
     let next_expiry = (now + cache_ttl(config)).max(asset.expires_at);
-    assets
+    db.media_assets()
         .touch_last_accessed(asset.id, now, next_expiry)
         .await?;
 
-    Ok(assets.get(asset.id).await?)
+    Ok(db.media_assets().get(asset.id).await?)
+}
+
+/// `true` when a reusable copy of this source is in the cache.
+///
+/// This is the read-only probe behind `POST /overlay/media-board/cache`: it
+/// checks exactly what a non-forced ingestion would reuse, but never extends
+/// the cache lifetime (a lookup must not keep a media alive).
+pub async fn is_cached(db: &Db, source_hash: &str, now: UtcDateTime) -> MediaServiceResult<bool> {
+    Ok(ready_cached_asset(db, source_hash, now).await?.is_some())
 }
 
 /// Crée (ou réarme) la ligne `PROCESSING` d'une ingestion.
@@ -301,6 +327,26 @@ pub async fn pin(
             asset_id.to_string(),
         )))
     })
+}
+
+/// Rewrites the display source of an asset without touching its identity.
+///
+/// An edited media is keyed by the hash of its rendered bytes, but it still
+/// comes from the URL the user imported: the board keeps that URL so the card
+/// can be found again from its source. The caller owns the transaction, like
+/// [`pin_on`].
+pub(crate) async fn set_source_url_on(
+    connection: &mut sqlx::SqliteConnection,
+    asset_id: MediaAssetId,
+    source_url: &str,
+) -> lc_db::DbResult<()> {
+    sqlx::query("UPDATE media_assets SET source_url = ? WHERE id = ?")
+        .bind(source_url)
+        .bind(asset_id.to_canonical())
+        .execute(&mut *connection)
+        .await
+        .map_err(lc_db::DbError::from)?;
+    Ok(())
 }
 
 /// Same pin on the connection of an already open transaction.
@@ -975,6 +1021,67 @@ mod tests {
             .await
             .expect("recherche")
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn is_cached_reads_ready_files_without_extending_the_cache() {
+        let (dir, db) = database().await;
+        let now = test_now();
+        let path = dir.path().join("lookup.mp4");
+        tokio::fs::write(&path, b"media")
+            .await
+            .expect("écriture fichier");
+        let source = source("https://example.com/lookup.mp4");
+        let asset = begin_processing(&db, &source, now, TimeDuration::hours(1))
+            .await
+            .expect("ligne");
+        let ready = ReadyAsset {
+            source_hash: source.source_hash.clone(),
+            source_url: source.canonical_url.clone(),
+            source_title: None,
+            kind: MediaKind::Video,
+            mime: "video/mp4".into(),
+            duration_sec: Some(10),
+            width: None,
+            height: None,
+            is_vertical: false,
+            storage_path: path.to_string_lossy().into_owned(),
+            size_bytes: 5,
+        };
+        mark_ready(&db, asset.id, &ready, now, TimeDuration::hours(1))
+            .await
+            .expect("READY");
+        let before = db
+            .media_assets()
+            .get(asset.id)
+            .await
+            .expect("lecture")
+            .expect("asset présent");
+
+        assert!(is_cached(&db, &source.source_hash, now)
+            .await
+            .expect("lookup"));
+
+        // A lookup is a read: it must not keep a media alive.
+        let after = db
+            .media_assets()
+            .get(asset.id)
+            .await
+            .expect("lecture")
+            .expect("asset présent");
+        assert_eq!(before.expires_at, after.expires_at);
+        assert_eq!(before.last_accessed_at, after.last_accessed_at);
+
+        // Missing file, then expired asset: both are cache misses.
+        tokio::fs::remove_file(&path).await.expect("suppression");
+        assert!(!is_cached(&db, &source.source_hash, now)
+            .await
+            .expect("lookup"));
+        tokio::fs::write(&path, b"media").await.expect("écriture");
+        let later = now + TimeDuration::hours(2);
+        assert!(!is_cached(&db, &source.source_hash, later)
+            .await
+            .expect("lookup"));
     }
 
     #[test]

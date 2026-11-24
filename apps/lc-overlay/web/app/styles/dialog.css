@@ -231,11 +231,30 @@
   font-size: 12px;
 }
 
+/* « Ignorer le cache serveur » : la grille de libellé du dialogue empilerait
+   le rail au-dessus de son texte ; l'interrupteur garde sa ligne. */
+.dialog .stack label.cache-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
 .dialog .actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 20px;
+}
+
+/* Add media: the duplicate notice sits left of the footer buttons and leaves
+   them grouped on the right. */
+.dialog .actions .add-media-board-hint {
+  margin: 0 auto 0 0;
+  align-self: center;
+  color: var(--text-soft);
+  font-size: 12px;
+  text-wrap: balance;
 }
 
 /* Mon profil : identity grid, Discord callout, personal devices and pairing

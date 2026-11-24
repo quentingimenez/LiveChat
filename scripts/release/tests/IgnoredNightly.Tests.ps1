@@ -12,7 +12,7 @@
 # or `network` (needs a third party service or real credentials, manual dispatch
 # only). It must
 # match the real inventory: a new, renamed or removed ignored test fails here
-# until the manifest and the documented total (39+11+2=52) are updated. Network
+# until the manifest and the documented total (39+13+2=54) are updated. Network
 # tests are not deleted: they stay listed in the report and run with
 # workflow_dispatch `network_tests=true`.
 
@@ -178,7 +178,7 @@ Test-Case 'ignored job publishes a per-crate report with the real inventory' {
 Test-Case 'ignored tests are classified in the manifest and match the real inventory' {
     Assert-True ($null -ne $manifest) ("the ignored-test manifest is missing or invalid: " + $manifestError)
     $entries = @($manifest.tests)
-    Assert-Equal 52 $entries.Count 'the manifest must list every ignored test (39+11+2)'
+    Assert-Equal 54 $entries.Count 'the manifest must list every ignored test (39+13+2)'
 
     $counts = @{ 'lc-media' = 0; 'lc-server' = 0; 'xtask' = 0 }
     $outside = @()
@@ -211,7 +211,7 @@ Test-Case 'ignored tests are classified in the manifest and match the real inven
     }
     Assert-Equal 0 $outside.Count ("ignored tests outside the three nightly crates: " + (($outside | Select-Object -Unique) -join ', '))
     Assert-Equal 39 $counts['lc-media'] 'lc-media ignored-test inventory changed; update the manifest and documented counts'
-    Assert-Equal 11 $counts['lc-server'] 'lc-server ignored-test inventory changed; update the manifest and documented counts'
+    Assert-Equal 13 $counts['lc-server'] 'lc-server ignored-test inventory changed; update the manifest and documented counts'
     Assert-Equal 2 $counts['xtask'] 'xtask ignored-test inventory changed; update the manifest and documented counts'
 
     $source = @(Get-IgnoredSourceTests)
@@ -229,8 +229,8 @@ Test-Case 'ignored tests are classified in the manifest and match the real inven
     $network = @($entries | Where-Object { $_.category -eq 'network' })
     $local = @($entries | Where-Object { $_.category -eq 'local' })
     Assert-Equal 19 $network.Count 'the network category must pin the 19 external-service or credential tests'
-    Assert-Equal 33 $local.Count 'every other ignored test must stay in the automatic run'
-    Assert-Equal 52 ($network.Count + $local.Count) 'each manifest entry must be local or network; no unclassified test'
+    Assert-Equal 35 $local.Count 'every other ignored test must stay in the automatic run'
+    Assert-Equal 54 ($network.Count + $local.Count) 'each manifest entry must be local or network; no unclassified test'
     $tiktokNetwork = @('renders_a_carousel_comment', 'renders_the_shared_comment_from_the_user_link', 'resolves_the_short_link_to_a_comment_card')
     foreach ($entry in $entries) {
         if ($entry.file -eq 'crates/lc-media/tests/network.rs') {

@@ -13,12 +13,13 @@ use futures_util::stream;
 use lc_db::{Db, DbConfig};
 use lc_domain::rights::{Action, RightsRole, RightsTable, Surface};
 use lc_domain::{
-    FixedClock, GuildId, MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
+    FixedClock, GuildId, MediaAsset, MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind,
+    MediaStatus, OverlayClient, OverlayClientId, OverlaySessionMode,
 };
 use lc_protocol::{BoardChange, MediaIngestionPayload, ServerMessage};
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use time::UtcDateTime;
+use time::{Duration, UtcDateTime};
 use tower::ServiceExt as _;
 use uuid::Uuid;
 
@@ -813,6 +814,56 @@ async fn upload_and_wait(
     wait_finished(state, client.id.as_uuid(), &ingestion_id).await
 }
 
+/// A board item whose media was imported from `source_url`: its identity is
+/// the URL, and an edited upload will be a new content-addressed asset.
+async fn insert_imported_item(
+    db: &Db,
+    state: &AppState,
+    source_url: &str,
+) -> (MediaAsset, MediaBoardItem) {
+    let path = state.config.media_storage_dir.join("imported.png");
+    tokio::fs::create_dir_all(&state.config.media_storage_dir)
+        .await
+        .unwrap();
+    tokio::fs::write(&path, TINY_PNG).await.unwrap();
+    let asset = MediaAsset {
+        id: MediaAssetId::new_v4(),
+        source_hash: lc_media::source::source_hash(source_url),
+        source_url: source_url.to_owned(),
+        source_title: None,
+        kind: MediaKind::Image,
+        mime: "image/png".to_owned(),
+        duration_sec: None,
+        width: Some(1),
+        height: Some(1),
+        is_vertical: false,
+        storage_path: path.to_string_lossy().into_owned(),
+        size_bytes: TINY_PNG.len() as i64,
+        status: MediaStatus::Ready,
+        error: None,
+        last_accessed_at: fixed_now(),
+        expires_at: fixed_now() + Duration::days(36_500),
+        created_at: fixed_now(),
+    };
+    db.media_assets().insert(&asset).await.unwrap();
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
+        guild_id: guild(),
+        media_asset_id: asset.id,
+        title: Some("Photo importée".to_owned()),
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: Some("Alice".to_owned()),
+        created_at: fixed_now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
+        display_duration_sec: None,
+        display_scale_percent: None,
+    };
+    db.media_board().create(&item).await.unwrap();
+    (asset, item)
+}
+
 #[tokio::test]
 async fn upload_text_is_not_stored_on_the_board() {
     let dir = TempDir::new().unwrap();
@@ -841,6 +892,46 @@ async fn upload_text_is_not_stored_on_the_board() {
         .await
         .unwrap()
         .is_empty());
+}
+
+#[tokio::test]
+async fn replacing_an_imported_link_keeps_its_source_url() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let source_url = "https://example.test/photo.png";
+    let (original, item) = insert_imported_item(&db, &state, source_url).await;
+
+    let (_, body) = send_json(&app, items_request(TOKEN)).await;
+    assert_eq!(body["items"][0]["media"]["edited"], false);
+    assert_eq!(body["items"][0]["media"]["sourceUrl"], source_url);
+
+    let replaced = upload_and_wait(
+        &app,
+        &state,
+        &client,
+        json!({"filename": "photo-edit.png", "replaceItemId": item.id.to_canonical()}),
+        other_png(),
+    )
+    .await;
+    assert_eq!(replaced.status, IngestionStatus::Ready, "{replaced:?}");
+    assert_eq!(replaced.created, Some(false));
+
+    let (_, body) = send_json(&app, items_request(TOKEN)).await;
+    let edited = &body["items"][0];
+    assert_eq!(edited["id"], item.id.to_canonical());
+    assert_ne!(edited["mediaAssetId"], original.id.to_canonical());
+    // The rendered picture has its own identity, but the card still points at
+    // the URL it was imported from.
+    assert_eq!(edited["media"]["sourceUrl"], source_url);
+    assert_eq!(edited["media"]["edited"], true);
+    let current = db
+        .media_assets()
+        .get(edited["mediaAssetId"].as_str().unwrap().parse().unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(current.source_hash.starts_with("upload:sha256:"));
 }
 
 #[tokio::test]
@@ -917,6 +1008,7 @@ async fn upload_with_replace_item_id_replaces_the_media_of_the_item() {
     assert_eq!(item["createdAt"], created_at);
     assert_ne!(item["mediaAssetId"], original_asset.as_str());
     assert_eq!(item["media"]["sourceUrl"], "upload:photo-edit.png");
+    assert_eq!(item["media"]["edited"], false);
 
     // The previous asset is no longer pinned: it expires with the cache.
     let previous = db

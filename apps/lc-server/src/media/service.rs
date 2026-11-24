@@ -26,7 +26,7 @@ use crate::media::assets::{self, ReadyAsset};
 use crate::media::errors::{MediaServiceError, MediaServiceResult};
 use crate::media::quotas;
 use crate::media::settings::media_config_for_state;
-use crate::media::thumbnails::{spawn_cover_fetch, ThumbnailContext};
+use crate::media::thumbnails::{spawn_cover_fetch, spawn_cover_refresh, ThumbnailContext};
 
 /// Pipeline partagé : un seul client HTTP et un seul sémaphore de concurrence
 /// par processus. La configuration serveur est immuable après le démarrage.
@@ -177,12 +177,22 @@ impl MediaService {
         self.attach_cover(&ready_asset, &ingested).await;
         // The cover never delays the media: the platform's thumbnail or a
         // frame of the video is made on its own task once the media is ready.
-        spawn_cover_fetch(
-            &self.thumbnail_context(),
-            &ready_asset,
-            Some(ingested.source.clone()),
-            ingested.resolved.clone(),
-        );
+        // A cache bypass also replaces the picture, not only the media.
+        if force_refresh {
+            spawn_cover_refresh(
+                &self.thumbnail_context(),
+                &ready_asset,
+                Some(ingested.source.clone()),
+                ingested.resolved.clone(),
+            );
+        } else {
+            spawn_cover_fetch(
+                &self.thumbnail_context(),
+                &ready_asset,
+                Some(ingested.source.clone()),
+                ingested.resolved.clone(),
+            );
+        }
         Ok(ready_asset)
     }
 

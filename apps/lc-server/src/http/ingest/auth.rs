@@ -107,6 +107,12 @@ pub async fn resolve(state: &AppState, headers: &HeaderMap) -> MediaServiceResul
 }
 
 /// `true` si au moins un client d'ingestion non révoqué existe.
+///
+/// L'expiration par inactivité (C-04) n'entre pas en compte : elle vise un
+/// jeton précis, pas la configuration du serveur. Avec uniquement des clients
+/// expirés, l'ingestion reste « configurée » : une requête sans jeton reçoit
+/// `401 unauthorized` (et non `503 ingest_api_disabled`), une requête avec
+/// un jeton expiré reçoit `401 ingest_token_expired`.
 pub async fn client_is_enabled(db: &Db) -> MediaServiceResult<bool> {
     let clients = db.ingest_clients().list().await?;
     Ok(clients.iter().any(|client| client.is_active()))

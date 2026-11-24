@@ -136,7 +136,7 @@ test('un choix sans nouveauté le dit sous le sélecteur', () => {
   const panel = view.slice(view.indexOf('const filePanel = h('), view.indexOf('const linkButton'));
   const hint = view.slice(view.indexOf('const duplicateHint = h('), view.indexOf('const fileMessage'));
 
-  assert.match(panel, /fileList,\s*duplicateHint,/, 'la liste doit s’accompagner d’un message pour les doublons');
+  assert.match(panel, /fileList,\s*fileCacheHint,\s*duplicateHint,/, 'la liste doit s’accompagner d’un message pour les doublons');
   assert.match(hint, /role: 'status'/, 'le message est annoncé et lu, pas seulement affiché');
   assert.match(hint, /hidden: true/, 'le message reste muet tant qu’aucun doublon n’est choisi');
   assert.match(handler, /duplicateHint\.hidden = ignored === 0/, 'le message ne reste pas quand le choix apporte un média');

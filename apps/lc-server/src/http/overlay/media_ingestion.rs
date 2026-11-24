@@ -73,6 +73,14 @@ pub(super) enum IngestionInput {
         content_type: Option<String>,
         /// SHA-256 of the received bytes (upload cache key).
         content_sha256: String,
+        /// Re-run the pipeline instead of reusing the cached asset.
+        force_refresh: bool,
+    },
+    /// An upload already known to the guild: no bytes are received, the cached
+    /// asset is attached to the target.
+    Cached {
+        /// Upload cache key (`upload:sha256:<hex>`) proven by the lookup.
+        source_hash: String,
     },
     /// Edit of a stored media from `POST /overlay/media-board/items/{id}/edit`.
     Edit {
@@ -169,16 +177,52 @@ async fn run_ingestion(
             filename,
             content_type,
             content_sha256,
+            force_refresh,
         } => {
             let path = temp.file_path();
             let result = service
-                .ingest_file(&path, &filename, content_type.as_deref(), &content_sha256)
+                .ingest_file_with_cache(
+                    &path,
+                    &filename,
+                    content_type.as_deref(),
+                    &content_sha256,
+                    force_refresh,
+                )
                 .await;
             // The temporary directory is owned by the task and always removed
             // once the ingest attempt is over (success or failure).
             drop(temp);
+            if let Ok(asset) = &result {
+                // The bytes were received: this guild may now import the same
+                // content without uploading them again. A failure here must not
+                // fail the ingestion, the media is already stored.
+                if let Err(error) = service
+                    .db()
+                    .guild_upload_cache()
+                    .record(
+                        auth.guild_id(),
+                        asset.source_hash.as_str(),
+                        state.clock.now(),
+                    )
+                    .await
+                {
+                    tracing::warn!(
+                        error = %error,
+                        source_hash = %asset.source_hash,
+                        "enregistrement de l'empreinte d'upload impossible"
+                    );
+                }
+            }
             result.map_err(|service_error| upload_service_failure(&service_error))
         }
+        IngestionInput::Cached { source_hash } => match service.cached_upload(&source_hash).await {
+            Ok(Some(asset)) => Ok(asset),
+            Ok(None) => Err(IngestionFailure {
+                code: "cache_miss",
+                message: None,
+            }),
+            Err(service_error) => Err(upload_service_failure(&service_error)),
+        },
         IngestionInput::Edit {
             source_path,
             kind,

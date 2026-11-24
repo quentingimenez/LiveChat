@@ -170,6 +170,8 @@ export function startFileUpload({
   playOnce = false,
   displayDurationSec = null,
   itemPatch = null,
+  sha256 = null,
+  forceRefresh = false,
 }) {
   if (!guildId || !file) {
     return null;
@@ -188,6 +190,10 @@ export function startFileUpload({
     displayDurationSec: playOnce ? displayDurationSec ?? null : null,
     replaceItemId: replaceItemId || null,
     itemPatch: itemPatch && Object.keys(itemPatch).length ? itemPatch : null,
+    // The digest lets the server import an already cached upload without
+    // receiving its bytes. `forceRefresh` skips that shortcut.
+    sha256: sha256 || null,
+    forceRefresh: Boolean(forceRefresh),
     playOnce: Boolean(playOnce),
     status: 'waiting',
     error: null,
@@ -657,10 +663,21 @@ async function sendFile(entry) {
         replaceItemId: entry.replaceItemId || null,
         playOnce: Boolean(entry.playOnce),
         displayDurationSec: entry.playOnce ? entry.displayDurationSec : null,
+        sha256: entry.sha256 || null,
+        forceRefresh: Boolean(entry.forceRefresh),
       },
     });
   } catch (error) {
     fail(entry, rejectionMessage(error));
+    return;
+  }
+  // The server found the bytes in its cache: it started the ingestion without
+  // asking for a part. Nothing was uploaded, so there is no upload to cancel.
+  if (started && typeof started.ingestionId === 'string' && started.ingestionId) {
+    if (!isLive(entry) || entry.cancelled) {
+      return;
+    }
+    markConverting(entry, started.ingestionId);
     return;
   }
   const uploadId = started && started.uploadId;

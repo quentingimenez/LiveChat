@@ -21,10 +21,9 @@ export function showsPlayFields(action, canPlay) {
   return Boolean(canPlay) && action === 'play';
 }
 
-// The server cache bypass (`forceRefresh`) belongs to a link ingestion: the
-// server can download a link again even when it already holds the media. An
-// uploaded file has no such cache (it is keyed by its content), so the option
-// never applies to the file source.
+// A link can always be downloaded again. A file is content-addressed, so the
+// bypass only makes sense once its digest is known: the add dialog drives that
+// case separately, after the file preflight.
 export function canBypassServerCache(mode) {
   return mode === 'link';
 }
@@ -41,8 +40,37 @@ export function forceRefreshFor(mode, checked) {
   return canBypassServerCache(mode) && checked === true;
 }
 
-// The URL worth a cache lookup: a trimmed http(s) link on the link source.
-// A file import is keyed by its content and has no server cache. The full
+// The state of the file preflight: a missing check is still being computed, so
+// the submit must wait. `allOnBoard` is the only state that blocks an add: a
+// cached upload can be imported without bytes, and an unknown file is uploaded.
+export function filePreflightState(files, checks) {
+  const list = Array.isArray(files) ? files : [];
+  const entries = list.map((file) => checks.get(file));
+  const checking = list.length > 0
+    && entries.some((check) => !check || check.status === 'checking');
+  const allOnBoard = list.length > 0
+    && !checking
+    && entries.every((check) => check && check.onBoard === true);
+  const anyCached = entries.some((check) => check && (check.cached || check.onBoard));
+  return { checking, allOnBoard, anyCached };
+}
+
+// The files that still need an upload. Adding a file already on the board
+// would only re-pin its card, so it is skipped; a play-once may still play it,
+// and the bypass keeps every file so the bytes are sent again.
+export function filesToUpload(action, forceRefresh, files, checks) {
+  const list = Array.isArray(files) ? files : [];
+  if (action !== 'add' || forceRefresh === true) {
+    return list.slice();
+  }
+  return list.filter((file) => {
+    const check = checks.get(file);
+    return !check || check.onBoard !== true;
+  });
+}
+
+// The URL worth a link cache lookup: a trimmed http(s) link. File imports are
+// keyed by their SHA-256 and use the upload preflight instead. The full
 // validation (public host, credentials, length) belongs to the server.
 export function cacheLookupUrl(mode, value) {
   if (mode !== 'link') {

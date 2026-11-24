@@ -26,6 +26,8 @@ import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import {
   addPickedFiles,
+  boardDuplicateNeedsRefresh,
+  boardItemForUrl,
   cacheBypassVisible,
   cacheLookupUrl,
   defaultAction,
@@ -115,6 +117,7 @@ export function openAddDialog(options) {
     const forceRefreshInput = h('input', {
       type: 'checkbox',
       id: 'add-media-force-refresh',
+      onChange: () => updateSubmit(),
     });
     const forceRefreshOption = h(
       'div',
@@ -247,22 +250,39 @@ export function openAddDialog(options) {
         h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Action' }, addActionButton, playActionButton))
       : null;
     const submit = h('button', { class: 'btn is-primary', type: 'submit' }, action === 'play' ? 'Jouer une fois' : 'Ajouter au board');
+    const boardHint = h(
+      'p',
+      { class: 'add-media-board-hint', role: 'status', hidden: true },
+      'Le média est déjà présent sur la board.',
+    );
+    let boardItem = null;
 
     function updateSubmit() {
-      submit.disabled = mode === 'file' && chosenFiles.length === 0;
+      const noFile = mode === 'file' && chosenFiles.length === 0;
+      submit.disabled = noFile
+        || boardDuplicateNeedsRefresh(action, mode, boardItem, forceRefreshInput.checked);
+      boardHint.hidden = !(action === 'add' && mode === 'link' && boardItem !== null);
     }
 
-    // The bypass is offered only when the server already holds a reusable
-    // media for the typed link. A short debounce groups keystrokes; the token
-    // drops a response that no longer matches the field. While the lookup is
-    // pending the switch stays hidden, and hiding it clears a choice made for
-    // a previous URL.
+    // The board already showing the typed URL is known without a round trip:
+    // the add would only re-pin that card, so the submit waits for the bypass.
+    function syncBoardItem() {
+      boardItem = mode === 'link' ? boardItemForUrl(state.items, linkUrl.value) : null;
+      updateSubmit();
+    }
+
+    // The bypass is offered when the media is already on the board, or when
+    // the server global lookup says it holds a reusable copy. A short debounce
+    // groups keystrokes; the token drops a response that no longer matches the
+    // field. While a lookup is pending the switch stays hidden, and hiding it
+    // clears a choice made for a previous URL.
     function applyCacheVisibility(visible) {
       forceRefreshOption.hidden = !visible;
       forceRefreshInput.disabled = !visible;
       if (!visible) {
         forceRefreshInput.checked = false;
       }
+      updateSubmit();
     }
 
     function syncCacheOption() {
@@ -270,12 +290,19 @@ export function openAddDialog(options) {
         clearTimeout(cacheTimer);
         cacheTimer = null;
       }
+      syncBoardItem();
       const url = cacheLookupUrl(mode, linkUrl.value);
       if (!url) {
         cacheToken += 1;
         lastCacheUrl = null;
         lastCached = false;
         applyCacheVisibility(false);
+        return;
+      }
+      // A board hit is immediate and does not depend on the server cache TTL:
+      // the card exists, so a forced refresh is meaningful.
+      if (mode === 'link' && boardItem !== null) {
+        applyCacheVisibility(true);
         return;
       }
       if (url === lastCacheUrl) {
@@ -491,6 +518,7 @@ export function openAddDialog(options) {
       h(
         'div',
         { class: 'actions' },
+        boardHint,
         h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'),
         submit,
       ),

@@ -30,8 +30,9 @@ export function canBypassServerCache(mode) {
 }
 
 // The bypass only makes sense when the server already holds the media: a new
-// link has no cached copy to ignore. `cached` comes from the server lookup,
-// never from the board the client happens to have loaded.
+// link has no cached copy to ignore. `cached` comes from the server lookup;
+// a board hit is handled separately because the card itself proves the media
+// exists without another round trip.
 export function cacheBypassVisible(mode, cached) {
   return canBypassServerCache(mode) && cached === true;
 }
@@ -60,6 +61,45 @@ export function cacheLookupUrl(mode, value) {
   } catch {
     return null;
   }
+}
+
+// A source URL as the board stores it: http(s) only, trimmed, without its
+// fragment. The query is kept: a TikTok clip id lives there.
+function comparableSourceUrl(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return null;
+  }
+  try {
+    const url = new URL(raw);
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+// The board item already showing `value`, when it is a link. Used by the add
+// dialog before it submits: adding the same link again would be a no-op, so the
+// submit stays disabled until a forced refresh is asked for. An uploaded media
+// has no http source URL and never matches a typed link.
+export function boardItemForUrl(items, value) {
+  const wanted = comparableSourceUrl(value);
+  if (!wanted || !Array.isArray(items)) {
+    return null;
+  }
+  return items.find((item) => comparableSourceUrl(item && item.media && item.media.sourceUrl) === wanted) || null;
+}
+
+// Whether the add submit must wait for the bypass: the media is already on the
+// board, and the add would only re-pin the existing card without changing it.
+// A forced refresh makes the submission meaningful again. A play-once is not
+// an add: it may play the card already there without touching the cache.
+export function boardDuplicateNeedsRefresh(action, mode, item, forceRefresh) {
+  return action === 'add' && mode === 'link' && Boolean(item) && forceRefresh !== true;
 }
 
 // Two picks of the same file hand back two File objects: it is one media, and

@@ -5,6 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  boardDuplicateNeedsRefresh,
+  boardItemForUrl,
   cacheBypassVisible,
   cacheLookupUrl,
   canBypassServerCache,
@@ -71,4 +73,28 @@ test('seul un lien http(s) est interrogé auprès du cache serveur', () => {
   assert.equal(cacheLookupUrl('link', 'ftp://example.test/clip'), null);
   assert.equal(cacheLookupUrl('link', 'pas une url'), null);
   assert.equal(cacheLookupUrl('link', '  '), null);
+});
+
+test('la board reconnaît un lien déjà présent, sans confondre deux médias', () => {
+  const item = { id: 'item-1', media: { sourceUrl: 'https://example.test/watch?v=2#part' } };
+  const items = [
+    item,
+    { id: 'item-2', media: { sourceUrl: null } },
+    { id: 'item-3', media: { sourceUrl: 'https://example.test/other' } },
+  ];
+  assert.equal(boardItemForUrl(items, ' https://example.test/watch?v=2 '), item);
+  assert.equal(boardItemForUrl(items, 'https://example.test/other'), items[2]);
+  assert.equal(boardItemForUrl(items, 'https://example.test/watch?v=3'), null);
+  assert.equal(boardItemForUrl(items, 'file:///tmp/clip.mp4'), null);
+  assert.equal(boardItemForUrl(items, ''), null);
+  assert.equal(boardItemForUrl(null, 'https://example.test/watch?v=2'), null);
+});
+
+test('un média déjà sur la board bloque l’envoi sauf avec le contournement', () => {
+  const item = { id: 'item-1' };
+  assert.equal(boardDuplicateNeedsRefresh('add', 'link', item, false), true);
+  assert.equal(boardDuplicateNeedsRefresh('add', 'link', item, true), false);
+  assert.equal(boardDuplicateNeedsRefresh('play', 'link', item, false), false);
+  assert.equal(boardDuplicateNeedsRefresh('add', 'link', null, false), false);
+  assert.equal(boardDuplicateNeedsRefresh('add', 'file', item, false), false);
 });

@@ -24,6 +24,8 @@ const ICON_NAMES = [
   'star',
   'chevron',
   'menu',
+  'up',
+  'down',
   'refresh',
   'trash',
   'discord',

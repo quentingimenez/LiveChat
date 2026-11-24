@@ -1173,7 +1173,7 @@ table.tbl {
   white-space: nowrap;
 }
 
-/* Poignée de glisser-déposer et retrait sur une ligne de file. */
+/* Poignée de glisser-déposer, monter/descendre et retrait sur une ligne de file. */
 .queue-actions {
   display: inline-flex;
   align-items: center;

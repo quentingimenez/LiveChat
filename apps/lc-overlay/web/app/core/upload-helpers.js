@@ -44,8 +44,12 @@ export function defaultTitle(filename) {
 }
 
 // Status label of a provisional upload card. A play-once says "Lecture…"
-// while it is prepared: nothing will join the board.
+// while it is prepared: nothing will join the board. A refresh of an existing
+// card downloads again but does not add anything.
 export function uploadStatusLabel(entry) {
+  if (entry.refreshItemId && (entry.status === 'sending' || entry.status === 'converting')) {
+    return 'Rafraîchissement…';
+  }
   if (entry.status === 'sending') {
     return entry.kind === 'link' ? 'Téléchargement…' : 'Envoi…';
   }

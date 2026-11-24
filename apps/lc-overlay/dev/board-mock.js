@@ -540,13 +540,36 @@
   function api(payload) {
     const { method, path } = payload;
     const ok = (body) => ({ ok: true, status: 200, body });
+    function sameSourceUrl(left, right) {
+      try {
+        const a = new URL(left);
+        const b = new URL(right);
+        if (a.protocol !== 'http:' && a.protocol !== 'https:') {
+          return false;
+        }
+        if (b.protocol !== 'http:' && b.protocol !== 'https:') {
+          return false;
+        }
+        a.hash = '';
+        b.hash = '';
+        return a.href === b.href;
+      } catch {
+        return false;
+      }
+    }
     if (path === '/overlay/media-board/items' && method === 'POST') {
       const body = payload.body || {};
       const duration = playOnceDisplayDuration(body);
       if (!duration.ok) {
         return { ok: false, status: 400, body: { error: 'invalid_payload', message: duration.message } };
       }
-      return acceptIngestion({ guildId: payload.guildId, name: String(body.url || ''), title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce), displayDurationSec: duration.value });
+      const url = String(body.url || '');
+      // A bypass refreshes the card that already carries this source, like the
+      // server: same asset, same board item, `created: false`.
+      const refreshed = body.forceRefresh
+        ? items.find((item) => item.guildId === payload.guildId && sameSourceUrl(item.media.sourceUrl, url))
+        : null;
+      return acceptIngestion({ guildId: payload.guildId, name: url, url, title: body.title, message: body.playOnce ? body.message : null, contentType: 'video/mp4', received: 0, playOnce: Boolean(body.playOnce), displayDurationSec: duration.value, forceRefresh: Boolean(body.forceRefresh), refreshItemId: refreshed ? refreshed.id : null });
     }
     if (path === '/overlay/say' && method === 'POST') {
       // Speech synthesis (/dire). A text containing "panne" fails like a
@@ -1135,6 +1158,27 @@
         const assetId = 'a' + nextItem++;
         item.mediaAssetId = assetId;
         item.media = { ...item.media, id: assetId, durationSec: source.durationSec === undefined ? item.media.durationSec : source.durationSec, sizeBytes: source.received || item.media.sizeBytes };
+        Object.assign(ingestion, { status: 'ready', created: false, itemId: item.id });
+        boardChanged(ingestion.guildId, 'updated', item.id);
+      } else {
+        Object.assign(ingestion, { status: 'failed', error: { code: 'item_not_found' } });
+      }
+    } else if (source.refreshItemId) {
+      // A cache bypass updates the existing card in place: same item, new
+      // media file, `created: false` so the client can toast instead of
+      // adding a second card.
+      const item = items.find((candidate) => candidate.id === source.refreshItemId);
+      if (item) {
+        const index = nextItem++;
+        item.mediaAssetId = 'a' + index;
+        item.mediaUrl = svg(index);
+        item.mediaUrlExpiresAt = Date.now() + 3600000;
+        item.media = {
+          ...item.media,
+          id: 'a' + index,
+          sourceUrl: source.url || item.media.sourceUrl,
+          sizeBytes: source.received || item.media.sizeBytes,
+        };
         Object.assign(ingestion, { status: 'ready', created: false, itemId: item.id });
         boardChanged(ingestion.guildId, 'updated', item.id);
       } else {

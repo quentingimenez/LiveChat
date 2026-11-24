@@ -70,7 +70,7 @@ import { addDialogOpen, dropOnAddDialog, highlightAddDialog, openAddDialog } fro
 import { openImportDialog } from './import-media.js';
 import { openSayDialog } from './say.js';
 import { canOpenEditor, openMediaEditor } from './editor/index.js';
-import { openUploadMenu, renderUploadCard, startFileUpload, uploadsForGuild } from './uploads.js';
+import { openUploadMenu, renderUploadCard, startFileUpload, startLinkRefresh, uploadsForGuild } from './uploads.js';
 import { renderView } from './view.js';
 
 registerIcons({
@@ -118,12 +118,23 @@ function openCardMenu(event, item) {
         }
       : null,
     link ? { label: 'Copier le lien d’origine', icon: 'copy', onSelect: () => copyText(link, 'Lien copié.') } : null,
+    link && can('addMedia')
+      ? { label: 'Rafraîchir depuis la source', icon: 'refresh', onSelect: () => refreshSource(item) }
+      : null,
     importTargets(state.guilds, state.activeGuildId).length > 0
       ? { label: 'Ajouter à une autre guilde…', onSelect: () => openImportDialog(menuItemIds(item), leaveSelection) }
       : null,
     item.canEdit ? 'separator' : null,
     item.canEdit ? { label: 'Supprimer…', icon: 'remove', danger: true, onSelect: () => openDeleteDialog(item) } : null,
   ]);
+}
+
+// C: re-download a card's media from its source. The server updates the asset
+// in place and answers the same item, so the card stays where it is.
+function refreshSource(item) {
+  if (!startLinkRefresh({ guildId: state.activeGuildId, item })) {
+    notify('Ce média ne peut pas être rafraîchi.', true);
+  }
 }
 
 function visibleItems() {

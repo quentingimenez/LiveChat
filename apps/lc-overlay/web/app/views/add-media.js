@@ -25,6 +25,7 @@ import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import {
   addPickedFiles,
+  boardItemForUrl,
   canBypassServerCache,
   defaultAction,
   duplicatePickMessage,
@@ -35,7 +36,7 @@ import {
 } from '../core/add-media-rules.js';
 import { droppedMedia } from '../core/media-drop.js';
 import { openFileImageEditor } from './editor/index.js';
-import { startFileUpload, startLinkUpload } from './uploads.js';
+import { startFileUpload, startLinkRefresh, startLinkUpload } from './uploads.js';
 
 function formatSize(bytes) {
   return `${((bytes || 0) / 1048576).toFixed(1).replace('.', ',')} Mo`;
@@ -90,7 +91,14 @@ export function openAddDialog(options) {
     const dualAction = canAdd && canPlay;
 
     // --- link fields ---
-    const linkUrl = h('input', { class: 'field', type: 'url', placeholder: 'https://…', required: true, value: prefill });
+    const linkUrl = h('input', {
+      class: 'field',
+      type: 'url',
+      placeholder: 'https://…',
+      required: true,
+      value: prefill,
+      onInput: () => syncDuplicateLink(),
+    });
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre du média', maxlength: '240' });
     // The server can download the link again instead of reusing its cached
     // copy. The option belongs to a link ingestion: the file source hides and
@@ -107,6 +115,34 @@ export function openAddDialog(options) {
         { class: 'switch cache-switch' },
         forceRefreshInput,
         h('span', null, 'Ignorer le cache serveur'),
+      ),
+    );
+    // A link already on the board would only answer "déjà sur le board": the
+    // dialog offers the useful action instead, refreshing that card from its
+    // source. The suggestion is a link action, and never a play-once.
+    let duplicateItem = null;
+    const duplicateLink = h(
+      'div',
+      { class: 'add-media-duplicate', role: 'status', hidden: true },
+      h('span', null, 'Déjà sur la board.'),
+      h(
+        'button',
+        {
+          class: 'btn',
+          type: 'button',
+          onClick: () => {
+            const item = duplicateItem;
+            if (!item) {
+              return;
+            }
+            if (!startLinkRefresh({ guildId: state.activeGuildId, item })) {
+              notify('Ce média ne peut pas être rafraîchi.', true);
+              return;
+            }
+            close();
+          },
+        },
+        'Rafraîchir depuis la source',
       ),
     );
     const linkMessage = h('textarea', { class: 'field', rows: '2', maxlength: '500', placeholder: 'Légende affichée sur les overlays' });
@@ -193,6 +229,7 @@ export function openAddDialog(options) {
       h('label', null, 'Lien du média', linkUrl),
       h('label', null, 'Titre (facultatif)', linkTitle),
       forceRefreshOption,
+      duplicateLink,
       linkMessageLabel,
       linkDurationField,
     );
@@ -253,6 +290,18 @@ export function openAddDialog(options) {
       const bypassCache = canBypassServerCache(mode);
       forceRefreshOption.hidden = !bypassCache;
       forceRefreshInput.disabled = !bypassCache;
+      syncDuplicateLink();
+    }
+
+    // E: when the typed link is already a card, offer to refresh it instead of
+    // letting the submit answer "déjà sur le board". Only an add of a link can
+    // match; a play-once and a file pick have no card to refresh.
+    function syncDuplicateLink() {
+      duplicateItem =
+        canAdd && action === 'add' && mode === 'link'
+          ? boardItemForUrl(state.items, linkUrl.value)
+          : null;
+      duplicateLink.hidden = !duplicateItem;
     }
 
     function setAction(next) {

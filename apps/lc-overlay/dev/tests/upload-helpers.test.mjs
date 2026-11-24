@@ -65,6 +65,23 @@ test('uploadStatusLabel: a play-once says it is being read, whatever the kind', 
 
 const LABELS = { invalid_payload: 'Valeur invalide.' };
 
+test('uploadStatusLabel: a refresh of an existing card says so', () => {
+  assert.equal(
+    uploadStatusLabel({ status: 'sending', kind: 'link', refreshItemId: 'item-1' }),
+    'Rafraîchissement…',
+  );
+  assert.equal(
+    uploadStatusLabel({ status: 'converting', kind: 'link', refreshItemId: 'item-1' }),
+    'Rafraîchissement…',
+  );
+  // Queued or failed, it is still the ordinary upload wording.
+  assert.equal(
+    uploadStatusLabel({ status: 'waiting', kind: 'link', refreshItemId: 'item-1' }),
+    'En attente…',
+  );
+  assert.equal(uploadStatusLabel({ status: 'sending', kind: 'link' }), 'Téléchargement…');
+});
+
 test('uploadErrorMessage: 413', () => {
   assert.equal(uploadErrorMessage(413, { error: 'payload_too_large' }, LABELS), 'Fichier trop volumineux pour le serveur.');
 });

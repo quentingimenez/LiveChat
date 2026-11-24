@@ -33,6 +33,33 @@ export function forceRefreshFor(mode, checked) {
   return canBypassServerCache(mode) && checked === true;
 }
 
+// A source URL as the board compares it: http(s) only, trimmed, without its
+// fragment. The server keeps the query (a TikTok clip id lives there), so two
+// links that differ by their query are two media.
+function comparableSourceUrl(value) {
+  try {
+    const url = new URL(String(value ?? '').trim());
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+      return null;
+    }
+    url.hash = '';
+    return url.href;
+  } catch {
+    return null;
+  }
+}
+
+// The board item already showing `value`, when it is a link. An uploaded media
+// has no http source URL, so it is never a duplicate of a typed link. Used by
+// the add dialog to offer a refresh instead of a silent "already there".
+export function boardItemForUrl(items, value) {
+  const wanted = comparableSourceUrl(value);
+  if (!wanted || !Array.isArray(items)) {
+    return null;
+  }
+  return items.find((item) => comparableSourceUrl(item && item.media && item.media.sourceUrl) === wanted) || null;
+}
+
 // Two picks of the same file hand back two File objects: it is one media, and
 // the import must not list it twice. Name, size, type and last modified date
 // are what the picker gives to tell one file from another.

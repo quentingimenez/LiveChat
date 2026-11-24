@@ -148,6 +148,18 @@ et le champ « Tester la config » des options applique le même masquage.
 si un moteur expose un stockage sécurisé (keystore OS ou native messaging), le
 chiffrement redevient envisageable et cette note devra être révisée.
 
+### Durée de vie du jeton d'ingestion
+
+Comme pour le raccourci iOS, le serveur refuse le jeton d'ingestion de
+l'extension après **180 jours sans activité** : la requête échoue alors avec
+`ingest_token_expired`. Tant que l'extension envoie régulièrement du contenu,
+chaque envoi remet le compteur à zéro (aucune date d'expiration n'est stockée).
+Un jeton déjà expiré ne peut pas être réactivé : génère un nouveau code
+d'appairage (`/pair-code`) depuis la board, puis récupère la configuration dans
+les options de l'extension pour obtenir un nouveau jeton. Le jeton reste stocké
+en clair dans le profil comme décrit ci-dessus ; cette limite d'inactivité
+s'applique côté serveur et ne modifie pas ce mode de stockage.
+
 ## CI / Release GitHub
 
 Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monorepo)

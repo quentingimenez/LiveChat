@@ -62,6 +62,19 @@ l'import, dans les questions du raccourci. Le service de signature ne reçoit qu
 le modèle sans jeton. Utilise un jeton dédié, révocable depuis la console
 d'administration → **Clients d'ingestion**.
 
+### Durée de vie du jeton d'ingestion
+
+Le jeton reste valable tant que le raccourci est utilisé. Le serveur le refuse
+après **180 jours sans activité** (aucun envoi pendant cette période) : la
+requête d'ingestion échoue alors avec `ingest_token_expired`. Une simple
+utilisation du raccourci remet le compteur à zéro, mais un jeton déjà expiré ne
+peut pas être « réveillé » : il faut reconfigurer le raccourci depuis la board
+(**Mon profil → Appareils → Raccourci iOS → Configurer**) pour obtenir un
+nouveau jeton et le coller dans le raccourci. Le jeton n'est affiché qu'une
+seule fois par la board et n'est pas transféré automatiquement : il n'est pas
+récupérable depuis l'ancien appareil ni depuis les fichiers signés. En cas de
+perte de l'appareil, reconfigure le raccourci depuis la board.
+
 Les trois fichiers distribués ici sont signés par le service
 [HubSign](https://hubsign.routinehub.services/sign) de RoutineHub, qui utilise
 la signature officielle d'Apple. La signature est vérifiée par iOS à l'import.

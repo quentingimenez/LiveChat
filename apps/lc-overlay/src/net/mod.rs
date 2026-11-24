@@ -6,6 +6,7 @@
 //! - [`pairing`] : appairage HTTP (`POST {serverUrl}/overlay/pair/consume`).
 
 pub mod api;
+pub(crate) mod artwork;
 pub mod pairing;
 pub(crate) mod tls;
 pub mod upload;

@@ -1076,14 +1076,28 @@ async fn auth_idle_session_is_refused_and_deleted() {
         .expect("inactivité forcée");
 
     let cookie = format!("{}={token}", session::SESSION_COOKIE_NAME);
-    let (status, _, _) = harness
+    let (status, headers, _) = harness
         .send(harness.request_with_cookie(Method::GET, "/admin/auth/session", &cookie))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
-    let (status, _, _) = harness
+    let cleared = set_cookie_headers(&headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(cleared.len(), 1, "le cookie mort doit être effacé");
+    assert!(
+        cleared[0].contains("Max-Age=0"),
+        "cookie effacé attendu, reçu: {}",
+        cleared[0]
+    );
+    let (status, api_headers, _) = harness
         .send(harness.request_with_cookie(Method::GET, "/admin/api/overview", &cookie))
         .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let api_cleared = set_cookie_headers(&api_headers, session::SESSION_COOKIE_NAME);
+    assert_eq!(
+        api_cleared.len(),
+        1,
+        "l'extracteur doit aussi effacer le cookie mort"
+    );
+    assert!(api_cleared[0].contains("Max-Age=0"));
 
     let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions")
         .fetch_one(harness.db().pool())

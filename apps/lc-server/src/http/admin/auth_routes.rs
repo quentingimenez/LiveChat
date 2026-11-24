@@ -82,7 +82,14 @@ async fn session_info(State(state): State<AppState>, peer: PeerIp, headers: Head
     let methods = auth::auth_methods(&state);
     let admin_session = match auth::current_session(&state, &headers).await {
         Ok(Some(session)) => session,
-        Ok(None) => return unauthorized_session(methods),
+        Ok(None) => {
+            let response = unauthorized_session(methods);
+            return if auth::has_session_cookie(&headers) {
+                auth::with_cleared_session_cookie(response, state.config.cookies_secure())
+            } else {
+                response
+            };
+        }
         Err(response) => return response,
     };
 

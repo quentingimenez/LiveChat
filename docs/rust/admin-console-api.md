@@ -36,8 +36,10 @@ refusée à la prochaine requête (`401`, reconnexion nécessaire), même si le
 cookie est encore valide : le serveur reste l'autorité. Le cookie garde
 `Max-Age=604800` (7 jours) comme borne extérieure ; le navigateur le conserve
 donc jusqu'à 7 jours, mais le serveur refuse toute session après 24 h sans
-activité. Les lignes expirées **ou inactives** sont supprimées à chaque lecture
-et au démarrage.
+activité — et le `401` renvoie `Set-Cookie: lc_admin_session=; Max-Age=0` pour
+que le navigateur cesse d'envoyer un cookie mort (aucun `Set-Cookie` si la
+requête n'en portait pas). Les lignes expirées **ou inactives** sont supprimées
+à chaque lecture et au démarrage.
 
 Variables d'environnement (dans `Config`) :
 

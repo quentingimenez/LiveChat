@@ -147,18 +147,23 @@ fn expiry_cutoffs_ms(now_ms: i64) -> (i64, i64) {
     (now_ms, now_ms.saturating_sub(SESSION_IDLE_TTL_MS))
 }
 
-/// Looks a raw token up, deletes expired rows, and refreshes `last_seen_at`.
+/// Looks a raw token up, refreshes `last_seen_at`, and purges expired rows.
 ///
 /// `Ok(None)` covers an unknown, expired, idle, or empty token: callers answer
 /// `401` without distinguishing the cases. A successful lookup also refreshes
 /// the 24 h idle window, so an actively used session stays valid until the
 /// seven-day absolute deadline.
+///
+/// The row is judged against [`expiry_cutoffs_ms`] **before** the sweep, so the
+/// per-row guard is the authority for this token: a session that crosses a
+/// deadline during the round-trip is refused here, not silently refreshed. The
+/// sweep that follows uses the same cutoffs, which is why it can only remove
+/// the refused row and never the one just validated.
 pub async fn find(db: &Db, token: &str, now_ms: i64) -> Result<Option<AdminSession>, DbError> {
     if token.is_empty() {
         return Ok(None);
     }
 
-    delete_expired(db, now_ms).await?;
     let token_hash = hash_token(token);
     let session = sqlx::query_as::<_, AdminSession>(
         "SELECT method, discord_user_id, display_name, avatar_url, expires_at, last_seen_at \
@@ -168,12 +173,17 @@ pub async fn find(db: &Db, token: &str, now_ms: i64) -> Result<Option<AdminSessi
     .fetch_optional(db.pool())
     .await?;
 
+    let (absolute_cutoff, idle_cutoff) = expiry_cutoffs_ms(now_ms);
     let Some(session) = session else {
+        delete_expired(db, now_ms).await?;
         return Ok(None);
     };
-    let (absolute_cutoff, idle_cutoff) = expiry_cutoffs_ms(now_ms);
-    if session.expires_at <= absolute_cutoff || session.last_seen_at <= idle_cutoff {
-        delete_token_hash(db, &token_hash).await?;
+    let usable = session.expires_at > absolute_cutoff && session.last_seen_at > idle_cutoff;
+
+    // One sweep for every lookup: it removes the refused row (same cutoffs) and
+    // any other stale row without a second statement on the happy path.
+    delete_expired(db, now_ms).await?;
+    if !usable {
         return Ok(None);
     }
 
@@ -196,8 +206,11 @@ pub async fn delete_by_token(db: &Db, token: &str) -> Result<u64, DbError> {
 
 /// Deletes every session that is past its absolute expiry or idle window.
 ///
-/// Uses [`expiry_cutoffs_ms`] so bulk cleanup and [`find`]'s per-row guard
-/// apply the exact same strict boundary.
+/// Uses [`expiry_cutoffs_ms`], the same helper as [`find`]'s per-row guard, so
+/// the sweep and the guard can never disagree on the strict boundary: a row the
+/// guard refused is removed here, and a row the guard accepted is never
+/// touched. Called on every lookup ([`find`]) and once at startup
+/// ([`purge_expired`]).
 pub async fn delete_expired(db: &Db, now_ms: i64) -> Result<u64, DbError> {
     let (absolute_cutoff, idle_cutoff) = expiry_cutoffs_ms(now_ms);
     let result =
@@ -356,11 +369,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_used_every_day_lasts_seven_days_then_is_no_longer_found() {
-        // Seven days is the *absolute* bound, but the 24 h idle window must be
-        // refreshed by activity: an untouched session is no longer valid after
-        // a single day, so the previous "survives six days idle" assertion no
-        // longer describes the contract.
+    async fn an_active_session_still_dies_at_the_seven_day_absolute_deadline() {
+        const HOUR_MS: i64 = 60 * 60 * 1000;
+        const DAY_HOURS: i64 = 24;
         let db = lc_db::Db::open_in_memory(&lc_db::DbConfig::default())
             .await
             .unwrap();
@@ -368,21 +379,29 @@ mod tests {
         let (token, session) = create_secret(&db, now_ms).await.unwrap();
         assert_eq!(session.expires_at, now_ms + SESSION_TTL_MS);
 
-        // Une visite par jour mais à 23 h d'écart : 24 h pile est la borne
-        // stricte d'inactivité (expiré), donc un usage « une fois par jour »
-        // au sens de cette borne doit rester légèrement en deçà. C'est cette
-        // activité qui repousse la fenêtre ; sans elle la session mourrait
-        // dès le premier jour.
-        let visit_ms = 23 * 60 * 60 * 1000;
-        for day in 1..=6 {
-            let at = now_ms + day * visit_ms;
+        // One visit every 23 h keeps the 24 h idle window fresh for the whole
+        // week, so inactivity can never be the reason this session dies.
+        for hour in (23..=6 * DAY_HOURS + 17).step_by(23) {
+            let at = now_ms + hour * HOUR_MS;
             assert!(
                 find(&db, &token, at).await.unwrap().is_some(),
-                "jour {day} : la session active doit rester valide"
+                "visite à {hour} h : la session active reste valide"
             );
         }
-        let day_eight = now_ms + 8 * 24 * 60 * 60 * 1000;
-        assert!(find(&db, &token, day_eight).await.unwrap().is_none());
+
+        // 167 h: six hours of inactivity (fresh window) and one hour before the
+        // absolute deadline, so the session must still be accepted.
+        assert!(find(&db, &token, now_ms + (7 * DAY_HOURS - 1) * HOUR_MS)
+            .await
+            .unwrap()
+            .is_some());
+
+        // 168 h: the absolute deadline wins even though the idle window is
+        // fresh — this is the assertion that isolates the seven-day bound.
+        assert!(find(&db, &token, now_ms + 7 * DAY_HOURS * HOUR_MS)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

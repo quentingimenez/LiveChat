@@ -1066,6 +1066,55 @@ async fn auth_expired_sessions_are_purged_at_startup() {
 }
 
 #[tokio::test]
+async fn auth_idle_session_is_refused_and_deleted() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    sqlx::query("UPDATE admin_sessions SET last_seen_at = 0 WHERE token_hash = ?1")
+        .bind(sha256_hex(&token))
+        .execute(harness.db().pool())
+        .await
+        .expect("inactivité forcée");
+
+    let cookie = format!("{}={token}", session::SESSION_COOKIE_NAME);
+    let (status, _, _) = harness
+        .send(harness.request_with_cookie(Method::GET, "/admin/auth/session", &cookie))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = harness
+        .send(harness.request_with_cookie(Method::GET, "/admin/api/overview", &cookie))
+        .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions")
+        .fetch_one(harness.db().pool())
+        .await
+        .expect("comptage des sessions");
+    assert_eq!(count, 0, "la session inactive est supprimée à la lecture");
+}
+
+#[tokio::test]
+async fn auth_idle_sessions_are_purged_at_startup() {
+    let harness = Harness::new().await;
+    let token = harness.session_token.clone().expect("session du harnais");
+    sqlx::query("UPDATE admin_sessions SET last_seen_at = 0 WHERE token_hash = ?1")
+        .bind(sha256_hex(&token))
+        .execute(harness.db().pool())
+        .await
+        .expect("inactivité forcée");
+
+    let removed = super::purge_expired_sessions(harness.db())
+        .await
+        .expect("nettoyage de démarrage");
+    assert_eq!(removed, 1);
+
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions")
+        .fetch_one(harness.db().pool())
+        .await
+        .expect("comptage des sessions");
+    assert_eq!(count, 0);
+}
+
+#[tokio::test]
 async fn auth_session_cookie_has_the_contract_attributes() {
     let harness = Harness::with_pairs(&[("API_URL", "https://panel.example")]).await;
     let (status, headers, _) = harness

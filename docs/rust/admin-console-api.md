@@ -28,8 +28,16 @@ Table `admin_sessions` (migration `0010_admin_sessions.sql`) :
 `token_hash TEXT PRIMARY KEY, method TEXT NOT NULL ('discord'|'secret'),
 discord_user_id TEXT, display_name TEXT, avatar_url TEXT,
 created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL,
-last_seen_at INTEGER NOT NULL` (millisecondes). Expiration absolue 7 jours ;
-les sessions expirées sont supprimées à la lecture et au démarrage.
+last_seen_at INTEGER NOT NULL` (millisecondes). Deux bornes indépendantes :
+**expiration absolue à 7 jours** (`expires_at`) et **inactivité de 24 heures**
+(`last_seen_at`). Chaque requête authentifiée rafraîchit `last_seen_at` et
+repousse donc la fenêtre d'inactivité ; une session inactive depuis 24 h est
+refusée à la prochaine requête (`401`, reconnexion nécessaire), même si le
+cookie est encore valide : le serveur reste l'autorité. Le cookie garde
+`Max-Age=604800` (7 jours) comme borne extérieure ; le navigateur le conserve
+donc jusqu'à 7 jours, mais le serveur refuse toute session après 24 h sans
+activité. Les lignes expirées **ou inactives** sont supprimées à chaque lecture
+et au démarrage.
 
 Variables d'environnement (dans `Config`) :
 

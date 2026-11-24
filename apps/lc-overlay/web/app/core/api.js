@@ -70,6 +70,17 @@ export async function lookupMediaCache(guildId, url) {
   return body.cached === true;
 }
 
+// Upload-cache probe for a file import: the server says whether this guild may
+// reuse the content and whether a card already shows it. The answer carries no
+// media metadata.
+export async function lookupUploadCache(guildId, sha256) {
+  const body = await apiForGuild(guildId, 'POST', '/overlay/media-board/uploads/lookup', { sha256 }, {
+    silent: true,
+    timeoutMs: 5000,
+  });
+  return { cached: body.cached === true, onBoard: body.onBoard === true };
+}
+
 // Runs an action, shows its error as a toast and returns `undefined` on
 // failure.
 //

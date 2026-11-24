@@ -560,6 +560,13 @@
         return false;
       }
     }
+    if (path === '/overlay/media-board/uploads/lookup' && method === 'POST') {
+      const sha256 = String((payload.body && payload.body.sha256) || '').toLowerCase();
+      return ok({
+        cached: sha256 === CACHED_UPLOAD_SHA || sha256 === BOARDED_UPLOAD_SHA,
+        onBoard: sha256 === BOARDED_UPLOAD_SHA,
+      });
+    }
     if (path === '/overlay/media-board/cache' && method === 'POST') {
       // Global lookup: every source on the board, plus one media cached by an
       // ingest client that never reached this board. This second URL is what
@@ -1356,8 +1363,27 @@
   }
 
   const requests = [];
+  // Known file contents used by the add dialog E2E: `abc` is only in the
+  // upload cache, `hello` is already on the board. Their digests are fixed
+  // vectors, so the browser hashes a real File and the mock can answer.
+  const CACHED_UPLOAD_SHA = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+  const BOARDED_UPLOAD_SHA = '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824';
 
-  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, invites, pairingCodes, devices, requests };
+  function startCachedUpload(payload) {
+    const accepted = acceptIngestion({
+      guildId: payload.guildId,
+      name: payload.filename,
+      title: payload.title,
+      message: payload.playOnce ? payload.message : null,
+      contentType: payload.contentType,
+      received: 0,
+      playOnce: Boolean(payload.playOnce),
+      displayDurationSec: payload.displayDurationSec,
+    });
+    return accepted.body;
+  }
+
+  window.__mock = { emit, removeGuild, finishPlaying, reconnect, restartServer, openSettings: openSettingsPage, finishPlacement, settings, previewLayouts, queue, items, guilds, ingestions, invites, pairingCodes, devices, requests, CACHED_UPLOAD_SHA, BOARDED_UPLOAD_SHA };
 
   window.__TAURI_INTERNALS__ = {
     transformCallback(callback) {
@@ -1372,6 +1398,12 @@
           listeners.set(args.event, (listeners.get(args.event) || []).concat(args.handler));
           return Promise.resolve(args.handler);
         case 'media_upload_start': {
+          // A cached file starts its ingestion without receiving a part; a
+          // forced import always opens a real upload.
+          if (!payload.forceRefresh
+            && (payload.sha256 === CACHED_UPLOAD_SHA || payload.sha256 === BOARDED_UPLOAD_SHA)) {
+            return delay(100, startCachedUpload(payload));
+          }
           const uploadId = 'up-' + nextUpload++;
           uploads.set(uploadId, Object.assign({ received: 0, chunks: 0 }, payload));
           return delay(100, { uploadId });

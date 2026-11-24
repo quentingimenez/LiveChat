@@ -87,7 +87,8 @@ Conventions appliquées dans tout le module :
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |
 | `POST` | `/overlay/media-board/cache` | `Authorization: Bearer` (`AddMedia` ou `TriggerPlayback`, refusé en lecture seule) | `media_cache.rs:lookup_cache` | `200 {cached:bool}` |
-| `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` | `media_upload.rs:create_upload` | `201 {uploadId}` |
+| `POST` | `/overlay/media-board/uploads/lookup` | `Authorization: Bearer` (`AddMedia` ou `TriggerPlayback`, refusé en lecture seule) | `media_upload.rs:lookup_upload` | `200 {cached:bool,onBoard:bool}` |
+| `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` | `media_upload.rs:create_upload` | `201 {uploadId}` ou `202 {ingestionId}` si le contenu est déjà en cache |
 | `PUT` | `/overlay/media-board/uploads/{uploadId}/parts?offset=` | `Authorization: Bearer` | `media_upload.rs:put_part` | `200 {received}` |
 | `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` | `media_upload.rs:complete_upload` | `202 {ingestionId}` |
 | `DELETE` | `/overlay/media-board/uploads/{uploadId}` | `Authorization: Bearer` | `media_upload.rs:cancel_upload` | `204` |
@@ -515,9 +516,24 @@ Un fichier voyage en plusieurs requêtes, pour qu'aucun corps ne dépasse la
 limite d'un proxy placé devant le serveur (Cloudflare refuse plus de 100 Mo
 sur son offre gratuite) :
 
+0. `POST /overlay/media-board/uploads/lookup`, corps JSON `{sha256}` : le
+   dialogue Ajouter demande si le contenu est déjà réutilisable pour sa guilde
+   et si une carte le montre déjà → `200 {"cached":bool,"onBoard":bool}`. Le
+   SHA-256 fait 64 caractères hexadécimaux ; la réponse ne contient aucune métadonnée.
+   `cached` exige un asset `READY` non expiré dont le hash est possédé par la
+   guilde (import réussi) **ou** dont l'asset est déjà sur sa board : un hash
+   possédé par une autre guilde reste invisible. Session en lecture seule →
+   `403 read_only_session` avant le corps ; `AddMedia` ou `TriggerPlayback`,
+   puis visibilité de la board de la guilde. `Cache-Control: no-store`.
 1. `POST /overlay/media-board/uploads`, corps JSON
-   `{filename, size, title?, message?, contentType?, replaceItemId?}` : ouvre
-   une session d'envoi → `201 {"uploadId":"<uuid>"}`.
+   `{filename, size, title?, message?, contentType?, replaceItemId?, playOnce?, displayDurationSec?, sha256?, forceRefresh?}` :
+   ouvre une session d'envoi → `201 {"uploadId":"<uuid>"}`. Si `sha256` est
+   fourni, que le cache est accessible et que `forceRefresh` est faux, le
+   serveur démarre directement l'ingestion depuis l'asset en cache → `202
+   {"ingestionId":"<uuid>"}` **sans session ni octets**. Le client doit accepter
+   les deux réponses. `forceRefresh:true` ignore ce raccourci et demande les
+   octets ; la complétion transmet le drapeau au service, qui ne réutilise pas
+   `find_reusable` et repasse par le pipeline.
 2. `PUT /overlay/media-board/uploads/{uploadId}/parts?offset=N`, corps brut
    d'au plus 90 Mio : ajoute une partie à l'octet `N`, qui doit valoir le
    nombre d'octets déjà reçus → `200 {"received":<octets>}`.
@@ -546,6 +562,7 @@ Limites et erreurs synchrones :
 | Cas | Statut | Corps |
 | --- | --- | --- |
 | `filename` absent, vide, trop long ou interdit (ouverture) | 400 | `{"error":"invalid_payload","message":…}` |
+| `sha256` fourni mais pas 64 hex (ouverture ou lookup) | 400 | `{"error":"invalid_payload",…}` |
 | `size` absent ou nul (ouverture) | 400 | `{"error":"invalid_payload",…}` |
 | `size` > `MEDIA_MAX_SIZE_MB` (2048 Mo par défaut), avant tout octet | 413 | `{"error":"payload_too_large","maxBytes":…}` |
 | `replaceItemId` hors de la guilde ou invalide / droit d'édition absent (ouverture) | 404 / 403 | `item_not_found` / `forbidden` |
@@ -564,7 +581,21 @@ Limites et erreurs synchrones :
 
 - `title` par défaut = nom de fichier sans extension ; `title`/`message` tronqués
   aux limites du board ;
-- mêmes étapes que §7.2 après la complétion (registre, `202`, quota 20,
+- `sha256` n'est qu'une **preuve de contenu** fournie par le client : le serveur
+  ne fait jamais confiance à un hash seul. Un import réussi enregistre
+  `(guild_id, source_hash)` dans `guild_upload_cache` (migration 0023) ; le
+  lookup n'expose `cached:true` que si la guilde possède ce hash ou si l'asset
+  est déjà sur sa board. Un hash possédé par une autre guilde et absent de la
+  board reste `cached:false`. `onBoard` est calculé sur les items de la guilde.
+- un `sha256` valide et accessible sans `forceRefresh` démarre l'ingestion
+  depuis l'asset déjà `READY` : `202 {"ingestionId"}` immédiat, aucune session
+  d'upload, aucun octet. Le même contenu peut ensuite être ajouté à une autre
+  guilde si elle possède le hash ou si la carte y est déjà.
+- `forceRefresh:true` ne consulte pas ce raccourci et force le pipeline à
+  réingérer les octets ; `ingest_file_with_cache` transmet le drapeau à
+  `ingest_local`, qui saute `assets::find_reusable`. Le cache reste global mais
+  l'autorisation de réutilisation reste par guilde.
+- mêmes étapes que §7.2 après l'ingestion (registre, `202`, quota 20,
   dédoublonnage, quota board, épinglage, `media.ingestion`, `board.changed`) ;
   le cache upload utilise `upload:sha256:<hex>` et
   `media_assets.source_url = upload:<filename>` ;

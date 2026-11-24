@@ -299,6 +299,10 @@ pub fn router() -> Router<AppState> {
                 .layer(DefaultBodyLimit::max(media_cache::MAX_BODY_BYTES)),
         )
         .route(
+            "/overlay/media-board/uploads/lookup",
+            post(media_upload::lookup_upload).layer(DefaultBodyLimit::max(8 * 1024)),
+        )
+        .route(
             "/overlay/media-board/uploads",
             post(media_upload::create_upload),
         )

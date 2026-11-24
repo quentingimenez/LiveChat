@@ -20,7 +20,7 @@ import {
   MAX_DISPLAY_DURATION_SEC,
   parseDisplayDuration,
 } from '../core/format.js';
-import { lookupMediaCache } from '../core/api.js';
+import { lookupMediaCache, lookupUploadCache } from '../core/api.js';
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
@@ -33,12 +33,15 @@ import {
   cacheLookupUrl,
   defaultAction,
   duplicatePickMessage,
+  filePreflightState,
+  filesToUpload,
   forceRefreshFor,
   initialSource,
   removePickedFile,
   showsPlayFields,
 } from '../core/add-media-rules.js';
 import { droppedMedia } from '../core/media-drop.js';
+import { hashFile } from '../core/sha256.js';
 import { openFileImageEditor } from './editor/index.js';
 import { startFileUpload, startLinkUpload } from './uploads.js';
 
@@ -86,6 +89,11 @@ export function openAddDialog(options) {
   let cacheToken = 0;
   let lastCacheUrl = null;
   let lastCached = false;
+  // File preflight: one digest and one lookup per picked file, kept while the
+  // file stays selected. A new pick cancels the previous sequence.
+  let fileTimer = null;
+  let fileToken = 0;
+  const fileChecks = new Map();
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = prefillFiles.slice();
@@ -194,6 +202,7 @@ export function openAddDialog(options) {
       'Choisir des fichiers',
     );
     const fileList = h('ul', { class: 'file-list', hidden: true });
+    const fileCacheHint = h('p', { class: 'file-hint', role: 'status', hidden: true });
     const fileTitle = h('input', { class: 'field', placeholder: 'Nom du fichier par défaut', maxlength: '240' });
     const fileTitleLabel = h('label', { hidden: true }, 'Titre (facultatif)', fileTitle);
     const multipleHint = h('p', { class: 'file-hint', hidden: true }, 'Chaque fichier utilisera son nom comme titre.');
@@ -213,7 +222,6 @@ export function openAddDialog(options) {
       { class: 'stack' },
       h('label', null, 'Lien du média', linkUrl),
       h('label', null, 'Titre (facultatif)', linkTitle),
-      forceRefreshOption,
       linkMessageLabel,
       linkDurationField,
     );
@@ -227,6 +235,7 @@ export function openAddDialog(options) {
       h('div', { class: 'file-picker' }, pickFilesButton, fileInput),
       h('p', { class: 'file-hint' }, 'Vidéos, images et sons : jusqu’à 2 Go par fichier.'),
       fileList,
+      fileCacheHint,
       duplicateHint,
       fileTitleLabel,
       multipleHint,
@@ -259,18 +268,33 @@ export function openAddDialog(options) {
     let boardItem = null;
 
     function updateSubmit() {
+      const { checking, allOnBoard } = filePreflightState(chosenFiles, fileChecks);
       const noFile = mode === 'file' && chosenFiles.length === 0;
+      const fileChecking = mode === 'file' && checking;
+      // A file already on the board would only be re-pinned: the add waits for
+      // the bypass, exactly like a known link. A file only in the upload cache
+      // is imported without bytes and does not block the submit.
+      const fileBlocked = mode === 'file'
+        && action === 'add'
+        && !checking
+        && allOnBoard
+        && !forceRefreshInput.checked;
       submit.disabled = noFile
+        || fileChecking
+        || fileBlocked
         || boardDuplicateNeedsRefresh(action, mode, boardItem, forceRefreshInput.checked);
       // An edited card is not the original the URL points at: the add creates
       // that original as a second card, so the duplicate sentence would be
       // wrong and must stay hidden.
-      boardHint.hidden = !(
-        action === 'add'
+      const linkHint = action === 'add'
         && mode === 'link'
         && boardItem !== null
-        && !boardItemIsEdited(boardItem)
-      );
+        && !boardItemIsEdited(boardItem);
+      const fileHint = mode === 'file' && action === 'add' && !checking && allOnBoard;
+      boardHint.hidden = !(linkHint || fileHint);
+      boardHint.textContent = fileHint && chosenFiles.length > 1
+        ? 'Les médias sont déjà présents sur la board.'
+        : 'Le média est déjà présent sur la board.';
     }
 
     // The board already showing the typed URL is known without a round trip:
@@ -298,6 +322,13 @@ export function openAddDialog(options) {
       if (cacheTimer) {
         clearTimeout(cacheTimer);
         cacheTimer = null;
+      }
+      if (mode === 'file') {
+        cacheToken += 1;
+        lastCacheUrl = null;
+        lastCached = false;
+        updateFileCacheUi();
+        return;
       }
       syncBoardItem();
       const url = cacheLookupUrl(mode, linkUrl.value);
@@ -342,6 +373,92 @@ export function openAddDialog(options) {
       }, 300);
     }
 
+    function pruneFileChecks() {
+      for (const file of fileChecks.keys()) {
+        if (!chosenFiles.includes(file)) {
+          fileChecks.delete(file);
+        }
+      }
+    }
+
+    function updateFileCacheUi() {
+      if (mode !== 'file') {
+        return;
+      }
+      const { checking, anyCached } = filePreflightState(chosenFiles, fileChecks);
+      fileCacheHint.hidden = !checking;
+      fileCacheHint.textContent = checking ? 'Vérification des fichiers…' : '';
+      // A cached upload is importable without bytes, but the user may still
+      // force the server to receive the file again.
+      applyCacheVisibility(!checking && anyCached);
+    }
+
+    async function runFilePreflight(token) {
+      for (const file of chosenFiles.slice()) {
+        if (token !== fileToken || mode !== 'file' || !chosenFiles.includes(file)) {
+          return;
+        }
+        const previous = fileChecks.get(file);
+        if (previous && previous.status === 'checked') {
+          continue;
+        }
+        fileChecks.set(file, { status: 'checking', sha256: previous?.sha256 || null });
+        updateFileCacheUi();
+        let sha256 = previous?.sha256 || null;
+        if (!sha256) {
+          try {
+            sha256 = await hashFile(file);
+          } catch {
+            if (token !== fileToken || mode !== 'file' || !chosenFiles.includes(file)) {
+              return;
+            }
+            fileChecks.set(file, { status: 'checked', sha256: null, cached: false, onBoard: false });
+            updateFileCacheUi();
+            continue;
+          }
+          if (token !== fileToken || mode !== 'file' || !chosenFiles.includes(file)) {
+            return;
+          }
+        }
+        let result = { cached: false, onBoard: false };
+        try {
+          result = await lookupUploadCache(state.activeGuildId, sha256);
+        } catch {
+          // A lookup failure must not block the import: the server still
+          // accepts the upload and will reuse its cache on its own.
+        }
+        if (token !== fileToken || mode !== 'file' || !chosenFiles.includes(file)) {
+          return;
+        }
+        fileChecks.set(file, {
+          status: 'checked',
+          sha256,
+          cached: result.cached === true,
+          onBoard: result.onBoard === true,
+        });
+        updateFileCacheUi();
+      }
+    }
+
+    function scheduleFilePreflight() {
+      if (fileTimer) {
+        clearTimeout(fileTimer);
+        fileTimer = null;
+      }
+      fileToken += 1;
+      const token = fileToken;
+      pruneFileChecks();
+      if (mode !== 'file' || chosenFiles.length === 0) {
+        updateFileCacheUi();
+        return;
+      }
+      updateFileCacheUi();
+      fileTimer = setTimeout(() => {
+        fileTimer = null;
+        void runFilePreflight(token);
+      }, 150);
+    }
+
     // A field that does not apply is hidden *and* disabled: an invalid value
     // typed before a switch (0, 700…) would otherwise still block the form's
     // native validation.
@@ -383,6 +500,9 @@ export function openAddDialog(options) {
       linkUrl.disabled = !isLink;
       updateSubmit();
       syncFields();
+      if (mode === 'file') {
+        scheduleFilePreflight();
+      }
     }
 
     function renderFileList() {
@@ -442,6 +562,7 @@ export function openAddDialog(options) {
       multipleHint.hidden = chosenFiles.length <= 1;
       updateSubmit();
       syncFields();
+      scheduleFilePreflight();
     }
 
     const form = h(
@@ -503,15 +624,33 @@ export function openAddDialog(options) {
           if (chosenFiles.length === 0) {
             return;
           }
-          const payloads = chosenFiles.map((file) => ({
-            guildId,
-            file,
-            title: chosenFiles.length === 1 ? fileTitle.value.trim() : '',
-            message: playOnce ? fileMessage.value : '',
-            playOnce,
-            // A video or an audio keeps its own length.
-            displayDurationSec: mayBeImage(file) ? displayDurationSec : null,
-          }));
+          const { checking } = filePreflightState(chosenFiles, fileChecks);
+          if (checking) {
+            return;
+          }
+          const forceRefresh = forceRefreshInput.checked;
+          // A file already on the board is skipped when adding: the server
+          // would only re-pin it. The bypass keeps every file, so the upload
+          // really replaces the media. A play-once still uses the cached
+          // asset without uploading.
+          const files = filesToUpload(action, forceRefresh, chosenFiles, fileChecks);
+          if (files.length === 0) {
+            return;
+          }
+          const payloads = files.map((file) => {
+            const check = fileChecks.get(file);
+            return {
+              guildId,
+              file,
+              title: files.length === 1 ? fileTitle.value.trim() : '',
+              message: playOnce ? fileMessage.value : '',
+              playOnce,
+              // A video or an audio keeps its own length.
+              displayDurationSec: mayBeImage(file) ? displayDurationSec : null,
+              sha256: check?.sha256 || null,
+              forceRefresh,
+            };
+          });
           close();
           for (const payload of payloads) {
             startFileUpload(payload);
@@ -524,6 +663,7 @@ export function openAddDialog(options) {
         h('div', { class: 'add-media-modes', role: 'group', 'aria-label': 'Type d’ajout' }, linkButton, fileButton)),
       linkPanel,
       filePanel,
+      forceRefreshOption,
       h(
         'div',
         { class: 'actions' },
@@ -586,6 +726,11 @@ export function openAddDialog(options) {
         cacheTimer = null;
       }
       cacheToken += 1;
+      if (fileTimer) {
+        clearTimeout(fileTimer);
+        fileTimer = null;
+      }
+      fileToken += 1;
       dropSurface = null;
     },
   });

@@ -43,6 +43,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use futures_util::StreamExt as _;
+use lc_domain::rights::{Action, Surface};
 use lc_domain::{GuildId, Permission};
 use lc_media::error::MediaErrorCode;
 use serde::Deserialize;
@@ -52,17 +53,18 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::ingestions::StartIngestionError;
+use crate::media::assets;
 use crate::media::errors::MediaServiceError;
 use crate::media::service::MediaService;
 
 use super::auth::AuthedOverlayClient;
 use super::guild::require;
 use super::media_board::{
-    ensure_can_edit, ensure_writable, guild_item, media_service_error, too_many_ingestions,
-    IngestionFailure,
+    ensure_board_visible_for, ensure_can_edit, ensure_writable, guild_item, media_service_error,
+    too_many_ingestions, IngestionFailure,
 };
 use super::media_ingestion::{spawn_ingestion, BoardTarget, IngestionInput};
-use super::{db, internal_error, json_response, now};
+use super::{db, db_failure, internal_error, json_response, now};
 
 /// Largest body accepted for one part (90 MiB, under Cloudflare's 100 MB).
 pub const MAX_PART_BYTES: u64 = 90 * 1024 * 1024;
@@ -110,6 +112,14 @@ pub(super) struct CreateUploadBody {
     /// image seulement, une vidéo ou un son garde sa propre durée.
     #[serde(default)]
     display_duration_sec: Option<serde_json::Value>,
+    /// SHA-256 of the file, computed by the client before the upload. When the
+    /// guild already imported it, the server starts the ingestion without
+    /// receiving the bytes.
+    #[serde(default)]
+    sha256: Option<String>,
+    /// Re-run the pipeline instead of reusing the cached asset.
+    #[serde(default)]
+    force_refresh: bool,
 }
 
 /// Query of `PUT /overlay/media-board/uploads/{uploadId}/parts`.
@@ -123,16 +133,13 @@ pub(super) struct PartQuery {
 /// An upload being received.
 struct UploadSession {
     target: BoardTarget,
-    /// The media is played once instead of reaching the board.
-    play_once: bool,
+    /// Re-run the pipeline instead of reusing the cached asset.
+    force_refresh: bool,
     filename: String,
     content_type: Option<String>,
     title: Option<String>,
     /// Caption of a play-once; `None` for anything that joins the board.
     play_text: Option<String>,
-    /// Display time chosen for a play-once image; the guild default when
-    /// `None`. A video or an audio keeps its own length.
-    display_duration_sec: Option<i64>,
     /// Declared total size.
     size: u64,
     /// Bytes written so far.
@@ -251,6 +258,62 @@ impl UploadSessions {
     }
 }
 
+/// Whether this guild may import `source_hash` without sending the bytes.
+///
+/// The global content cache is not a permission: the guild must have imported
+/// the file itself (ownership table) or already show it on its board. A hash
+/// owned by another guild and absent from this board stays invisible.
+struct UploadCacheAccess {
+    /// The bytes are present in the server cache and reusable.
+    cached: bool,
+    /// The guild board already shows a card for this media.
+    on_board: bool,
+}
+
+/// Validates a client SHA-256 and returns the upload cache key
+/// (`upload:sha256:<hex>`), or `None` when the client sent nothing.
+fn upload_source_hash(value: Option<&str>) -> Result<Option<String>, Response> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(raw) if raw.len() == 64 && raw.bytes().all(|byte| byte.is_ascii_hexdigit()) => {
+            Ok(Some(format!("upload:sha256:{}", raw.to_ascii_lowercase())))
+        }
+        Some(_) => Err(invalid_payload("sha256 must be 64 hexadecimal characters")),
+    }
+}
+
+async fn upload_cache_accessible(
+    state: &AppState,
+    db: &lc_db::Db,
+    guild_id: &GuildId,
+    source_hash: &str,
+) -> Result<UploadCacheAccess, Response> {
+    let owned = db
+        .guild_upload_cache()
+        .contains(guild_id, source_hash)
+        .await
+        .map_err(|error| db_failure("overlay_media_upload.cache_owner", &error))?;
+    let asset = db
+        .media_assets()
+        .get_by_source_hash(source_hash)
+        .await
+        .map_err(|error| db_failure("overlay_media_upload.cache_asset", &error))?;
+    let on_board = match asset {
+        Some(asset) => db
+            .media_board()
+            .get_by_guild_and_asset(guild_id, asset.id)
+            .await
+            .map_err(|error| db_failure("overlay_media_upload.cache_board", &error))?
+            .is_some(),
+        None => false,
+    };
+    let cached = (owned || on_board)
+        && assets::is_cached(db, source_hash, now(state))
+            .await
+            .map_err(|error| media_service_error(&error))?;
+    Ok(UploadCacheAccess { cached, on_board })
+}
+
 /// Handler for `POST /overlay/media-board/uploads`.
 pub async fn create_upload(
     State(state): State<AppState>,
@@ -296,6 +359,10 @@ pub async fn create_upload(
         Some(0) => return invalid_payload("file is empty"),
         Some(size) => size,
         None => return invalid_payload("size is required"),
+    };
+    let sha256 = match upload_source_hash(body.sha256.as_deref()) {
+        Ok(sha256) => sha256,
+        Err(response) => return response,
     };
 
     // A missing database is reported at once (503): the ingestion cannot
@@ -343,6 +410,62 @@ pub async fn create_upload(
         }
         None => BoardTarget::NewItem,
     };
+    // A play-once never touches the board: its target is fixed here, before a
+    // cached import and before an upload session are built.
+    let target = if body.play_once {
+        BoardTarget::PlayOnce {
+            display_duration_sec,
+        }
+    } else {
+        target
+    };
+    let title = non_blank(body.title.as_deref()).or_else(|| Some(default_title(&filename)));
+    // The text only belongs to a play-once; a board add keeps none.
+    let play_text = if body.play_once {
+        non_blank(body.message.as_deref())
+    } else {
+        None
+    };
+    let content_type = non_blank(body.content_type.as_deref());
+
+    // A file already imported by this guild does not need its bytes again.
+    // The ownership table and the board both prove access; a bare global hash
+    // must never be enough (it would leak another guild's private media).
+    if !body.force_refresh {
+        if let Some(source_hash) = sha256.as_deref() {
+            match upload_cache_accessible(&state, db, auth.guild_id(), source_hash).await {
+                Ok(UploadCacheAccess { cached: true, .. }) => {
+                    let ingestion_id = match state.ingestions.start(
+                        auth.guild_id().clone(),
+                        auth.client.id.as_uuid(),
+                        now(&state),
+                    ) {
+                        Ok(ingestion_id) => ingestion_id,
+                        Err(StartIngestionError::TooManyProcessing) => {
+                            return too_many_ingestions();
+                        }
+                    };
+                    spawn_ingestion(
+                        state,
+                        auth,
+                        ingestion_id.clone(),
+                        IngestionInput::Cached {
+                            source_hash: source_hash.to_owned(),
+                        },
+                        target,
+                        title,
+                        play_text,
+                    );
+                    return json_response(
+                        StatusCode::ACCEPTED,
+                        serde_json::json!({ "ingestionId": ingestion_id }),
+                    );
+                }
+                Ok(_) => {}
+                Err(response) => return response,
+            }
+        }
+    }
 
     let temp = match UploadTempDir::create().await {
         Ok(temp) => temp,
@@ -360,22 +483,11 @@ pub async fn create_upload(
     };
     let session = UploadSession {
         target,
-        play_once: body.play_once,
-        title: non_blank(body.title.as_deref()).or_else(|| Some(default_title(&filename))),
-        // The text only belongs to a play-once; a board add keeps none.
-        play_text: if body.play_once {
-            non_blank(body.message.as_deref())
-        } else {
-            None
-        },
-        // Likewise, a display time only belongs to a play-once.
-        display_duration_sec: if body.play_once {
-            display_duration_sec
-        } else {
-            None
-        },
-        content_type: non_blank(body.content_type.as_deref()),
+        force_refresh: body.force_refresh,
         filename,
+        content_type,
+        title,
+        play_text,
         size,
         received: 0,
         hasher: Sha256::new(),
@@ -396,6 +508,69 @@ pub async fn create_upload(
         StatusCode::CREATED,
         serde_json::json!({ "uploadId": upload_id }),
     )
+}
+
+/// Body of `POST /overlay/media-board/uploads/lookup`.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct UploadLookupBody {
+    #[serde(default)]
+    sha256: Option<String>,
+}
+
+/// Handler for `POST /overlay/media-board/uploads/lookup`.
+///
+/// The answer has no media metadata: `cached` says the guild may import the
+/// content without sending it, `onBoard` says a card already shows it. A hash
+/// that is cached but not owned by this guild and absent from its board is
+/// indistinguishable from an unknown file.
+pub async fn lookup_upload(
+    State(state): State<AppState>,
+    auth: AuthedOverlayClient,
+    body: Result<Json<UploadLookupBody>, JsonRejection>,
+) -> Response {
+    if let Err(response) = ensure_writable(&auth) {
+        return response;
+    }
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => {
+            tracing::debug!(
+                error = %rejection.body_text(),
+                "corps invalide sur POST /overlay/media-board/uploads/lookup"
+            );
+            return invalid_payload("invalid upload lookup");
+        }
+    };
+    let source_hash = match upload_source_hash(body.sha256.as_deref()) {
+        Ok(Some(source_hash)) => source_hash,
+        Ok(None) => return invalid_payload("sha256 is required"),
+        Err(response) => return response,
+    };
+    let db = match db(&state) {
+        Ok(db) => db,
+        Err(response) => return response,
+    };
+    let role = auth.role();
+    let can_add = state
+        .rights
+        .allowed(Surface::Overlay, Action::AddMedia, role.into());
+    let can_play = state
+        .rights
+        .allowed(Surface::Overlay, Action::TriggerPlayback, role.into());
+    if !can_add && !can_play {
+        return super::error(StatusCode::FORBIDDEN, "forbidden");
+    }
+    if let Err(response) = ensure_board_visible_for(&state, db, auth.guild_id(), role).await {
+        return response;
+    }
+    match upload_cache_accessible(&state, db, auth.guild_id(), &source_hash).await {
+        Ok(access) => json_response(
+            StatusCode::OK,
+            serde_json::json!({ "cached": access.cached, "onBoard": access.on_board }),
+        ),
+        Err(response) => response,
+    }
 }
 
 /// Handler for `PUT /overlay/media-board/uploads/{uploadId}/parts`.
@@ -498,27 +673,17 @@ pub async fn complete_upload(
     }
     let UploadSession {
         target,
-        play_once,
+        force_refresh,
         filename,
         content_type,
         title,
         play_text,
-        display_duration_sec,
         hasher,
         file,
         temp,
         ..
     } = session;
     drop(file);
-    // A play-once keeps the media off the board: the ingestion turns it into
-    // a playback job instead of an item.
-    let target = if play_once {
-        BoardTarget::PlayOnce {
-            display_duration_sec,
-        }
-    } else {
-        target
-    };
 
     let ingestion_id = match state.ingestions.start(
         auth.guild_id().clone(),
@@ -538,6 +703,7 @@ pub async fn complete_upload(
             filename,
             content_type,
             content_sha256: format!("{:x}", hasher.finalize()),
+            force_refresh,
         },
         target,
         title,

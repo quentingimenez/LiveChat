@@ -479,6 +479,37 @@ async fn upload_png_is_ingested_asynchronously_and_reuses_asset() {
 }
 
 #[tokio::test]
+async fn upload_records_the_guild_cache_ownership() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let (status, body) = upload_file(&app, TOKEN, json!({"filename": "owned.png"}), TINY_PNG).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+    let entry = wait_finished(&state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+
+    let asset = db
+        .media_assets()
+        .list_by_status(MediaStatus::Ready, 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .next()
+        .expect("asset importé");
+    let digest = asset
+        .source_hash
+        .strip_prefix("upload:sha256:")
+        .expect("clé de cache upload")
+        .to_owned();
+    let (status, body) =
+        send_json(&app, lookup_request(Some(TOKEN), json!({"sha256": digest}))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": true, "onBoard": true}));
+}
+
+#[tokio::test]
 async fn failed_upload_reports_a_code_and_a_readable_message() {
     let dir = TempDir::new().unwrap();
     let (app, db, state, hub) = harness(&dir.path().join("media"), 4).await;
@@ -1271,6 +1302,215 @@ async fn play_once_upload_validates_the_display_time() {
 /// « Jouer une fois » par fichier exige `TriggerPlayback` (403 comme les
 /// autres refus), et refuse un `replaceItemId` : rien ne remplacera un item
 /// d'un média qui ne rejoindra pas le board.
+fn other_guild() -> GuildId {
+    GuildId::parse("223456789012345678").unwrap()
+}
+
+fn lookup_request(token: Option<&str>, body: Value) -> Request<Body> {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri("/overlay/media-board/uploads/lookup")
+        .header(header::CONTENT_TYPE, "application/json");
+    if let Some(token) = token {
+        builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+    }
+    builder.body(Body::from(body.to_string())).unwrap()
+}
+
+/// Inserts a READY upload-cache asset whose bytes exist on disk.
+async fn insert_cached_upload(db: &Db, media_dir: &Path, hex: &str) -> MediaAsset {
+    let path = media_dir.join(format!("cached-upload-{hex}.mp4"));
+    tokio::fs::write(&path, b"cached-media").await.unwrap();
+    let asset = MediaAsset {
+        id: MediaAssetId::new_v4(),
+        source_hash: format!("upload:sha256:{hex}"),
+        source_url: format!("upload:sha256:{hex}"),
+        source_title: None,
+        kind: MediaKind::Video,
+        mime: "video/mp4".to_owned(),
+        duration_sec: Some(10),
+        width: Some(640),
+        height: Some(360),
+        is_vertical: false,
+        storage_path: path.to_string_lossy().into_owned(),
+        size_bytes: 12,
+        status: MediaStatus::Ready,
+        error: None,
+        last_accessed_at: fixed_now(),
+        expires_at: fixed_now() + Duration::days(1),
+        created_at: fixed_now(),
+    };
+    db.media_assets().insert(&asset).await.unwrap();
+    asset
+}
+
+async fn insert_board_item_for(db: &Db, guild_id: &GuildId, asset_id: MediaAssetId) {
+    let item = MediaBoardItem {
+        id: MediaBoardItemId::new_v4(),
+        guild_id: guild_id.clone(),
+        media_asset_id: asset_id,
+        title: Some("cached".to_owned()),
+        message: None,
+        created_by_discord_user_id: None,
+        created_by_name: None,
+        created_at: fixed_now(),
+        artwork_asset_id: None,
+        artwork_on_overlay: false,
+        display_duration_sec: None,
+        display_scale_percent: None,
+    };
+    db.media_board().create(&item).await.unwrap();
+}
+
+#[tokio::test]
+async fn upload_lookup_only_reveals_owned_or_boarded_media() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, _state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+
+    let (status, body) = send_json(
+        &app,
+        lookup_request(Some(TOKEN), json!({"sha256": "a".repeat(64)})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": false, "onBoard": false}));
+
+    let hex = "b".repeat(64);
+    let asset = insert_cached_upload(&db, dir.path(), &hex).await;
+    let lookup = json!({"sha256": hex});
+    let (status, body) = send_json(&app, lookup_request(Some(TOKEN), lookup.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": false, "onBoard": false}));
+
+    db.guild_upload_cache()
+        .record(&other_guild(), &asset.source_hash, fixed_now())
+        .await
+        .unwrap();
+    let (status, body) = send_json(&app, lookup_request(Some(TOKEN), lookup.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": false, "onBoard": false}));
+
+    db.guild_upload_cache()
+        .record(&guild(), &asset.source_hash, fixed_now())
+        .await
+        .unwrap();
+    let (status, body) = send_json(&app, lookup_request(Some(TOKEN), lookup.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": true, "onBoard": false}));
+
+    insert_board_item_for(&db, &guild(), asset.id).await;
+    let (status, body) = send_json(&app, lookup_request(Some(TOKEN), lookup)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": true, "onBoard": true}));
+
+    let other_hex = "c".repeat(64);
+    let other_asset = insert_cached_upload(&db, dir.path(), &other_hex).await;
+    insert_board_item_for(&db, &other_guild(), other_asset.id).await;
+    let (status, body) = send_json(
+        &app,
+        lookup_request(Some(TOKEN), json!({"sha256": other_hex})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"cached": false, "onBoard": false}));
+}
+
+#[tokio::test]
+async fn upload_lookup_rejects_invalid_or_unauthorized_requests() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, _state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    insert_client(&db, OverlaySessionMode::InviteReadOnly, READ_ONLY_TOKEN).await;
+
+    let (status, body) =
+        send_json(&app, lookup_request(Some(TOKEN), json!({"sha256": "zz"}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["error"], "invalid_payload");
+
+    let (status, body) = send_json(&app, lookup_request(Some(TOKEN), json!({}))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["message"], "sha256 is required");
+
+    let (status, body) = send_json(
+        &app,
+        lookup_request(Some(READ_ONLY_TOKEN), json!({"sha256": "a".repeat(64)})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["error"], "read_only_session");
+
+    let (status, body) = send_json(
+        &app,
+        lookup_request(None, json!({"sha256": "a".repeat(64)})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+}
+
+#[tokio::test]
+async fn upload_start_imports_a_cached_upload_without_bytes() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    let client = insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let hex = "d".repeat(64);
+    let asset = insert_cached_upload(&db, dir.path(), &hex).await;
+    db.guild_upload_cache()
+        .record(&guild(), &asset.source_hash, fixed_now())
+        .await
+        .unwrap();
+
+    let (status, body) = send_json(
+        &app,
+        create_request(
+            TOKEN,
+            &json!({"filename": "clip.mp4", "size": 12, "sha256": hex}),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert!(body["uploadId"].is_null(), "{body}");
+    let ingestion_id = body["ingestionId"].as_str().unwrap().to_owned();
+    assert!(state.uploads.is_empty());
+
+    let entry = wait_finished(&state, client.id.as_uuid(), &ingestion_id).await;
+    assert_eq!(entry.status, IngestionStatus::Ready, "{entry:?}");
+    let items = db.media_board().list_by_guild(&guild()).await.unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].media_asset_id, asset.id);
+}
+
+#[tokio::test]
+async fn upload_start_keeps_the_bytes_when_force_refresh_is_set() {
+    let dir = TempDir::new().unwrap();
+    let (app, db, state, _hub) = harness(&dir.path().join("media"), 4).await;
+    insert_client(&db, OverlaySessionMode::Normal, TOKEN).await;
+    let hex = "e".repeat(64);
+    let asset = insert_cached_upload(&db, dir.path(), &hex).await;
+    db.guild_upload_cache()
+        .record(&guild(), &asset.source_hash, fixed_now())
+        .await
+        .unwrap();
+
+    let (status, body) = send_json(
+        &app,
+        create_request(
+            TOKEN,
+            &json!({
+                "filename": "clip.mp4",
+                "size": 12,
+                "sha256": hex,
+                "forceRefresh": true,
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    assert!(body["uploadId"].as_str().is_some(), "{body}");
+    assert!(body["ingestionId"].is_null(), "{body}");
+    assert_eq!(state.uploads.len(), 1);
+}
+
 #[tokio::test]
 async fn play_once_upload_checks_the_right_and_refuses_a_replacement() {
     let dir = TempDir::new().unwrap();

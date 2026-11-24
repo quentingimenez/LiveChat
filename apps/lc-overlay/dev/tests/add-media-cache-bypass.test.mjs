@@ -1,10 +1,9 @@
-// L’option « Ignorer le cache serveur » est propre à une ingestion de lien :
-// la board l’offre dans le panneau Lien du dialogue Ajouter, jamais pour un
-// fichier, quand le média est déjà sur la board ou quand le lookup global du
-// serveur dit qu’il le possède. Un média déjà sur la board bloque aussi
-// l’envoi tant que le contournement n’est pas coché. Ces tests gardent le
-// câblage que les helpers purs ne peuvent pas prouver : présence du contrôle,
-// debounce/token du lookup, condition d’affichage et corps de la requête.
+// L’option « Ignorer le cache serveur » couvre les deux sources du dialogue
+// Ajouter : un lien déjà connu du serveur, ou un fichier dont le SHA-256 est
+// déjà dans le cache de la guilde. Un média déjà sur la board bloque l’envoi
+// tant que le contournement n’est pas coché. Ces tests gardent le câblage que
+// les helpers purs ne peuvent pas prouver : présence du contrôle, debounce et
+// séquence des lookups, condition d’affichage et corps des requêtes.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -64,12 +63,24 @@ const linkEntry = balancedBlock(
   '}',
 );
 const sendLink = balancedBlock(uploads, 'async function sendLink', '{', '}');
+const startFile = balancedBlock(uploads, 'export function startFileUpload', '(', ')');
+const fileEntry = balancedBlock(
+  uploads.slice(uploads.indexOf('export function startFileUpload')),
+  'const entry = {',
+  '{',
+  '}',
+);
+const sendFile = balancedBlock(uploads, 'async function sendFile', '{', '}');
+const preflight = balancedBlock(dialog, 'async function runFilePreflight', '{', '}');
+const schedulePreflight = balancedBlock(dialog, 'function scheduleFilePreflight', '{', '}');
+const fileCacheUi = balancedBlock(dialog, 'function updateFileCacheUi', '{', '}');
 
-test('le dialogue offre le contournement dans le panneau du lien', () => {
+test('le dialogue offre un seul contournement, commun aux deux sources', () => {
   assert.match(dialog, /class: 'switch cache-switch'/);
   assert.match(dialog, /'Ignorer le cache serveur'/);
-  assert.match(linkPanel, /forceRefreshOption/);
+  assert.doesNotMatch(linkPanel, /forceRefreshOption/);
   assert.doesNotMatch(filePanel, /forceRefreshOption/);
+  assert.match(dialog, /filePanel,\s*forceRefreshOption,\s*h\(/);
 });
 
 test('le contournement suit la source et le lookup global du serveur', () => {
@@ -111,4 +122,42 @@ test('l’entrée d’envoi garde le choix et le corps l’envoie au board', () 
   assert.match(startLink, /forceRefresh = false/);
   assert.match(linkEntry, /forceRefresh: Boolean\(forceRefresh\)/);
   assert.match(sendLink, /const body = linkUploadBody\(entry\)/);
+});
+
+test('le préflight fichier hache puis interroge le cache avant de laisser envoyer', () => {
+  assert.match(dialog, /filePreflightState\(chosenFiles, fileChecks\)/);
+  assert.match(preflight, /hashFile\(file\)/);
+  assert.match(preflight, /lookupUploadCache\(state\.activeGuildId, sha256\)/);
+  assert.match(preflight, /token !== fileToken/);
+  assert.match(schedulePreflight, /setTimeout\(/);
+  assert.match(schedulePreflight, /150/);
+  assert.match(fileCacheUi, /applyCacheVisibility\(!checking && anyCached\)/);
+  assert.match(fileCacheUi, /Vérification des fichiers…/);
+  assert.match(updateSubmit, /fileChecking/);
+  assert.match(updateSubmit, /allOnBoard/);
+  assert.match(updateSubmit, /!forceRefreshInput\.checked/);
+});
+
+test('un ajout saute les fichiers de la board et envoie le contournement', () => {
+  assert.match(dialog, /filesToUpload\(action, forceRefresh, chosenFiles, fileChecks\)/);
+  assert.match(dialog, /sha256: check\?\.sha256 \|\| null/);
+  assert.match(dialog, /forceRefresh,\s*\}/);
+});
+
+test('un fichier en cache démarre une ingestion sans téléverser ses octets', () => {
+  assert.match(startFile, /sha256 = null/);
+  assert.match(startFile, /forceRefresh = false/);
+  assert.match(fileEntry, /sha256: sha256 \|\| null/);
+  assert.match(fileEntry, /forceRefresh: Boolean\(forceRefresh\)/);
+  assert.match(sendFile, /sha256: entry\.sha256 \|\| null/);
+  assert.match(sendFile, /forceRefresh: Boolean\(entry\.forceRefresh\)/);
+  assert.match(sendFile, /started\.ingestionId/);
+  assert.match(sendFile, /markConverting\(entry, started\.ingestionId\)/);
+});
+
+test('le préflight fichier passe par la route dédiée du cache upload', () => {
+  assert.match(api, /\/overlay\/media-board\/uploads\/lookup/);
+  assert.match(api, /timeoutMs: 5000/);
+  assert.match(api, /body\.cached === true/);
+  assert.match(api, /body\.onBoard === true/);
 });

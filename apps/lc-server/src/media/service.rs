@@ -256,7 +256,7 @@ impl MediaService {
         content_type_hint: Option<&str>,
         content_sha256: &str,
     ) -> MediaServiceResult<MediaAsset> {
-        self.ingest_local(
+        self.ingest_file_with_cache(
             path,
             original_filename,
             content_type_hint,
@@ -264,6 +264,34 @@ impl MediaService {
             false,
         )
         .await
+    }
+
+    /// Like [`Self::ingest_file`], but `force_refresh` re-runs the pipeline
+    /// instead of reusing the cached asset with the same content hash.
+    pub async fn ingest_file_with_cache(
+        &self,
+        path: &Path,
+        original_filename: &str,
+        content_type_hint: Option<&str>,
+        content_sha256: &str,
+        force_refresh: bool,
+    ) -> MediaServiceResult<MediaAsset> {
+        self.ingest_local(
+            path,
+            original_filename,
+            content_type_hint,
+            content_sha256,
+            false,
+            force_refresh,
+        )
+        .await
+    }
+
+    /// Returns a reusable asset for an upload content hash without touching a
+    /// file. Used when the client proved it already owns the bytes.
+    pub async fn cached_upload(&self, source_hash: &str) -> MediaServiceResult<Option<MediaAsset>> {
+        let now = self.clock.now();
+        assets::find_reusable(&self.db, &self.config, source_hash, now).await
     }
 
     /// Applies an edit recipe to a stored media file and ingests the result
@@ -292,6 +320,7 @@ impl MediaService {
             Some(rendered.plan.output_mime()),
             &rendered.content_sha256,
             true,
+            false,
         )
         .await
     }
@@ -304,22 +333,25 @@ impl MediaService {
         content_type_hint: Option<&str>,
         content_sha256: &str,
         edited: bool,
+        force_refresh: bool,
     ) -> MediaServiceResult<MediaAsset> {
         let source = MediaSource::from_upload(original_filename, content_sha256);
         let now = self.clock.now();
         let ttl = assets::cache_ttl(&self.config);
 
-        if let Some(cached) =
-            assets::find_reusable(&self.db, &self.config, &source.source_hash, now).await?
-        {
-            tracing::debug!(
-                source_hash = %cached.source_hash,
-                "asset média téléversé réutilisé depuis le cache"
-            );
-            // An upload cached before covers existed gets one now: there is
-            // no platform to ask, so the cover comes from the video itself.
-            spawn_cover_fetch(&self.thumbnail_context(), &cached, None, None);
-            return Ok(cached);
+        if !force_refresh {
+            if let Some(cached) =
+                assets::find_reusable(&self.db, &self.config, &source.source_hash, now).await?
+            {
+                tracing::debug!(
+                    source_hash = %cached.source_hash,
+                    "asset média téléversé réutilisé depuis le cache"
+                );
+                // An upload cached before covers existed gets one now: there is
+                // no platform to ask, so the cover comes from the video itself.
+                spawn_cover_fetch(&self.thumbnail_context(), &cached, None, None);
+                return Ok(cached);
+            }
         }
 
         let asset = assets::begin_processing(&self.db, &source, now, ttl).await?;
@@ -563,6 +595,51 @@ mod tests {
             .expect("cache hit");
         assert_eq!(ingested.id, asset.id);
         assert_eq!(ingested.status, MediaStatus::Ready);
+    }
+
+    #[tokio::test]
+    async fn force_refresh_bypasses_the_upload_cache() {
+        let fixture = fixture().await;
+        let service = MediaService::new(
+            fixture.config.clone(),
+            fixture.db.clone(),
+            Arc::new(SystemClock),
+        )
+        .expect("service");
+
+        let digest = "a".repeat(64);
+        let cache_key = format!("upload:sha256:{digest}");
+        let cached_path = fixture._dir.path().join("cached.bin");
+        tokio::fs::write(&cached_path, b"cached")
+            .await
+            .expect("fichier en cache");
+        let asset =
+            insert_ready_asset(&fixture, "upload:cached.bin", &cache_key, &cached_path).await;
+
+        let missing = fixture._dir.path().join("missing.bin");
+        let reused = service
+            .ingest_file_with_cache(&missing, "missing.bin", Some("video/mp4"), &digest, false)
+            .await
+            .expect("cache hit");
+        assert_eq!(reused.id, asset.id);
+
+        let error = service
+            .ingest_file_with_cache(&missing, "missing.bin", Some("video/mp4"), &digest, true)
+            .await
+            .expect_err("le contournement aurait dû relancer le pipeline");
+        assert!(
+            error.media_error().is_some(),
+            "erreur média attendue : {error:?}"
+        );
+        let stored = fixture
+            .db
+            .media_assets()
+            .get_by_source_hash(&cache_key)
+            .await
+            .expect("lecture")
+            .expect("asset existant");
+        assert_eq!(stored.id, asset.id);
+        assert_eq!(stored.status, MediaStatus::Failed);
     }
 
     /// Hors lien court, l'identité écrite est celle de `MediaSource` : la

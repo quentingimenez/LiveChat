@@ -17,6 +17,10 @@
 //! Le fichier est écrit dans un dossier temporaire, haché en SHA-256, puis
 //! ingéré par [`MediaService::ingest_file`] : le cache `upload:sha256:<hex>`
 //! déduplique les envois identiques.
+//!
+//! L'auteur du job est le profil **live** du membre propriétaire du client,
+//! relu à chaque envoi (cf. [`super::submit::resolved_author`]) : le client ne
+//! choisit ni son pseudo ni son avatar.
 
 use std::io;
 use std::path::PathBuf;
@@ -33,17 +37,15 @@ use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
 
+use lc_domain::entities::{GuildMember, IngestClient};
 use lc_domain::rights::{Action, Surface};
 
 use crate::app::AppState;
 use crate::media::MediaService;
 
 use super::auth::{self, IngestAuth};
-use super::submit::{finish_ingest, owning_member, IngestOutcome};
-use super::{
-    error_response, internal_error, invalid_payload, media_service_error, simple_error,
-    DEFAULT_INGEST_AUTHOR_NAME,
-};
+use super::submit::{finish_ingest, owning_member, resolved_author, IngestOutcome};
+use super::{error_response, internal_error, invalid_payload, media_service_error, simple_error};
 
 /// Nom de repli quand ni la query ni `Content-Disposition` ne fournissent de nom.
 const DEFAULT_UPLOAD_FILENAME: &str = "upload";
@@ -90,8 +92,8 @@ pub async fn upload(
         tracing::error!("client d'ingestion authentifié sans base de données");
         return internal_error();
     };
-    let client = match authorize(&state, db, &headers).await {
-        Ok(client) => client,
+    let (client, member) = match authorize(&state, db, &headers).await {
+        Ok(auth) => auth,
         Err(response) => return response,
     };
 
@@ -164,12 +166,9 @@ pub async fn upload(
         Err(error) => return media_service_error(error),
     };
 
-    // 6. Auteur lié au token, comme sur `/ingest`.
-    let author_name = author_name(&client);
-    let author_image = client
-        .default_author_image
-        .clone()
-        .filter(|value| !value.trim().is_empty());
+    // 6. Auteur live du membre propriétaire, comme sur `/ingest` : le client
+    //    ne choisit ni son pseudo ni son avatar.
+    let (author_name, author_image) = resolved_author(&client, &member);
 
     let outcome = IngestOutcome {
         asset: Some(&asset),
@@ -185,12 +184,14 @@ pub async fn upload(
     finish_ingest(&state, db, &client, outcome, state.clock.now()).await
 }
 
-/// Resolves the ingest client and checks the extension send right.
+/// Resolves the ingest client, the member owning it and the extension send
+/// right. The member is returned because it also carries the live author of
+/// the job.
 async fn authorize(
     state: &AppState,
     db: &lc_db::Db,
     headers: &HeaderMap,
-) -> Result<lc_domain::entities::IngestClient, Response> {
+) -> Result<(IngestClient, GuildMember), Response> {
     let client = match auth::resolve(state, headers).await {
         Ok(IngestAuth::Client(client)) => client,
         Ok(IngestAuth::Missing { enabled: true }) => {
@@ -205,8 +206,8 @@ async fn authorize(
         Err(error) => return Err(media_service_error(error)),
     };
 
-    let role = match owning_member(db, &client).await {
-        Ok(Some(member)) => member.role,
+    let member = match owning_member(db, &client).await {
+        Ok(Some(member)) => member,
         Ok(None) => return Err(simple_error(StatusCode::FORBIDDEN, "forbidden_role")),
         Err(error) => {
             tracing::error!(error = %error, "reading the member of an ingest client failed");
@@ -215,21 +216,11 @@ async fn authorize(
     };
     if !state
         .rights
-        .allowed(Surface::Extension, Action::Send, role.into())
+        .allowed(Surface::Extension, Action::Send, member.role.into())
     {
         return Err(simple_error(StatusCode::FORBIDDEN, "forbidden_role"));
     }
-    Ok(client)
-}
-
-/// Author display name bound to the ingest client.
-fn author_name(client: &lc_domain::entities::IngestClient) -> String {
-    let name = client.default_author_name.trim();
-    if name.is_empty() {
-        DEFAULT_INGEST_AUTHOR_NAME.to_owned()
-    } else {
-        name.to_owned()
-    }
+    Ok((client, member))
 }
 
 /// Reads the raw body into `path` and returns the lowercase SHA-256 hex digest.
@@ -421,7 +412,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::Router;
     use lc_db::{Db, DbConfig};
-    use lc_domain::entities::{GuildMember, IngestClient};
+    use lc_domain::entities::{GuildMember, IngestClient, PlaybackJob};
     use lc_domain::ids::{GuildId, GuildMemberId, IngestClientId, PlaybackJobId};
     use lc_domain::GuildRole;
     use serde_json::Value;
@@ -547,6 +538,18 @@ mod tests {
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
         )
+    }
+
+    /// Reads back the playback job created by a 201 response.
+    async fn read_job(fixture: &Fixture, body: &Value) -> PlaybackJob {
+        let job_id = body["jobId"].as_str().expect("jobId");
+        fixture
+            .db
+            .playback_jobs()
+            .get(PlaybackJobId::parse(job_id).expect("uuid"))
+            .await
+            .expect("lecture")
+            .expect("job persisté")
     }
 
     #[tokio::test]
@@ -695,6 +698,47 @@ mod tests {
         assert_eq!(job.text.as_deref(), Some("bonjour"));
         assert!(job.show_text);
         assert!(job.media_asset_id.is_some());
+    }
+
+    /// An uploaded media shows the live profile of the member owning the
+    /// client, including a `data:` avatar uploaded from their own computer.
+    #[tokio::test]
+    async fn upload_uses_the_paired_members_live_profile() {
+        let fixture = fixture(2048).await;
+        insert_client(&fixture.db).await;
+        insert_cached_upload(&fixture, "photo.png", b"png-body").await;
+        let guild = GuildId::parse(GUILD).unwrap();
+        let member = fixture
+            .db
+            .guild_members()
+            .list_by_guild(&guild)
+            .await
+            .expect("membres")
+            .into_iter()
+            .next()
+            .expect("membre");
+        let avatar = "data:image/png;base64,\
+                      iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8\
+                      z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        fixture
+            .db
+            .guild_members()
+            .update_profile(member.id, "Nhics_", Some(avatar))
+            .await
+            .expect("profil du membre");
+
+        let (status, body) = post_file(
+            fixture.app.clone(),
+            Some(TOKEN),
+            "/ingest/file?filename=photo.png",
+            b"png-body".to_vec(),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let job = read_job(&fixture, &body).await;
+        assert_eq!(job.author_name.as_deref(), Some("Nhics_"));
+        assert_eq!(job.author_image.as_deref(), Some(avatar));
     }
 
     #[tokio::test]

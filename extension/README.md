@@ -27,8 +27,7 @@ Documentation projet: [`../README.md`](../README.md)
   - `API_URL`
   - `INGEST_API_TOKEN`
   - `guildId`
-  - `authorName`
-  - `authorImage`
+  - aucun champ auteur : le pseudo et l’avatar viennent du profil du membre lié au client côté serveur
 - Permissions domaine API dynamiques (`browser.permissions`).
 
 ## Pré-requis
@@ -101,7 +100,7 @@ chargement temporaire sert au développement, la version publiée passe par AMO
 2. Saisir **obligatoirement** `API_URL` (URL racine du serveur), par exemple `https://livechat.exemple.com`.
 3. Ne pas mettre `/overlay` ni `/ingest` dans `API_URL`.
 4. Générer un code avec `/pair-code`, puis cliquer `Récupérer la configuration`.
-5. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`, `authorName`, `authorImage`) puis sauvegarder si besoin.
+5. Vérifier les champs récupérés (`INGEST_API_TOKEN`, `guildId`) puis sauvegarder si besoin.
 6. Accepter la permission domaine demandée pour l’URL API.
 7. (Optionnel) Cliquer `Tester la config`.
 
@@ -110,7 +109,7 @@ chargement temporaire sert au développement, la version publiée passe par AMO
 - `POST ${API_URL}/ingest`
 - Header: `Authorization: Bearer <INGEST_API_TOKEN>`
 - Payload: `{ guildId, url, text?, forceRefresh?, saveToBoard?, durationSec? }`
-- `authorName`/`authorImage` restent dans `browser.storage.local` et ne sont pas envoyés par l’extension.
+- Aucun champ auteur : le serveur résout pseudo et avatar à chaque envoi depuis le profil du membre propriétaire du client d’ingestion (repli sur l’instantané d’appairage côté serveur).
 
 ## Limites connues
 

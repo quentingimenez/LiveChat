@@ -3,7 +3,7 @@ import {
   setButtonLabel,
   type InjectedButtonState,
 } from './brand-logo';
-import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTwitter';
+import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModal';
 import { initInpageTheme } from './inpage-theme';
 import { TWITTER_BUTTON_LOGO_SIZE_PX, twitterInpageStyles } from './inpage-styles';
 import { normalizeTwitterStatusUrl } from '../lib/url';

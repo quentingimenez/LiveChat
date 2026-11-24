@@ -3,7 +3,7 @@ import {
   setButtonLabel,
   type InjectedButtonState,
 } from './brand-logo';
-import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalYoutube';
+import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModal';
 import { initInpageTheme } from './inpage-theme';
 import { YOUTUBE_BUTTON_LOGO_SIZE_PX, youtubeInpageStyles } from './inpage-styles';
 import {

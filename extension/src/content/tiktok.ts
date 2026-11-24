@@ -3,7 +3,7 @@ import {
   setButtonLabel,
   type InjectedButtonState,
 } from './brand-logo';
-import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModalTiktok';
+import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult } from './composeModal';
 import { initInpageTheme } from './inpage-theme';
 import { TIKTOK_BUTTON_LOGO_SIZE_PX, tiktokInpageStyles } from './inpage-styles';
 import { onTrustedPageEvent, resolveAllowedActionTarget } from './shared';

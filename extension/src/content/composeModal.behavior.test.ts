@@ -4,7 +4,7 @@
 import { Window } from 'happy-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { INVALID_DURATION_MESSAGE } from '../lib/duration';
-import type { OpenComposeModalParams } from './composeModalTwitter';
+import type { OpenComposeModalParams } from './composeModal';
 
 type Site = 'twitter' | 'youtube' | 'tiktok';
 const sites: Site[] = ['twitter', 'youtube', 'tiktok'];

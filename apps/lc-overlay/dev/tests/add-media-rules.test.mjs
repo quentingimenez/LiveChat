@@ -5,8 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  boardItemForUrl,
   cacheBypassVisible,
+  cacheLookupUrl,
   canBypassServerCache,
   defaultAction,
   forceRefreshFor,
@@ -60,23 +60,15 @@ test('un fichier ne demande jamais le contournement, même si la case reste coch
   assert.equal(forceRefreshFor(undefined, true), false);
 });
 
-test('une URL déjà sur la board retrouve sa carte, fragment et espaces ignorés', () => {
-  const items = [
-    { id: 'a', media: { sourceUrl: 'https://example.test/clip#cover' } },
-    { id: 'b', media: { sourceUrl: 'https://example.test/watch?v=2' } },
-  ];
-  assert.equal(boardItemForUrl(items, ' https://example.test/clip ')?.id, 'a');
-  assert.equal(boardItemForUrl(items, 'https://example.test/watch?v=2')?.id, 'b');
-  assert.equal(boardItemForUrl(items, 'https://example.test/watch?v=2&t=4'), null);
-  assert.equal(boardItemForUrl(items, 'https://example.test/other'), null);
-});
-
-test('une URL de fichier ou invalide ne désigne aucune carte', () => {
-  const items = [
-    { id: 'a', media: { sourceUrl: 'upload:sha256:abc' } },
-    { id: 'b', media: null },
-  ];
-  assert.equal(boardItemForUrl(items, 'upload:sha256:abc'), null);
-  assert.equal(boardItemForUrl(items, 'pas une url'), null);
-  assert.equal(boardItemForUrl(items, 'ftp://example.test/clip'), null);
+test('seul un lien http(s) est interrogé auprès du cache serveur', () => {
+  assert.equal(
+    cacheLookupUrl('link', ' https://example.test/watch?v=2 '),
+    'https://example.test/watch?v=2',
+  );
+  assert.equal(cacheLookupUrl('link', 'http://example.test/clip'), 'http://example.test/clip');
+  assert.equal(cacheLookupUrl('link', 'https://example.test/clip#cover'), 'https://example.test/clip#cover');
+  assert.equal(cacheLookupUrl('file', 'https://example.test/clip'), null);
+  assert.equal(cacheLookupUrl('link', 'ftp://example.test/clip'), null);
+  assert.equal(cacheLookupUrl('link', 'pas une url'), null);
+  assert.equal(cacheLookupUrl('link', '  '), null);
 });

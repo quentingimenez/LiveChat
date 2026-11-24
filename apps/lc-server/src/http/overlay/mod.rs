@@ -12,6 +12,7 @@
 //! | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`exp`, `sig`, `clientId`) |
 //! | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` |
 //! | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` — **écriture refusée en `invite_read_only`** |
+//! | `POST` | `/overlay/media-board/cache` | `Authorization: Bearer` — **lecture seule, refusée en `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `PUT` | `/overlay/media-board/uploads/{uploadId}/parts?offset=` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
 //! | `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` — **writes refused in `invite_read_only`** |
@@ -95,6 +96,7 @@ pub(crate) mod guild;
 mod ingest_code;
 mod media;
 pub(crate) mod media_board;
+mod media_cache;
 pub(crate) mod media_cover;
 pub(crate) mod media_edit;
 mod media_import;
@@ -290,6 +292,11 @@ pub fn router() -> Router<AppState> {
         .route(
             "/overlay/media-board/items",
             get(media_board::list_items).post(media_board::create_item),
+        )
+        .route(
+            "/overlay/media-board/cache",
+            post(media_cache::lookup_cache)
+                .layer(DefaultBodyLimit::max(media_cache::MAX_BODY_BYTES)),
         )
         .route(
             "/overlay/media-board/uploads",

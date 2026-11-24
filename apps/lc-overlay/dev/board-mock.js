@@ -557,6 +557,15 @@
         return false;
       }
     }
+    if (path === '/overlay/media-board/cache' && method === 'POST') {
+      // Global lookup: every source on the board, plus one media cached by an
+      // ingest client that never reached this board. This second URL is what
+      // distinguishes a real server lookup from the old board-only check.
+      const url = String((payload.body && payload.body.url) || '');
+      const cached = items.some((item) => sameSourceUrl(item.media.sourceUrl, url))
+        || sameSourceUrl(url, 'https://www.tiktok.com/@cached/video/9');
+      return ok({ cached });
+    }
     if (path === '/overlay/media-board/items' && method === 'POST') {
       const body = payload.body || {};
       const duration = playOnceDisplayDuration(body);

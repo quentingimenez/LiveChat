@@ -30,8 +30,8 @@ export function canBypassServerCache(mode) {
 }
 
 // The bypass only makes sense when the server already holds the media: a new
-// link has no cached copy to ignore. `cached` is the board's knowledge of the
-// URL, not a guess from the field.
+// link has no cached copy to ignore. `cached` comes from the server lookup,
+// never from the board the client happens to have loaded.
 export function cacheBypassVisible(mode, cached) {
   return canBypassServerCache(mode) && cached === true;
 }
@@ -40,32 +40,26 @@ export function forceRefreshFor(mode, checked) {
   return canBypassServerCache(mode) && checked === true;
 }
 
-// A source URL as the board compares it: http(s) only, trimmed, without its
-// fragment. The server keeps the query (a TikTok clip id lives there), so two
-// links that differ by their query are two media.
-function comparableSourceUrl(value) {
+// The URL worth a cache lookup: a trimmed http(s) link on the link source.
+// A file import is keyed by its content and has no server cache. The full
+// validation (public host, credentials, length) belongs to the server.
+export function cacheLookupUrl(mode, value) {
+  if (mode !== 'link') {
+    return null;
+  }
+  const raw = String(value ?? '').trim();
+  if (!raw) {
+    return null;
+  }
   try {
-    const url = new URL(String(value ?? '').trim());
+    const url = new URL(raw);
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return null;
     }
-    url.hash = '';
-    return url.href;
+    return raw;
   } catch {
     return null;
   }
-}
-
-// The board item already showing `value`, when it is a link. An uploaded media
-// has no http source URL, so it is never a match for a typed link. Used by the
-// add dialog to know whether the server already holds the media, and therefore
-// whether a cache bypass is worth offering.
-export function boardItemForUrl(items, value) {
-  const wanted = comparableSourceUrl(value);
-  if (!wanted || !Array.isArray(items)) {
-    return null;
-  }
-  return items.find((item) => comparableSourceUrl(item && item.media && item.media.sourceUrl) === wanted) || null;
 }
 
 // Two picks of the same file hand back two File objects: it is one media, and

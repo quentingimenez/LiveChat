@@ -20,13 +20,14 @@ import {
   MAX_DISPLAY_DURATION_SEC,
   parseDisplayDuration,
 } from '../core/format.js';
+import { lookupMediaCache } from '../core/api.js';
 import { activeGuild, can, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import { openDialog } from '../core/ui.js';
 import {
   addPickedFiles,
-  boardItemForUrl,
   cacheBypassVisible,
+  cacheLookupUrl,
   defaultAction,
   duplicatePickMessage,
   forceRefreshFor,
@@ -76,6 +77,12 @@ export function highlightAddDialog(active) {
 export function openAddDialog(options) {
   const prefill = options && typeof options.url === 'string' ? options.url : '';
   const prefillFiles = options && Array.isArray(options.files) ? options.files : [];
+  // The lookup outlives a single keystroke but not the dialog: both the
+  // debounce and a late response are dropped when it closes.
+  let cacheTimer = null;
+  let cacheToken = 0;
+  let lastCacheUrl = null;
+  let lastCached = false;
   openDialog((close) => {
     let mode = 'link';
     let chosenFiles = prefillFiles.slice();
@@ -101,10 +108,10 @@ export function openAddDialog(options) {
     });
     const linkTitle = h('input', { class: 'field', placeholder: 'Titre du média', maxlength: '240' });
     // The server can download the link again instead of reusing its cached
-    // copy. The option belongs to a link ingestion and is only offered for a
-    // link the board already knows: a new media has no cached copy to bypass.
-    // The file source hides and disables it, and `forceRefreshFor` keeps a
-    // stale choice out of the body.
+    // copy. The option belongs to a link ingestion and is only offered when
+    // the server global lookup says it already holds the media. The file
+    // source hides and disables it, and `forceRefreshFor` keeps a stale choice
+    // out of the body.
     const forceRefreshInput = h('input', {
       type: 'checkbox',
       id: 'add-media-force-refresh',
@@ -245,17 +252,58 @@ export function openAddDialog(options) {
       submit.disabled = mode === 'file' && chosenFiles.length === 0;
     }
 
-    // The bypass is offered only for a link the board already knows: the
-    // server then has a copy a forced ingestion would replace. Hiding the
-    // control also clears a choice made for a previous URL.
-    function syncCacheOption() {
-      const cached = mode === 'link' ? boardItemForUrl(state.items, linkUrl.value) : null;
-      const bypassCache = cacheBypassVisible(mode, Boolean(cached));
-      forceRefreshOption.hidden = !bypassCache;
-      forceRefreshInput.disabled = !bypassCache;
-      if (!bypassCache) {
+    // The bypass is offered only when the server already holds a reusable
+    // media for the typed link. A short debounce groups keystrokes; the token
+    // drops a response that no longer matches the field. While the lookup is
+    // pending the switch stays hidden, and hiding it clears a choice made for
+    // a previous URL.
+    function applyCacheVisibility(visible) {
+      forceRefreshOption.hidden = !visible;
+      forceRefreshInput.disabled = !visible;
+      if (!visible) {
         forceRefreshInput.checked = false;
       }
+    }
+
+    function syncCacheOption() {
+      if (cacheTimer) {
+        clearTimeout(cacheTimer);
+        cacheTimer = null;
+      }
+      const url = cacheLookupUrl(mode, linkUrl.value);
+      if (!url) {
+        cacheToken += 1;
+        lastCacheUrl = null;
+        lastCached = false;
+        applyCacheVisibility(false);
+        return;
+      }
+      if (url === lastCacheUrl) {
+        applyCacheVisibility(cacheBypassVisible(mode, lastCached));
+        return;
+      }
+      applyCacheVisibility(false);
+      const token = ++cacheToken;
+      cacheTimer = setTimeout(() => {
+        cacheTimer = null;
+        lookupMediaCache(state.activeGuildId, url)
+          .then((cached) => {
+            if (token !== cacheToken) {
+              return;
+            }
+            lastCacheUrl = url;
+            lastCached = cached;
+            applyCacheVisibility(cacheBypassVisible(mode, cached));
+          })
+          .catch(() => {
+            if (token !== cacheToken) {
+              return;
+            }
+            lastCacheUrl = null;
+            lastCached = false;
+            applyCacheVisibility(false);
+          });
+      }, 300);
     }
 
     // A field that does not apply is hidden *and* disabled: an invalid value
@@ -493,5 +541,15 @@ export function openAddDialog(options) {
       }
     }, 0);
     return [h('h2', null, 'Ajouter un média'), form];
-  }, { width: 'wide', onClose: () => { dropSurface = null; } });
+  }, {
+    width: 'wide',
+    onClose: () => {
+      if (cacheTimer) {
+        clearTimeout(cacheTimer);
+        cacheTimer = null;
+      }
+      cacheToken += 1;
+      dropSurface = null;
+    },
+  });
 }

@@ -1,8 +1,9 @@
 // L’option « Ignorer le cache serveur » est propre à une ingestion de lien :
 // la board l’offre dans le panneau Lien du dialogue Ajouter, jamais pour un
-// fichier, et seulement quand l’URL correspond à un média déjà connu. Ces tests
-// gardent le câblage que les helpers purs ne peuvent pas prouver : présence du
-// contrôle, suivi de la source, condition d’affichage et corps de la requête.
+// fichier, et seulement quand le lookup global du serveur dit qu’il a déjà le
+// média. Ces tests gardent le câblage que les helpers purs ne peuvent pas
+// prouver : présence du contrôle, debounce/token du lookup, condition
+// d’affichage et corps de la requête.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -10,6 +11,7 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
 const addMedia = read('views/add-media.js');
+const api = read('core/api.js');
 const uploads = read('views/uploads.js');
 
 // Content of the call or block starting at `marker`, strings and templates
@@ -47,6 +49,7 @@ function balancedBlock(source, marker, openChar, closeChar) {
 const dialog = balancedBlock(addMedia, 'export function openAddDialog', '{', '}');
 const syncFields = balancedBlock(dialog, 'function syncFields', '{', '}');
 const syncCache = balancedBlock(dialog, 'function syncCacheOption', '{', '}');
+const applyCache = balancedBlock(dialog, 'function applyCacheVisibility', '{', '}');
 const linkPanel = balancedBlock(dialog, 'const linkPanel = h(', '(', ')');
 const filePanel = balancedBlock(dialog, 'const filePanel = h(', '(', ')');
 const payload = balancedBlock(dialog, 'const payload = {', '{', '}');
@@ -66,13 +69,23 @@ test('le dialogue offre le contournement dans le panneau du lien', () => {
   assert.doesNotMatch(filePanel, /forceRefreshOption/);
 });
 
-test('le contournement suit la source et la présence du média', () => {
-  assert.match(syncCache, /boardItemForUrl\(state\.items, linkUrl\.value\)/);
-  assert.match(syncCache, /cacheBypassVisible\(mode, Boolean\(cached\)\)/);
-  assert.match(syncCache, /forceRefreshOption\.hidden = !bypassCache/);
-  assert.match(syncCache, /forceRefreshInput\.disabled = !bypassCache/);
-  assert.match(syncCache, /if \(!bypassCache\) \{\s*forceRefreshInput\.checked = false/);
+test('le contournement suit la source et le lookup global du serveur', () => {
+  assert.match(syncCache, /cacheLookupUrl\(mode, linkUrl\.value\)/);
+  assert.match(syncCache, /lookupMediaCache\(state\.activeGuildId, url\)/);
+  assert.match(syncCache, /cacheBypassVisible\(mode, cached\)/);
+  assert.match(syncCache, /token !== cacheToken/);
+  assert.match(syncCache, /setTimeout\(/);
+  assert.match(syncCache, /300/);
+  assert.match(applyCache, /forceRefreshOption\.hidden = !visible/);
+  assert.match(applyCache, /forceRefreshInput\.disabled = !visible/);
+  assert.match(applyCache, /forceRefreshInput\.checked = false/);
   assert.match(syncFields, /syncCacheOption\(\)/);
+});
+
+test('le lookup passe par la route dédiée avec un délai court', () => {
+  assert.match(api, /\/overlay\/media-board\/cache/);
+  assert.match(api, /timeoutMs: 5000/);
+  assert.match(api, /body\.cached === true/);
 });
 
 test('le formulaire transmet la case au lancement de l’envoi', () => {

@@ -86,6 +86,7 @@ Conventions appliquées dans tout le module :
 | `GET` | `/overlay/media/{assetId}` | URL signée HMAC (`clientId`, `exp`, `sig`) | `media.rs:86` | `200`/`206`, binaire |
 | `GET` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:list_items` | `200 {total,limit,offset,items}` |
 | `POST` | `/overlay/media-board/items` | `Authorization: Bearer` | `media_board.rs:create_item` | `202 {ingestionId}` |
+| `POST` | `/overlay/media-board/cache` | `Authorization: Bearer` (`AddMedia` ou `TriggerPlayback`, refusé en lecture seule) | `media_cache.rs:lookup_cache` | `200 {cached:bool}` |
 | `POST` | `/overlay/media-board/uploads` | `Authorization: Bearer` | `media_upload.rs:create_upload` | `201 {uploadId}` |
 | `PUT` | `/overlay/media-board/uploads/{uploadId}/parts?offset=` | `Authorization: Bearer` | `media_upload.rs:put_part` | `200 {received}` |
 | `POST` | `/overlay/media-board/uploads/{uploadId}/complete` | `Authorization: Bearer` | `media_upload.rs:complete_upload` | `202 {ingestionId}` |
@@ -478,6 +479,29 @@ Réponse `200` :
 - session invitée autorisée (lecture) ;
 - but : après une reconnexion WebSocket, le board récupère un `media.ingestion`
   manqué. La purge est paresseuse (insertion/lecture), aucun timer.
+
+### 7.2.1.1 `POST /overlay/media-board/cache` (`media_cache.rs`)
+
+Lookup global, en lecture seule : le dialogue Ajouter demande au serveur s'il
+possède déjà un média réutilisable pour l'URL, pour n'offrir « Ignorer le cache
+serveur » que dans ce cas. Le client ne consulte pas la board locale : un média
+ingéré par une autre guilde ou par un client ingest est vu.
+
+- **Autorisation** : Bearer ; une session `INVITE_READ_ONLY` reçoit
+  `403 read_only_session` **avant la lecture du corps**. Il faut `AddMedia` ou
+  `TriggerPlayback`, puis la visibilité de la board de sa guilde (`403
+  forbidden` sinon). Le lookup est global mais ne renvoie aucune métadonnée.
+- **Corps** `{"url":"…"}`, limite 8 Kio ; URL trim ≤ 2 048 caractères,
+  `http(s)` seulement, hôte public, sans credentials, sans résolution DNS.
+  `400 invalid_payload` sinon.
+- **Réponse** `200 {"cached": bool}`, jamais d'id, titre, chemin, guilde ou
+  horodatage ; `Cache-Control: no-store`. L'URL n'est pas journalisée.
+- **Lecture pure** : mêmes conditions qu'un cache hit (`READY`, non expiré,
+  fichier présent) via `assets::is_cached`, sans repousser `expires_at` ni
+  `last_accessed_at` ; une consultation ne prolonge pas la vie du média.
+- Un lien court TikTok ne correspond qu'à l'asset écrit pour l'URL courte, pas
+  à celui obtenu après résolution réseau (le lookup ne fait aucun réseau). Le
+  rate limit IP global de l'overlay s'applique.
 
 ### 7.2.2 `/overlay/media-board/uploads` (`media_upload.rs`)
 

@@ -35,6 +35,7 @@ const TOKEN: &str = "55555555555555555555555555555555555555555555555555555555555
 const OTHER_TOKEN: &str = "6666666666666666666666666666666666666666666666666666666666666666";
 const GUEST_TOKEN: &str = "7777777777777777777777777777777777777777777777777777777777777777";
 const GUILD: &str = "123456789012345678";
+const OTHER_GUILD: &str = "223456789012345678";
 
 fn fixed_now() -> UtcDateTime {
     time::macros::utc_datetime!(2026-11-10 12:00:00)
@@ -42,6 +43,10 @@ fn fixed_now() -> UtcDateTime {
 
 fn guild() -> GuildId {
     GuildId::parse(GUILD).unwrap()
+}
+
+fn other_guild() -> GuildId {
+    GuildId::parse(OTHER_GUILD).unwrap()
 }
 
 fn test_config(media_dir: &Path) -> Config {
@@ -948,4 +953,146 @@ async fn update_and_delete_broadcast_board_changed() {
         ServerMessage::BoardChanged(payload)
             if payload.change == BoardChange::Deleted && payload.item_id == item_id
     ));
+}
+
+#[tokio::test]
+async fn cache_lookup_is_global_and_does_not_extend_the_cache() {
+    let harness = Harness::new().await;
+    let url = "https://example.test/global-cache.png";
+    let asset_id = harness.insert_cached_image(url).await;
+    let before = harness
+        .db
+        .media_assets()
+        .get(asset_id)
+        .await
+        .unwrap()
+        .expect("asset en cache");
+    // Another guild's client proves the lookup is not scoped to the board.
+    harness
+        .insert_client(OverlaySessionMode::Normal, OTHER_TOKEN, &other_guild())
+        .await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/cache",
+            Some(OTHER_TOKEN),
+            Some(&json!({ "url": url })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "cached": true }));
+
+    // A lookup is a read: no lifetime extension, no metadata.
+    let after = harness
+        .db
+        .media_assets()
+        .get(asset_id)
+        .await
+        .unwrap()
+        .expect("asset en cache");
+    assert_eq!(before.expires_at, after.expires_at);
+    assert_eq!(before.last_accessed_at, after.last_accessed_at);
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/cache",
+            Some(OTHER_TOKEN),
+            Some(&json!({ "url": "https://example.test/unknown.png" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "cached": false }));
+}
+
+#[tokio::test]
+async fn cache_lookup_rejects_non_public_or_non_http_urls() {
+    let harness = Harness::new().await;
+    harness
+        .insert_client(OverlaySessionMode::Normal, TOKEN, &guild())
+        .await;
+
+    for url in [
+        "file:///etc/passwd",
+        "ftp://example.test/clip",
+        "http://localhost/clip",
+        "http://127.0.0.1/clip",
+        "https://user:pass@example.test/clip",
+    ] {
+        let (status, body) = send_json(
+            &harness.app,
+            request(
+                Method::POST,
+                "/overlay/media-board/cache",
+                Some(TOKEN),
+                Some(&json!({ "url": url })),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "URL {url} : {body}");
+        assert_eq!(body["error"], "invalid_payload");
+    }
+
+    let (status, _) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/cache",
+            Some(TOKEN),
+            Some(&json!({})),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn cache_lookup_requires_a_writable_registered_session() {
+    let harness = Harness::new().await;
+    harness
+        .insert_client(OverlaySessionMode::InviteReadOnly, GUEST_TOKEN, &guild())
+        .await;
+
+    let (status, body) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/cache",
+            Some(GUEST_TOKEN),
+            Some(&json!({ "url": "https://example.test/clip" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "read_only_session");
+
+    // The session is checked before the body is parsed: a malformed body must
+    // still get the read-only refusal, not a JSON error.
+    let malformed = Request::builder()
+        .method(Method::POST)
+        .uri("/overlay/media-board/cache")
+        .header(header::AUTHORIZATION, format!("Bearer {GUEST_TOKEN}"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from("{not-json"))
+        .unwrap();
+    let (status, body) = send_json(&harness.app, malformed).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["error"], "read_only_session");
+
+    let (status, _) = send_json(
+        &harness.app,
+        request(
+            Method::POST,
+            "/overlay/media-board/cache",
+            None,
+            Some(&json!({ "url": "https://example.test/clip" })),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
 }

@@ -170,6 +170,18 @@ let historyOpen = false;
 let draggedQueueJobId = null;
 let overQueueJobId = null;
 
+// The fill is a compositor-driven linear animation: its duration is the job
+// duration and its negative delay is the elapsed time, so it starts exactly
+// where playback already is, even after the queue is re-rendered. The inline
+// transform stays the static position, used if the animation is unavailable.
+function progressBarStyle(clock) {
+  const position = `transform:scaleX(${clock.ratio})`;
+  if (!clock.anchored || clock.duration <= 0) {
+    return `animation-name:none;${position}`;
+  }
+  return `--queue-progress-duration:${clock.duration}s;--queue-progress-delay:${-clock.elapsed}s;${position}`;
+}
+
 // One-second tick: update only the clock and the progress bar. A full
 // `renderView()` here would close an open history and drop keyboard focus.
 export function tickQueueClock(now = Date.now()) {
@@ -184,7 +196,9 @@ export function tickQueueClock(now = Date.now()) {
   }
   const bar = document.querySelector('[data-queue-progress]');
   if (bar) {
-    bar.style.width = `${Math.round(clock.ratio * 100)}%`;
+    // Static position only: the CSS animation drives the visible fill, and this
+    // keeps the bar exact when that animation is unavailable.
+    bar.style.transform = `scaleX(${clock.ratio})`;
   }
 }
 
@@ -297,7 +311,7 @@ export function renderQueue() {
           h('span', { class: 'meta queue-time', 'data-queue-clock': '' }, clock.text),
         ),
         jobMeta(playing) ? h('div', { class: 'sub ellipsis' }, jobMeta(playing)) : null,
-        h('div', { class: 'progress' }, h('span', { 'data-queue-progress': '', style: `width:${Math.round(clock.ratio * 100)}%` })),
+        h('div', { class: 'progress' }, h('span', { 'data-queue-progress': '', style: progressBarStyle(clock) })),
       ),
     );
   }

@@ -6,12 +6,18 @@ import { formatDuration } from './format.js';
 
 export function queueClock(playing, now = Date.now()) {
   const started = playing && playing.startedAt ? new Date(playing.startedAt).getTime() : null;
+  const anchored = Number.isFinite(started);
   const duration = Number(playing && playing.durationSec) || 0;
-  const elapsed = started ? Math.max(0, (now - started) / 1000) : 0;
+  const elapsed = anchored ? Math.max(0, (now - started) / 1000) : 0;
   const shown = Math.min(elapsed, duration);
   const ratio = duration > 0 ? Math.min(1, elapsed / duration) : 0;
   return {
     text: `${formatDuration(shown) || '0:00'} / ${formatDuration(duration) || '0:00'}`,
     ratio,
+    // Exact, unrounded timings: the progress bar animates over the real
+    // duration instead of stepping by whole percentage points every second.
+    elapsed,
+    duration,
+    anchored,
   };
 }

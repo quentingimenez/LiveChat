@@ -252,6 +252,50 @@ pub fn normalize_tiktok_url(parsed: &Url) -> String {
     url.to_string()
 }
 
+/// Type de publication TikTok porté par l'URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TikTokPostKind {
+    /// Publication vidéo (`/video/<id>`).
+    Video,
+    /// Publication photo ou carrousel (`/photo/<id>`).
+    Photo,
+}
+
+/// Type de publication TikTok déduit du chemin de l'URL.
+///
+/// Reconnaît `/video/<id>`, `/photo/<id>` et leurs variantes avec pseudo
+/// (`/@pseudo/video/<id>`), y compris l'URL canonique `/@_/...`. Une URL de
+/// musique, de profil ou courte ne désigne pas une publication visuelle et
+/// renvoie `None`.
+pub fn tiktok_post_kind(raw: &str) -> Option<TikTokPostKind> {
+    let parsed = Url::parse(raw.trim()).ok()?;
+    if !tiktok_host(&parsed) {
+        return None;
+    }
+    let segments: Vec<&str> = parsed
+        .path()
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let (kind, identifier) = match segments.as_slice() {
+        ["video", identifier] => (TikTokPostKind::Video, *identifier),
+        ["photo", identifier] => (TikTokPostKind::Photo, *identifier),
+        [handle, "video", identifier] if handle.starts_with('@') => {
+            (TikTokPostKind::Video, *identifier)
+        }
+        [handle, "photo", identifier] if handle.starts_with('@') => {
+            (TikTokPostKind::Photo, *identifier)
+        }
+        _ => return None,
+    };
+    (!identifier.is_empty()
+        && identifier.len() <= 32
+        && identifier
+            .chars()
+            .all(|character| character.is_ascii_digit()))
+    .then_some(kind)
+}
+
 /// Identifiant du commentaire partagé d'une URL TikTok, s'il est valide.
 ///
 /// L'application mobile utilise `share_comment_id` (parfois `comment_id` sur
@@ -842,6 +886,41 @@ mod tests {
         ];
         for (input, expected) in cases {
             assert_eq!(canonicalize_source_url(input), expected, "input={input}");
+        }
+    }
+
+    #[test]
+    fn detects_tiktok_visual_posts_from_the_url() {
+        use TikTokPostKind::{Photo, Video};
+        let cases = [
+            (
+                "https://www.tiktok.com/video/7311111111111111111?is_copy_url=1",
+                Some(Video),
+            ),
+            (
+                "https://www.tiktok.com/photo/7311111111111111112/",
+                Some(Photo),
+            ),
+            (
+                "https://www.tiktok.com/@user/video/7311111111111111111",
+                Some(Video),
+            ),
+            (
+                "https://www.tiktok.com/@_/photo/7311111111111111112",
+                Some(Photo),
+            ),
+            (
+                "https://www.tiktok.com/@user/video/7311111111111111111?share_comment_id=7311111111111111113",
+                Some(Video),
+            ),
+            ("https://www.tiktok.com/music/original-sound-1", None),
+            ("https://www.tiktok.com/@user", None),
+            ("https://vm.tiktok.com/ZMabc/", None),
+            ("https://www.tiktok.com/@user/video/abcd", None),
+            ("https://example.com/@user/video/1", None),
+        ];
+        for (url, expected) in cases {
+            assert_eq!(tiktok_post_kind(url), expected, "url={url}");
         }
     }
 

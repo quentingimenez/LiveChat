@@ -19,7 +19,7 @@ use crate::download::parse_cookie_pairs;
 use crate::error::MediaResult;
 use crate::html;
 use crate::http;
-use crate::source::{kind_from_url, MediaSource, SourceKind};
+use crate::source::{kind_from_url, tiktok_post_kind, MediaSource, SourceKind};
 
 use super::{encode_query_component, ResolvedMedia};
 
@@ -93,6 +93,25 @@ impl TikTokPage {
         self.video_candidates.is_empty()
             && self.photo_slides.is_empty()
             && self.audio_candidates.is_empty()
+    }
+
+    /// `true` si la page ne contient que la piste musicale.
+    ///
+    /// C'est une page incomplète pour une publication visuelle : TikTok a
+    /// servi la musique sans le flux vidéo ni les slides photo.
+    pub fn has_only_audio(&self) -> bool {
+        self.video_candidates.is_empty()
+            && self.photo_slides.is_empty()
+            && !self.audio_candidates.is_empty()
+    }
+
+    /// `true` si la page doit être rechargée (session `ttwid` ou embed).
+    ///
+    /// Une page vide est toujours retentée ; une page qui ne sert que la
+    /// musique l'est seulement pour une publication vidéo/photo, jamais pour
+    /// une page musique dont l'audio est le média attendu.
+    pub fn needs_visual_retry(&self, expects_visual: bool) -> bool {
+        self.is_empty() || (expects_visual && self.has_only_audio())
     }
 
     /// `true` si la publication doit devenir une vidéo de carrousel.
@@ -305,20 +324,33 @@ pub async fn fetch_tiktok_page(
     canonical_url: &str,
 ) -> MediaResult<TikTokPage> {
     let headers = tiktok_headers(config);
-    let mut parsed =
-        fetch_page_with_session(config, canonical_url, config.download.timeout, &headers).await?;
+    let expects_visual = tiktok_post_kind(canonical_url).is_some();
+    let mut parsed = fetch_page_with_session(
+        config,
+        canonical_url,
+        config.download.timeout,
+        &headers,
+        expects_visual,
+    )
+    .await?;
     // Une page `/photo/` ne sert plus les données de la publication : on
     // retente la même publication en `/video/` avant le repli embed.
-    if parsed.is_empty() {
+    if parsed.needs_visual_retry(expects_visual) {
         if let Some(video_url) = photo_to_video_url(canonical_url) {
-            if let Ok(video_page) =
-                fetch_page_with_session(config, &video_url, config.download.timeout, &headers).await
+            if let Ok(video_page) = fetch_page_with_session(
+                config,
+                &video_url,
+                config.download.timeout,
+                &headers,
+                expects_visual,
+            )
+            .await
             {
                 parsed.merge(video_page);
             }
         }
     }
-    let needs_embed = parsed.auth_required || parsed.is_empty();
+    let needs_embed = parsed.auth_required || parsed.needs_visual_retry(expects_visual);
     if needs_embed {
         if let Some(item_id) = parsed.item_id.clone() {
             if let Ok(embed_page) = fetch_page_with_session(
@@ -326,6 +358,7 @@ pub async fn fetch_tiktok_page(
                 &build_embed_url(&item_id),
                 config.resolve.oembed_timeout,
                 &headers,
+                expects_visual,
             )
             .await
             {
@@ -342,8 +375,9 @@ async fn fetch_page_with_session(
     url: &str,
     timeout: std::time::Duration,
     headers: &[(String, String)],
+    expects_visual: bool,
 ) -> MediaResult<TikTokPage> {
-    let page = fetch_parsed_page(config, url, timeout, headers, &[]).await?;
+    let mut page = fetch_parsed_page(config, url, timeout, headers, &[]).await?;
     let configured_cookies = config
         .tools
         .tiktok_cookie
@@ -351,8 +385,10 @@ async fn fetch_page_with_session(
         .map(parse_cookie_pairs)
         .unwrap_or_default();
     let has_ttwid = page.has_session_cookie("ttwid")
-        || configured_cookies.iter().any(|(name, _)| name == "ttwid");
-    if page.is_empty() || has_ttwid {
+        || configured_cookies
+            .iter()
+            .any(|(name, value)| name == "ttwid" && !value.is_empty());
+    if !page.needs_visual_retry(expects_visual) || has_ttwid {
         return Ok(page);
     }
     // TikTok sert parfois une session anonyme incomplète (aucun `ttwid`) :
@@ -366,7 +402,12 @@ async fn fetch_page_with_session(
     append_cookie(&mut session_headers, "ttwid", &ttwid);
     let inherited = [("ttwid".to_string(), ttwid)];
     match fetch_parsed_page(config, url, timeout, &session_headers, &inherited).await {
-        Ok(retry) if !retry.is_empty() => Ok(retry),
+        Ok(retry) if !retry.is_empty() => {
+            // La page initiale peut contenir l'identifiant de l'item sans
+            // flux visuel : on fusionne plutôt que de perdre ces métadonnées.
+            page.merge(retry);
+            Ok(page)
+        }
         _ => Ok(page),
     }
 }
@@ -446,7 +487,7 @@ impl TikTokPage {
                 candidate
                     .session_cookies
                     .iter()
-                    .any(|(cookie_name, _)| cookie_name == name)
+                    .any(|(cookie_name, value)| cookie_name == name && !value.is_empty())
             })
     }
 
@@ -1221,6 +1262,13 @@ mod tests {
 
         let empty = TikTokPage::default();
         assert!(!empty.has_session_cookie("ttwid"));
+
+        let mut empty_value = parse_page_html(
+            &universal_page(VIDEO_PAYLOAD),
+            "https://www.tiktok.com/@a/video/7311111111111111111",
+        );
+        empty_value.attach_session_cookies(vec![("ttwid".to_string(), String::new())]);
+        assert!(!empty_value.has_session_cookie("ttwid"));
     }
 
     #[test]

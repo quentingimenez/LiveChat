@@ -731,6 +731,15 @@ export function renderBoard() {
       ),
     ),
   );
+  // The tools and the open filters panel share one sticky head (`.board-head`):
+  // they stay on screen while the cards scroll behind its background. Their
+  // margins are painted by that background too, so no card shows through.
+  const head = h(
+    'div',
+    { class: 'board-head' },
+    toolbar,
+    state.filtersOpen ? renderFilters(boardUsage) : null,
+  );
 
   let content;
   if (!state.itemsLoaded && !state.itemsError) {
@@ -782,8 +791,7 @@ export function renderBoard() {
   return h(
     'div',
     null,
-    toolbar,
-    state.filtersOpen ? renderFilters(boardUsage) : null,
+    head,
     stale,
     h('div', { class: 'board' }, content, selected ? renderDetail(selected) : null),
     state.selecting ? renderSelectionBar() : null,
@@ -1357,9 +1365,10 @@ function syncSelectedCards() {
 invoke('settings_get').then(applyHoverDetails).catch(() => {});
 listen('overlay://device-settings', applyHoverDetails);
 
-// The drawer floats over the view, between the header and the footer. While
-// the toolbar (and the filters panel) is on screen, it starts below them so
-// their buttons stay reachable; scrolled past, it climbs to the view's top.
+// The drawer floats over the view, between the header and the footer. The
+// toolbar and the open filters panel stick to the top of the view
+// (`.board-head`): the drawer starts under them wherever the grid is scrolled,
+// so their buttons stay reachable.
 function placeDrawer(node) {
   const view = document.getElementById('view');
   if (!view || !node.isConnected) {
@@ -1368,7 +1377,11 @@ function placeDrawer(node) {
   const box = view.getBoundingClientRect();
   const board = node.closest('.board');
   const boardTop = board ? board.getBoundingClientRect().top : box.top;
-  node.style.top = `${Math.round(Math.max(box.top + 12, boardTop))}px`;
+  // Once scrolled, the grid's top goes above the sticky head: the drawer then
+  // follows the head's bottom instead of climbing over it.
+  const head = view.querySelector('.board-head');
+  const headBottom = head ? head.getBoundingClientRect().bottom : box.top;
+  node.style.top = `${Math.round(Math.max(box.top + 12, boardTop, headBottom))}px`;
   node.style.bottom = `${Math.round(Math.max(12, window.innerHeight - box.bottom + 12))}px`;
 }
 

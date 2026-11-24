@@ -41,8 +41,8 @@ use crate::media::MediaService;
 use super::auth::{self, IngestAuth};
 use super::submit::{finish_ingest, owning_member, IngestOutcome};
 use super::{
-    error_response, internal_error, invalid_payload, media_service_error, simple_error,
-    DEFAULT_INGEST_AUTHOR_NAME,
+    error_response, expired_token_error, internal_error, invalid_payload, media_service_error,
+    simple_error, DEFAULT_INGEST_AUTHOR_NAME,
 };
 
 /// Nom de repli quand ni la query ni `Content-Disposition` ne fournissent de nom.
@@ -193,6 +193,7 @@ async fn authorize(
 ) -> Result<lc_domain::entities::IngestClient, Response> {
     let client = match auth::resolve(state, headers).await {
         Ok(IngestAuth::Client(client)) => client,
+        Ok(IngestAuth::Expired) => return Err(expired_token_error()),
         Ok(IngestAuth::Missing { enabled: true }) => {
             return Err(simple_error(StatusCode::UNAUTHORIZED, "unauthorized"));
         }
@@ -594,6 +595,47 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "invalid_payload");
+    }
+
+    #[tokio::test]
+    async fn idle_expired_client_returns_401_on_file_upload() {
+        let fixture = fixture(2048).await;
+        insert_client(&fixture.db).await;
+        let client = fixture
+            .db
+            .ingest_clients()
+            .list()
+            .await
+            .expect("clients")
+            .into_iter()
+            .next()
+            .expect("client");
+        let stale = UtcDateTime::now() - Duration::days(181);
+        sqlx::query("UPDATE ingest_clients SET created_at = ?, last_seen_at = ? WHERE id = ?")
+            .bind(lc_domain::datetime_to_ms(stale))
+            .bind(lc_domain::datetime_to_ms(stale))
+            .bind(client.id.to_canonical())
+            .execute(fixture.db.pool())
+            .await
+            .expect("inactivité forcée");
+
+        let (status, body) = post_file(
+            fixture.app.clone(),
+            Some(TOKEN),
+            "/ingest/file?filename=photo.png",
+            b"png-body".to_vec(),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "ingest_token_expired");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("board"),
+            "un message de ré-appairage est attendu"
+        );
     }
 
     #[tokio::test]

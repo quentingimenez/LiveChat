@@ -25,9 +25,26 @@ use crate::media::tokens::hash_ingest_token;
 pub enum IngestAuth {
     /// Requête authentifiée par un client d'ingestion actif.
     Client(IngestClient),
+    /// Token trouvé mais client inactif depuis trop longtemps (ou révoqué).
+    /// Le heartbeat ne doit pas rafraîchir ce client : un ré-appairage depuis
+    /// la board est nécessaire.
+    Expired,
     /// Aucune authentification valide ; `enabled` indique si l'ingestion est
     /// configurée (au moins un client actif), pour choisir entre 401 et 503.
     Missing { enabled: bool },
+}
+
+/// Décide de l'authentification d'un client trouvé par hash de token.
+///
+/// Fonction pure (aucune écriture) pour que l'inactivité soit testable sans
+/// serveur : un client non utilisable à l'instant `now` devient `Expired` et
+/// ne doit jamais être renvoyé comme `Client` (donc jamais « touché »).
+pub(super) fn classify_client(client: IngestClient, now: time::UtcDateTime) -> IngestAuth {
+    if client.is_usable_at(now) {
+        IngestAuth::Client(client)
+    } else {
+        IngestAuth::Expired
+    }
 }
 
 /// Extrait le token `Bearer` d'un en-tête `Authorization`.
@@ -60,20 +77,28 @@ pub async fn resolve(state: &AppState, headers: &HeaderMap) -> MediaServiceResul
     let token_hash = hash_ingest_token(token);
     match db.ingest_clients().get_by_token_hash(&token_hash).await? {
         Some(client) => {
-            // Heartbeat applicatif : une erreur d'écriture ne doit pas refuser
-            // une requête authentifiée valide.
-            if let Err(error) = db
-                .ingest_clients()
-                .touch_last_seen(client.id, state.clock.now())
-                .await
-            {
-                tracing::warn!(
-                    error = %error,
-                    client_id = %client.id.to_canonical(),
-                    "impossible de mettre à jour last_seen_at du client d'ingestion"
-                );
+            // L'expiration est calculée par inactivité (aucune migration) :
+            // un client inutilisable est refusé AVANT tout heartbeat, pour ne
+            // pas le ressusciter par une simple écriture de `last_seen_at`.
+            match classify_client(client, state.clock.now()) {
+                IngestAuth::Client(client) => {
+                    // Heartbeat applicatif : une erreur d'écriture ne doit pas
+                    // refuser une requête authentifiée valide.
+                    if let Err(error) = db
+                        .ingest_clients()
+                        .touch_last_seen(client.id, state.clock.now())
+                        .await
+                    {
+                        tracing::warn!(
+                            error = %error,
+                            client_id = %client.id.to_canonical(),
+                            "impossible de mettre à jour last_seen_at du client d'ingestion"
+                        );
+                    }
+                    Ok(IngestAuth::Client(client))
+                }
+                other => Ok(other),
             }
-            Ok(IngestAuth::Client(client))
         }
         None => Ok(IngestAuth::Missing {
             enabled: client_is_enabled(db).await?,
@@ -94,6 +119,56 @@ mod tests {
     use axum::http::HeaderValue;
 
     use super::*;
+
+    #[test]
+    fn expired_client_is_never_authenticated_and_keeps_its_activity() {
+        use lc_domain::entities::INGEST_CLIENT_IDLE_EXPIRY_MS;
+        use lc_domain::ids::{GuildId, IngestClientId};
+        use lc_domain::ms_to_datetime;
+        use time::UtcDateTime;
+
+        let client =
+            |last_seen_at: Option<UtcDateTime>, revoked_at: Option<UtcDateTime>| IngestClient {
+                id: IngestClientId::new_v4(),
+                guild_id: GuildId::parse("123456789012345678").unwrap(),
+                label: "Extension".to_owned(),
+                token_hash: "hash".to_owned(),
+                default_author_name: "LiveChat Extension".to_owned(),
+                default_author_image: None,
+                created_by_discord_user_id: "42".to_owned(),
+                last_seen_at,
+                created_at: ms_to_datetime(1_700_000_000_000).unwrap(),
+                revoked_at,
+            };
+
+        let created = ms_to_datetime(1_700_000_000_000).unwrap();
+        let now = ms_to_datetime(1_700_000_000_000 + INGEST_CLIENT_IDLE_EXPIRY_MS).unwrap();
+        // Inactif depuis exactement le TTL : expiré, aucune écriture possible.
+        assert!(matches!(
+            classify_client(client(None, None), now),
+            IngestAuth::Expired
+        ));
+        // TTL - 1 ms : encore authentifié.
+        let fresh = ms_to_datetime(1_700_000_000_000 + INGEST_CLIENT_IDLE_EXPIRY_MS - 1).unwrap();
+        assert!(matches!(
+            classify_client(client(Some(created), None), fresh),
+            IngestAuth::Client(_)
+        ));
+        // Un heartbeat récent remet l'échéance à plus tard.
+        let active = client(Some(now), None);
+        assert!(matches!(
+            classify_client(
+                active,
+                ms_to_datetime(1_700_000_000_000 + 2 * INGEST_CLIENT_IDLE_EXPIRY_MS - 1).unwrap()
+            ),
+            IngestAuth::Client(_)
+        ));
+        // Révoqué : expiré, même avec une activité récente.
+        assert!(matches!(
+            classify_client(client(Some(now), Some(created)), now),
+            IngestAuth::Expired
+        ));
+    }
 
     #[test]
     fn extracts_only_bearer_tokens() {

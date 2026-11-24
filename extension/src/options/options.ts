@@ -1,5 +1,4 @@
 import {
-  DEFAULT_AUTHOR_NAME,
   ensureApiPermissionTransition,
   getSettings,
   hasApiHostPermission,
@@ -25,8 +24,6 @@ interface PairingConsumeSuccessResponse {
   apiBaseUrl?: unknown;
   ingestApiToken?: unknown;
   guildId?: unknown;
-  authorName?: unknown;
-  authorImage?: unknown;
 }
 
 interface PairingConsumeErrorResponse {
@@ -44,8 +41,6 @@ const apiUrlInput = document.getElementById('api-url') as HTMLInputElement;
 const manualApiUrlInput = document.getElementById('api-url-manual') as HTMLInputElement;
 const ingestTokenInput = document.getElementById('ingest-token') as HTMLInputElement;
 const guildIdInput = document.getElementById('guild-id') as HTMLInputElement;
-const authorNameInput = document.getElementById('author-name') as HTMLInputElement;
-const authorImageInput = document.getElementById('author-image') as HTMLInputElement;
 const permissionStateNode = document.getElementById('permission-state') as HTMLParagraphElement;
 const saveButton = document.getElementById('save-button') as HTMLButtonElement;
 const testButton = document.getElementById('test-button') as HTMLButtonElement;
@@ -110,8 +105,6 @@ const applySettingsToForm = (settings: ExtensionSettings): void => {
   setApiUrlInputs(settings.apiUrl);
   ingestTokenInput.value = settings.ingestToken;
   guildIdInput.value = settings.guildId;
-  authorNameInput.value = settings.authorName;
-  authorImageInput.value = settings.authorImage || '';
 };
 
 const collectSettingsFromForm = (): Partial<ExtensionSettings> => {
@@ -119,8 +112,6 @@ const collectSettingsFromForm = (): Partial<ExtensionSettings> => {
     apiUrl: getApiUrlFromInputs('manual'),
     ingestToken: ingestTokenInput.value,
     guildId: guildIdInput.value,
-    authorName: authorNameInput.value,
-    authorImage: authorImageInput.value,
   };
 };
 
@@ -161,7 +152,6 @@ const loadExistingSettings = async (): Promise<void> => {
   const existingSettings = await getSettings();
 
   if (!existingSettings) {
-    authorNameInput.value = DEFAULT_AUTHOR_NAME;
     await refreshPermissionState();
     return;
   }
@@ -267,8 +257,6 @@ pairingForm.addEventListener('submit', (event) => {
         apiUrl: toNonEmptyString(body?.apiBaseUrl) || apiUrl,
         ingestToken: toNonEmptyString(body?.ingestApiToken) || '',
         guildId: toNonEmptyString(body?.guildId) || '',
-        authorName: toNonEmptyString(body?.authorName) || DEFAULT_AUTHOR_NAME,
-        authorImage: toNonEmptyString(body?.authorImage) || '',
       });
 
       if (!normalized.ok) {

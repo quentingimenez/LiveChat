@@ -105,7 +105,6 @@ describe('ensureApiPermissionTransition', () => {
           apiUrl: 'https://ancien.example:3000',
           ingestToken: 'token',
           guildId: 'guild',
-          authorName: 'Auteur',
         },
       };
     });
@@ -124,7 +123,6 @@ describe('ensureApiPermissionTransition', () => {
           apiUrl: 'https://localhost:3000',
           ingestToken: 'token',
           guildId: 'guild',
-          authorName: 'Auteur',
         },
       };
     });

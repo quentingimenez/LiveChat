@@ -6,8 +6,6 @@ const settings: ExtensionSettings = {
   apiUrl: 'https://livechat.example.com',
   ingestToken: 'ingest-token',
   guildId: '1234567890',
-  authorName: 'LiveChat Extension',
-  authorImage: 'https://cdn.example.com/avatar.png',
 };
 
 describe('ingest client', () => {

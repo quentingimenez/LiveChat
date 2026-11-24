@@ -152,25 +152,53 @@ Le serveur télécharge le média avec yt-dlp, comme pour l'extension navigateur
 
 ## Tester sans Raccourci
 
-Une fois le jeton créé, vérifie le serveur depuis le PC :
+Une fois le jeton créé, vérifie le serveur depuis le PC. Saisis-le **sans
+écho** : ne le recopie jamais dans une ligne de commande (PowerShell et bash
+conservent l'historique, et la valeur serait visible dans la liste des
+processus). Sous PowerShell 5.1, `Read-Host -AsSecureString` évite l'écho et
+`[Net.NetworkCredential]` convertit la valeur pour l'en-tête ; le `finally`
+efface la variable même si la requête échoue :
 
 ```powershell
-$token = "…jeton affiché par la board…"
-Invoke-RestMethod -Method Post `
-  -Uri "https://livechat.example.com/ingest/file?filename=photo.jpg&text=Bonjour" `
-  -Headers @{ Authorization = "Bearer $($token.Trim())" } `
-  -ContentType "image/jpeg" -InFile .\photo.jpg
+$secure = Read-Host "Jeton d'ingestion" -AsSecureString
+$token = [Net.NetworkCredential]::new('', $secure).Password
+try {
+  Invoke-RestMethod -Method Post `
+    -Uri "https://livechat.example.com/ingest/file?filename=photo.jpg&text=Bonjour" `
+    -Headers @{ Authorization = "Bearer $token" } `
+    -ContentType "image/jpeg" -InFile .\photo.jpg
+} finally {
+  Remove-Variable token, secure -ErrorAction SilentlyContinue
+}
 ```
 
-Avec `curl` :
+Avec `curl` (bash) :
 
 ```bash
+read -rsp "Jeton d'ingestion : " TOKEN && echo
 curl -sS -X POST \
   "https://livechat.example.com/ingest/file?filename=photo.jpg&text=Bonjour" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: image/jpeg" \
   --data-binary @photo.jpg
+unset TOKEN
 ```
+
+`read -s` supprime l'écho et `unset` retire la variable du shell, mais **la
+valeur reste visible dans les arguments du processus** (`ps`, gestionnaire de
+tâches) pour le même utilisateur ou root : sur une machine partagée, utilise
+un jeton de test révocable, jamais le jeton de production. Ne mets jamais de
+jeton dans un script versionné ni dans un message.
+
+### Sécurité du jeton
+
+Le jeton d'ingestion est un **secret d'écriture** créé par la board, lié à
+l'appareil et révocable depuis **Mon profil → Appareils** (reconfigurer
+l'appareil révoque l'ancien jeton). Il **expire après 180 jours sans activité**
+et l'ingestion répond alors `401 ingest_token_expired` ; un envoi remet le
+compteur à zéro. Voir [`extension/README.md`](../extension/README.md) et
+[`ios/README.md`](../ios/README.md) pour le détail du stockage et de la durée
+de vie. Ne le partage pas, ne le commit pas.
 
 Réponse d'un envoi joué :
 

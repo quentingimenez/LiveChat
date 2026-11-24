@@ -200,6 +200,14 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     placeSelection();
   }
 
+  // A pan moves the shown part of the frame only: the layer keeps its size,
+  // its masks and its drawing, and slides by the new origin.
+  function place() {
+    const mapping = view();
+    box.style.left = `${-mapping.x * mapping.scale}px`;
+    box.style.top = `${-mapping.y * mapping.scale}px`;
+  }
+
   function maskRect(object) {
     const { width, height } = size();
     const x = clamp(Math.min(object.x1, object.x2), 0, width);
@@ -843,6 +851,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     selected,
     interactive: () => interactive,
     layout,
+    place,
     paint,
     paintMasks,
     paintInto,

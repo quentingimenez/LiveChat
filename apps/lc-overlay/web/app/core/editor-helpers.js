@@ -19,6 +19,116 @@ function roundMs(value) {
   return Math.round(value * 1000) / 1000;
 }
 
+// --- molette -------------------------------------------------------------
+// Ctrl + molette zoome ; sans Ctrl, ni la frise ni l'aperçu ne changent de
+// zoom (la molette garde son rôle de défilement).
+export const MIN_STAGE_ZOOM = 1;
+export const MAX_STAGE_ZOOM = 8;
+
+// Un facteur continu : la molette et le pincement d'un trackpad avancent du
+// même pas. deltaMode 0 = pixels, 1 = lignes, 2 = pages.
+export function wheelZoomFactor(deltaY, deltaMode = 0) {
+  const unit = deltaMode === 1 ? 16 : deltaMode === 2 ? 400 : 1;
+  return Math.exp(-clamp(Number(deltaY) || 0, -4000, 4000) * unit * 0.0022);
+}
+
+// Le zoom demandé par un événement de molette, ou null quand ce n'est pas un
+// zoom (sans Ctrl) ou qu'il est déjà à sa borne.
+export function zoomedByWheel(zoom, event, { min = MIN_STAGE_ZOOM, max = MAX_STAGE_ZOOM } = {}) {
+  if (!event || !(event.ctrlKey || event.metaKey)) {
+    return null;
+  }
+  const factor = wheelZoomFactor(event.deltaY, event.deltaMode);
+  const next = clamp(zoom * factor, min, max);
+  return Math.abs(next - zoom) < 1e-4 ? null : next;
+}
+
+// Déplacement du défilement qui remet sous le pointeur le point du contenu
+// qu'il survolait avant le redimensionnement.
+export function anchorScroll({ scrollLeft = 0, scrollTop = 0, pointer, before, after }) {
+  const fraction = (position, start, size) => (size > 0 ? clamp((position - start) / size, 0, 1) : 0.5);
+  const x = fraction(pointer.x, before.left, before.width);
+  const y = fraction(pointer.y, before.top, before.height);
+  return {
+    left: scrollLeft + (after.left + x * after.width - pointer.x),
+    top: scrollTop + (after.top + y * after.height - pointer.y),
+  };
+}
+
+// --- zoomed stage ----------------------------------------------------------
+// The editor's stage scrolls virtually (see views/editor/stage-zoom.js). One
+// axis of it: `full` is the zoomed content's size, `room` the frame's. Content
+// that fits is centred and never scrolls; content that overflows shows a
+// room-wide window from `scroll`, clamped to the content. `start` and `length`
+// are that window in content pixels, `offset` where the content's own origin
+// sits in the frame. Half a pixel of overflow is not worth a scrollbar.
+export function stageAxis({ full, room, scroll = 0 }) {
+  const size = Math.max(0, Number(full) || 0);
+  const space = Math.max(0, Number(room) || 0);
+  if (size <= space + 0.5) {
+    return { overflow: false, scroll: 0, max: 0, start: 0, length: size, offset: (space - size) / 2 };
+  }
+  const max = size - space;
+  const at = clamp(Number(scroll) || 0, 0, max);
+  return { overflow: true, scroll: at, max, start: at, length: space, offset: -at };
+}
+
+// The scroll that keeps the content point under the pointer (in frame pixels)
+// still while the content goes from `before.full` to `after` pixels. A
+// pointer beside the content needs no clamp of its own: the scroll is
+// clamped to the content anyway.
+export function anchoredScroll({ pointer, room, before, after }) {
+  const was = stageAxis({ full: before.full, room, scroll: before.scroll });
+  const fraction = before.full > 0 ? (pointer - was.offset) / before.full : 0.5;
+  return stageAxis({ full: after, room, scroll: fraction * after - pointer }).scroll;
+}
+
+// The scroll a plain wheel asks for, in pixels. Shift turns a vertical wheel
+// into a horizontal scroll, like a native scroller.
+export function wheelScrollDelta(event, room) {
+  const unit = event.deltaMode === 1 ? { x: 40, y: 40 } : event.deltaMode === 2 ? { x: room.width, y: room.height } : { x: 1, y: 1 };
+  let x = (Number(event.deltaX) || 0) * unit.x;
+  let y = (Number(event.deltaY) || 0) * unit.y;
+  if (event.shiftKey && x === 0) {
+    x = y;
+    y = 0;
+  }
+  return { x, y };
+}
+
+// The part of the source frame a window of the zoomed video preview shows.
+// The displayed picture is `crop` (source pixels) turned by `turns` quarter
+// turns clockwise, then mirrored, the order the server applies them, at
+// `scale` CSS pixels per source pixel. `window` is a rectangle of that
+// displayed picture from its top-left corner, in CSS pixels. The result is in
+// source pixels, before the turn and the mirrors: what `.av-inner` holds.
+export function videoViewBox({ crop, turns = 0, flipH = false, flipV = false, scale, window: view }) {
+  const quarter = ((Math.round(Number(turns) || 0) % 4) + 4) % 4;
+  const shown = rotatedSize(crop.width, crop.height, quarter);
+  // The window around the centre of the displayed picture, in source pixels.
+  let x0 = view.x / scale - shown.width / 2;
+  let x1 = (view.x + view.width) / scale - shown.width / 2;
+  let y0 = view.y / scale - shown.height / 2;
+  let y1 = (view.y + view.height) / scale - shown.height / 2;
+  // Undo the mirrors, then the turn: CSS turns a point (x, y) clockwise to
+  // (-y, x), so each quarter back maps it to (y, -x).
+  if (flipH) {
+    [x0, x1] = [-x1, -x0];
+  }
+  if (flipV) {
+    [y0, y1] = [-y1, -y0];
+  }
+  for (let step = 0; step < quarter; step += 1) {
+    [x0, x1, y0, y1] = [y0, y1, -x1, -x0];
+  }
+  return {
+    x: crop.x + crop.width / 2 + x0,
+    y: crop.y + crop.height / 2 + y0,
+    width: x1 - x0,
+    height: y1 - y0,
+  };
+}
+
 // --- kept ranges ---------------------------------------------------------
 // The edit of an audio or a video is a list of kept ranges `[start, end]` in
 // source seconds, ascending and never overlapping.
@@ -108,6 +218,106 @@ export function removedRanges(segments, duration) {
     removed.push([cursor, duration]);
   }
   return removed;
+}
+
+// --- fenêtre visible de la frise ---------------------------------------
+// La frise montre toujours une fenêtre [start, end] du média ; au repos elle
+// couvre tout. Le zoom est borné : 0,2 s minimum, et cent fois au plus.
+export const MIN_TIMELINE_SPAN_SEC = 0.2;
+export const MAX_TIMELINE_ZOOM = 100;
+
+export function defaultTimelineView(duration) {
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  return { start: 0, end: roundMs(total) };
+}
+
+export function minTimelineSpan(duration) {
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  return roundMs(Math.min(total, Math.max(MIN_TIMELINE_SPAN_SEC, total / MAX_TIMELINE_ZOOM)));
+}
+
+export function clampTimelineView(view, duration) {
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  if (!(total > 0)) {
+    return { start: 0, end: 0 };
+  }
+  const min = minTimelineSpan(total);
+  const startValue = Number.isFinite(view && view.start) ? view.start : 0;
+  const endValue = Number.isFinite(view && view.end) ? view.end : total;
+  const width = clamp(endValue - startValue, min, total);
+  const start = roundMs(clamp(startValue, 0, total - width));
+  return { start, end: roundMs(start + width) };
+}
+
+// Zoome d'un facteur `factor` (> 1 rapproche) en gardant `anchorTime` sous le
+// pointeur ; la fenêtre reste dans le média.
+export function zoomTimelineView(view, duration, anchorTime, factor) {
+  const current = clampTimelineView(view, duration);
+  const total = current.end - current.start > 0 ? current.end - current.start : 0;
+  const full = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  if (!(total > 0) || !(full > 0)) {
+    return current;
+  }
+  const rate = Number.isFinite(factor) && factor > 0 ? factor : 1;
+  const width = clamp(total / rate, minTimelineSpan(full), full);
+  const anchor = Number.isFinite(anchorTime) ? clamp(anchorTime, current.start, current.end) : current.start + total / 2;
+  const ratio = clamp((anchor - current.start) / total, 0, 1);
+  const start = clamp(anchor - ratio * width, 0, full - width);
+  return { start: roundMs(start), end: roundMs(start + width) };
+}
+
+// Déplace la fenêtre de `seconds` (positif = vers la fin) sans sortir du média.
+export function panTimelineView(view, duration, seconds) {
+  const current = clampTimelineView(view, duration);
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const width = current.end - current.start;
+  if (!(total > 0) || width >= total - 0.001) {
+    return current;
+  }
+  const delta = Number.isFinite(seconds) ? seconds : 0;
+  const start = clamp(current.start + delta, 0, total - width);
+  return { start: roundMs(start), end: roundMs(start + width) };
+}
+
+// Déplacement de la frise à la souris : le contenu suit le pointeur, donc un
+// glissement vers la droite (dx > 0) remonte le temps. `width` est la largeur
+// écran de la frise.
+export function panTimelineByDrag(view, duration, dx, width) {
+  const current = clampTimelineView(view, duration);
+  const span = current.end - current.start;
+  const pixels = Number.isFinite(width) && width > 0 ? width : 1;
+  const move = Number.isFinite(dx) ? dx : 0;
+  return panTimelineView(current, duration, -(move / pixels) * span);
+}
+
+// Ramène la fenêtre sur `time` quand la tête de lecture en sort. En avançant
+// elle réapparaît à `lead` de la largeur (25 % par défaut), en reculant à
+// droite : la lecture ne saute donc pas à chaque image.
+export function revealTimelineTime(view, duration, time, lead = 0.25) {
+  const current = clampTimelineView(view, duration);
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const width = current.end - current.start;
+  if (!(total > 0) || !(width > 0)) {
+    return current;
+  }
+  const at = Number.isFinite(time) ? clamp(time, 0, total) : current.start;
+  if (at >= current.start && at <= current.end) {
+    return current;
+  }
+  const fraction = at > current.end ? clamp(lead, 0, 1) : 1 - clamp(lead, 0, 1);
+  const start = clamp(at - width * fraction, 0, total - width);
+  return { start: roundMs(start), end: roundMs(start + width) };
+}
+
+export function timelineZoomFactor(view, duration) {
+  const raw = view && Number.isFinite(view.start) && Number.isFinite(view.end) ? view.end - view.start : 0;
+  if (!(raw > 0)) {
+    return 1;
+  }
+  const current = clampTimelineView(view, duration);
+  const width = current.end - current.start;
+  const total = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  return width > 0 ? total / width : 1;
 }
 
 // Where playback continues from `time`: `time` itself inside a kept range,

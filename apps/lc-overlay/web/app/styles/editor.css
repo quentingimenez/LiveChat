@@ -214,6 +214,106 @@
   color: var(--text-soft);
 }
 
+/* Frame of the zoomed preview (Ctrl + wheel). It never scrolls natively:
+   stage-zoom.js keeps a virtual scroll, places the content and draws the
+   scrollbars in two gutters kept at every zoom, so nothing that comes with
+   the overflow can resize the content. The content keeps its "fitted x
+   zoom" size: the crop handles do not grow. */
+.stage-zoom {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--stage);
+  overscroll-behavior: none;
+}
+
+.stage-zoom[hidden] {
+  display: none;
+}
+
+.stage-zoom > .stage-zoom-content {
+  position: absolute;
+  top: 0;
+  left: 0;
+  flex: none;
+  margin: 0;
+}
+
+/* 10px: STAGE_BAR in stage-zoom.js. */
+.stage-zoom-bar {
+  position: absolute;
+  z-index: 1;
+}
+
+.stage-zoom-bar.is-x {
+  right: 10px;
+  bottom: 0;
+  left: 0;
+  height: 10px;
+}
+
+.stage-zoom-bar.is-y {
+  top: 0;
+  right: 0;
+  bottom: 10px;
+  width: 10px;
+}
+
+.stage-zoom-bar[hidden] {
+  display: none;
+}
+
+.stage-zoom-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text-soft) 45%, transparent);
+  transition: background-color 0.12s ease;
+}
+
+.stage-zoom-bar.is-x .stage-zoom-thumb {
+  top: 2px;
+  height: 6px;
+}
+
+.stage-zoom-bar.is-y .stage-zoom-thumb {
+  left: 2px;
+  width: 6px;
+}
+
+.stage-zoom-bar:hover .stage-zoom-thumb,
+.stage-zoom-thumb.is-dragging {
+  background: color-mix(in srgb, var(--text-soft) 75%, transparent);
+}
+
+.stage-zoom-reset {
+  position: absolute;
+  top: 12px;
+  right: 16px;
+  z-index: 2;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.stage-zoom-reset[hidden] {
+  display: none;
+}
+
+/* Molette maintenue : main fermée pendant le déplacement, sur les trois
+   surfaces défilables (scène, frise, aperçu de l'overlay). Les enfants sont
+   inclus pour que la main reste visible au-dessus de la vidéo et du canvas. */
+.stage-zoom.is-panning,
+.stage-zoom.is-panning *,
+.display-preview-scroll.is-panning,
+.display-preview-scroll.is-panning *,
+.tl-track.is-panning,
+.tl-track.is-panning * {
+  cursor: grabbing;
+}
+
 .editor-panel {
   display: flex;
   flex: none;
@@ -610,6 +710,14 @@
   font-size: 12px;
 }
 
+.display-preview-zoom {
+  font-variant-numeric: tabular-nums;
+}
+
+.display-preview-zoom[hidden] {
+  display: none;
+}
+
 .display-preview-scroll {
   display: flex;
   flex: 1;
@@ -617,6 +725,8 @@
   padding: 16px;
   scrollbar-gutter: stable;
   overflow: auto;
+  background: var(--stage);
+  overscroll-behavior: none;
 }
 
 .display-preview-screen {
@@ -734,7 +844,18 @@
 
 .av-inner video {
   position: absolute;
+  top: 0;
+  left: 0;
   max-width: none;
+  /* The element is the shown part's size; `object-view-box` picks that part
+     of the frame, so the element never moves while the view pans. */
+  object-fit: fill;
+}
+
+/* The whole source frame, clipped by `.av-inner`: the crop box lives on it. */
+.av-frame-layer {
+  position: absolute;
+  z-index: 1;
 }
 
 /* ------------------------------------------------- annotations de la vidéo */
@@ -857,6 +978,17 @@
   color: var(--text-soft);
   font-size: 13px;
   font-variant-numeric: tabular-nums;
+}
+
+.tl-zoom {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-zoom[hidden] {
+  display: none;
 }
 
 .tl-track {

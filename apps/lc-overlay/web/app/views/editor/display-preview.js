@@ -11,9 +11,12 @@ import {
   OVERLAY_MEDIA_HEADER_GAP,
   OVERLAY_MEDIA_HEADER_HEIGHT,
   OVERLAY_MEDIA_RESERVED_HEIGHT,
+  anchorScroll,
   displayZoneLimits,
   displayedImageSize,
+  zoomedByWheel,
 } from '../../core/editor-helpers.js';
+import { createMiddlePan } from './middle-pan.js';
 
 // Zone assumed when the shell does not know the real one: a 1080p screen, so
 // the cap still shows.
@@ -35,6 +38,9 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
 
   let visible = false;
   let zoom = 'fit';
+  // Multiplier on the fit/100 % scale: Ctrl + molette lets the scene be
+  // inspected closer than the fit, without leaving the preview.
+  let zoomFactor = 1;
   let needsLayout = true;
   let queued = false;
 
@@ -42,6 +48,12 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
   const header = h('div', { class: 'display-preview-header' });
   const screen = h('div', { class: 'display-preview-screen' }, header, canvas);
   const zoneLabel = h('span', { class: 'display-preview-zone' });
+  const zoomChip = h('button', {
+    class: 'btn is-quiet display-preview-zoom',
+    type: 'button',
+    hidden: true,
+    onClick: () => resetZoom(),
+  });
   const zoomButtons = new Map();
   const zoomButton = (id, label) => {
     const button = h('button', { class: 'btn', type: 'button', onClick: () => setZoom(id) }, label);
@@ -54,11 +66,26 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
     h('span', { class: 'display-preview-title' }, 'Aperçu sur l’overlay'),
     zoneLabel,
     h('span', { class: 'spacer' }),
+    zoomChip,
     zoomButton('fit', 'Ajuster'),
     zoomButton('100', '100 %'),
   );
   const scroll = h('div', { class: 'display-preview-scroll' }, screen);
+  scroll.title = 'Ctrl + molette : zoomer · molette maintenue : déplacer';
   const node = h('div', { class: 'display-preview', hidden: true }, bar, scroll);
+
+  // Molette maintenue : la zone suit le pointeur, le cadre défile à l'opposé.
+  const pan = createMiddlePan(scroll, (dx, dy) => {
+    scroll.scrollLeft -= dx;
+    scroll.scrollTop -= dy;
+  }, {
+    canStart: () => scroll.scrollWidth > scroll.clientWidth + 1
+      || scroll.scrollHeight > scroll.clientHeight + 1,
+  });
+
+  function factorLabel() {
+    return zoomFactor < 10 ? zoomFactor.toFixed(1).replace('.', ',') : String(Math.round(zoomFactor));
+  }
 
   function syncChrome() {
     zoneLabel.textContent = zone.known
@@ -69,6 +96,20 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
       button.classList.toggle('is-on', active);
       button.setAttribute('aria-pressed', String(active));
     }
+    zoomChip.hidden = !visible || zoomFactor <= 1.001;
+    zoomChip.textContent = `×${factorLabel()}`;
+    zoomChip.title = 'Ajuster l’aperçu (Ctrl + molette pour zoomer)';
+    zoomChip.setAttribute('aria-label', `Aperçu zoomé ×${factorLabel()}. Cliquer pour ajuster.`);
+  }
+
+  function resetZoom() {
+    zoomFactor = 1;
+    scroll.scrollLeft = 0;
+    scroll.scrollTop = 0;
+    needsLayout = true;
+    layout();
+    syncChrome();
+    requestPaint();
   }
 
   function setZoom(next) {
@@ -76,22 +117,21 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
       return;
     }
     zoom = next;
-    needsLayout = true;
-    syncChrome();
-    requestPaint();
+    resetZoom();
   }
 
-  // Stage pixels per overlay pixel: the whole zone fits, or 1:1 for 100 %.
+  // Stage pixels per overlay pixel: the whole zone fits, or 1:1 for 100 %,
+  // times the Ctrl + molette multiplier.
   function previewScale() {
     if (zoom === '100') {
-      return 1;
+      return zoomFactor;
     }
     const width = scroll.clientWidth - 32;
     const height = scroll.clientHeight - 32;
     if (!(width > 0) || !(height > 0)) {
       return 0;
     }
-    return Math.min(1, width / zone.width, height / zone.height);
+    return Math.min(1, width / zone.width, height / zone.height) * zoomFactor;
   }
 
   function ensureBuffer(width, height) {
@@ -146,6 +186,38 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
     ensureBuffer(Math.max(1, Math.round(pictureWidth * ratio)), Math.max(1, Math.round(pictureHeight * ratio)));
     return true;
   }
+
+  // Ctrl + molette zoome l'aperçu autour du pointeur ; le cadre reste
+  // défilable, comme la zone réelle le sera si le média la dépasse.
+  scroll.addEventListener('wheel', (event) => {
+    if (!(event.ctrlKey || event.metaKey)) {
+      return;
+    }
+    // Le zoom de la page ne doit jamais prendre la main, même à la borne.
+    event.preventDefault();
+    const next = zoomedByWheel(zoomFactor, event, { min: 1, max: 4 });
+    if (next === null) {
+      return;
+    }
+    const before = screen.getBoundingClientRect();
+    const scrollLeft = scroll.scrollLeft;
+    const scrollTop = scroll.scrollTop;
+    zoomFactor = next;
+    needsLayout = true;
+    layout();
+    const after = screen.getBoundingClientRect();
+    const moved = anchorScroll({
+      scrollLeft,
+      scrollTop,
+      pointer: { x: event.clientX, y: event.clientY },
+      before,
+      after,
+    });
+    scroll.scrollLeft = moved.left;
+    scroll.scrollTop = moved.top;
+    syncChrome();
+    requestPaint();
+  }, { passive: false });
 
   function requestPaint() {
     if (!visible || queued) {
@@ -203,6 +275,9 @@ export function createDisplayPreview({ stage, displayZone, frame, paint }) {
     invalidate,
     requestPaint,
     setZoom,
-    destroy: () => resizeObserver.disconnect(),
+    destroy: () => {
+      pan.destroy();
+      resizeObserver.disconnect();
+    },
   };
 }

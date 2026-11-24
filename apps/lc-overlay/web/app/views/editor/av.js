@@ -20,9 +20,11 @@ import {
   buildRecipe,
   centeredCrop,
   clamp,
+  clampTimelineView,
   croppedPictureSize,
   cutRange,
   defaultAvEdit,
+  defaultTimelineView,
   displayScaleForStorage,
   displayZoneLimits,
   displayedImageSize,
@@ -37,12 +39,19 @@ import {
   normalizeDisplayScale,
   normalizeSegments,
   outputDuration,
+  panTimelineByDrag,
+  panTimelineView,
   parseClock,
   parseDisplayScale,
   parseSpeed,
   removedRanges,
+  revealTimelineTime,
   rotatedSize,
   sourceToOutputTime,
+  timelineZoomFactor,
+  videoViewBox,
+  wheelZoomFactor,
+  zoomTimelineView,
 } from '../../core/editor-helpers.js';
 import { DEFAULT_VOLUME_PERCENT, previewVolume } from '../../core/sound.js';
 import { state } from '../../core/state.js';
@@ -50,7 +59,9 @@ import { defaultAdjust } from './annotations.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
 import { choices, facts, section, slider, toggle } from './frame.js';
+import { createMiddlePan } from './middle-pan.js';
 import { createPreviewFramePump } from './preview-frames.js';
+import { createStageZoom } from './stage-zoom.js';
 import { panelKeys, railGroups, toolHint } from './tools.js';
 import { createVideoAnnotations } from './video-annotations.js';
 
@@ -164,7 +175,23 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         media,
       );
   const stageContent = isVideo ? videoFrame : audioStage;
-  frame.stage.replaceChildren(stageContent);
+  // The source frame laid over the whole video inside `.av-inner`, which
+  // clips it to what is shown: the crop box is drawn on it.
+  const frameLayer = h('div', { class: 'av-frame-layer' });
+  inner.append(frameLayer);
+  // Ctrl + wheel zoom of the preview. The frame is a fixed window: zooming
+  // and panning change what the video shows, never where it is (see
+  // `placeVideo`).
+  let stageZoom = null;
+  if (isVideo) {
+    stageZoom = createStageZoom({
+      content: videoFrame,
+      windowed: true,
+      onResize: () => layoutVideo(),
+      onPan: (view) => placeVideo(view, false),
+    });
+  }
+  frame.stage.replaceChildren(...(stageZoom ? [stageZoom.node, stageZoom.chip] : [stageContent]));
 
   // --- display preview ---
   // The overlay sizes the picture of a video, and the artwork of a sound, the
@@ -302,14 +329,14 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   // carry it exactly like the video. The scale comes from `layoutVideo`.
   let layoutScale = 0;
   let annotations = null;
+  // Where the shown part of the frame starts, in source pixels.
+  let viewOrigin = { x: 0, y: 0 };
+  let geometry = null;
 
-  // Where the frame starts in source pixels and how big a source pixel is on
-  // the stage. The tools map the pointer through it.
+  // Where the shown part of the frame starts in source pixels and how big a
+  // source pixel is on the stage. The tools map the pointer through it.
   function annotationView() {
-    const videoWidth = media.videoWidth || 16;
-    const videoHeight = media.videoHeight || 9;
-    const crop = !cropMode && edit.crop ? edit.crop : { x: 0, y: 0, width: 1, height: 1 };
-    return { x: crop.x * videoWidth, y: crop.y * videoHeight, scale: layoutScale || 1 };
+    return { x: viewOrigin.x, y: viewOrigin.y, scale: layoutScale || 1 };
   }
 
   function layoutVideo() {
@@ -320,30 +347,70 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     const videoHeight = media.videoHeight || 9;
     const crop = !cropMode && edit.crop ? edit.crop : { x: 0, y: 0, width: 1, height: 1 };
     const turns = cropMode ? 0 : edit.rotate / 90;
-    const flipH = !cropMode && edit.flipH;
-    const flipV = !cropMode && edit.flipV;
     const cropWidth = crop.width * videoWidth;
     const cropHeight = crop.height * videoHeight;
     const shown = rotatedSize(cropWidth, cropHeight, turns);
-    const scale = Math.min((frame.stage.clientWidth - 48) / shown.width, (frame.stage.clientHeight - 48) / shown.height);
+    const area = stageZoom
+      ? stageZoom.available()
+      : { width: frame.stage.clientWidth - 48, height: frame.stage.clientHeight - 48 };
+    const scale = Math.min(area.width / shown.width, area.height / shown.height) * (stageZoom ? stageZoom.zoom() : 1);
     if (!(scale > 0)) {
       return;
     }
-    videoFrame.style.width = `${shown.width * scale}px`;
-    videoFrame.style.height = `${shown.height * scale}px`;
-    inner.style.width = `${cropWidth * scale}px`;
-    inner.style.height = `${cropHeight * scale}px`;
+    geometry = {
+      videoWidth,
+      videoHeight,
+      crop: { x: crop.x * videoWidth, y: crop.y * videoHeight, width: cropWidth, height: cropHeight },
+      turns,
+      flipH: !cropMode && edit.flipH,
+      flipV: !cropMode && edit.flipV,
+      scale,
+    };
+    layoutScale = scale;
+    const full = { width: shown.width * scale, height: shown.height * scale };
+    placeVideo(stageZoom ? stageZoom.fit(full) : { x: 0, y: 0, ...full }, true);
+  }
+
+  // Shows `view`, a rectangle of the zoomed picture, in the frame. The video
+  // element keeps its size and its place while the view pans: only its
+  // `object-view-box` changes. A video that moves on screen loses Chromium's
+  // hardware overlay, and the composited path looks washed out on a
+  // wide-gamut screen.
+  function placeVideo(view, resized) {
+    if (!geometry) {
+      return;
+    }
+    const { videoWidth, videoHeight, crop, turns, flipH, flipV, scale } = geometry;
+    const box = videoViewBox({ crop, turns, flipH, flipV, scale, window: view });
+    videoFrame.style.width = `${view.width}px`;
+    videoFrame.style.height = `${view.height}px`;
+    inner.style.width = `${box.width * scale}px`;
+    inner.style.height = `${box.height * scale}px`;
     // Rotation first, then the flips on the rotated picture: the order the
     // server applies them.
     inner.style.transform = `translate(-50%, -50%) scale(${flipH ? -1 : 1}, ${flipV ? -1 : 1}) rotate(${turns * 90}deg)`;
-    media.style.width = `${videoWidth * scale}px`;
-    media.style.height = `${videoHeight * scale}px`;
-    media.style.left = `${-crop.x * videoWidth * scale}px`;
-    media.style.top = `${-crop.y * videoHeight * scale}px`;
-    layoutScale = scale;
-    if (annotations) {
+    media.style.width = `${box.width * scale}px`;
+    media.style.height = `${box.height * scale}px`;
+    const inset = [
+      box.y,
+      videoWidth - box.x - box.width,
+      videoHeight - box.y - box.height,
+      box.x,
+    ].map((side) => `${Math.max(0, side)}px`);
+    media.style.objectViewBox = `inset(${inset.join(' ')})`;
+    frameLayer.style.left = `${-box.x * scale}px`;
+    frameLayer.style.top = `${-box.y * scale}px`;
+    frameLayer.style.width = `${videoWidth * scale}px`;
+    frameLayer.style.height = `${videoHeight * scale}px`;
+    viewOrigin = { x: box.x, y: box.y };
+    if (!annotations) {
+      return;
+    }
+    if (resized) {
       annotations.layout();
       annotations.applyPreviewFilter();
+    } else {
+      annotations.place();
     }
   }
 
@@ -379,6 +446,12 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   const playButton = h('button', { class: 'btn tl-play', type: 'button', title: 'Lire / pause (Espace)', 'aria-label': 'Lire ou mettre en pause', onClick: () => togglePlay() }, icon('play'));
   const clock = h('span', { class: 'tl-clock' });
   const result = h('span', { class: 'tl-result' });
+  const zoomButton = h('button', {
+    class: 'btn is-quiet tl-zoom',
+    type: 'button',
+    hidden: true,
+    onClick: () => setTimelineView({ start: 0, end: duration }),
+  });
   frame.timeline.replaceChildren(
     h(
       'div',
@@ -387,13 +460,39 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       clock,
       h('span', { class: 'spacer' }),
       result,
+      zoomButton,
     ),
     track,
   );
   frame.timeline.hidden = false;
 
-  const timeToX = (time, width) => (time / duration) * width;
-  const xToTime = (x, width) => clamp((x / width) * duration, 0, duration);
+  // The visible slice of the media. Wheel + Ctrl zooms around the pointer;
+  // without zoom it is the whole media, exactly as before.
+  let timelineView = defaultTimelineView(duration);
+  const timelineSpan = () => Math.max(1e-6, timelineView.end - timelineView.start);
+  const timeToX = (time, width) => ((time - timelineView.start) / timelineSpan()) * width;
+  const xToTime = (x, width) => clamp(timelineView.start + (x / width) * timelineSpan(), 0, duration);
+
+  function syncZoomButton() {
+    const factor = timelineZoomFactor(timelineView, duration);
+    const zoomed = factor > 1.0001;
+    zoomButton.hidden = !zoomed;
+    const label = factor < 10 ? factor.toFixed(1).replace('.', ',') : String(Math.round(factor));
+    zoomButton.textContent = `×${label}`;
+    zoomButton.title = 'Afficher toute la frise (double-clic)';
+    zoomButton.setAttribute('aria-label', `Frise zoomée ×${label}. Cliquer pour afficher toute la frise.`);
+  }
+
+  function setTimelineView(next) {
+    const clamped = clampTimelineView(next, duration);
+    if (Math.abs(clamped.start - timelineView.start) < 1e-4 && Math.abs(clamped.end - timelineView.end) < 1e-4) {
+      return;
+    }
+    timelineView = clamped;
+    syncZoomButton();
+    paintTimeline(true);
+  }
+  syncZoomButton();
 
   // The track is a canvas: its colours are the tokens of the active theme, so
   // the light board gets a light track instead of the dark canvas literals.
@@ -428,7 +527,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     // The theme is part of the key: a theme switch changes the tokens without
     // re-rendering the view, so the track has to repaint itself.
     const theme = document.documentElement.dataset.theme || 'dark';
-    const key = [width, theme, media.currentTime.toFixed(3), JSON.stringify(edit.segments), JSON.stringify(selection), peaks ? 1 : 0, strip ? strip.dataset.done : 0].join('|');
+    const key = [width, theme, timelineView.start.toFixed(3), timelineView.end.toFixed(3), media.currentTime.toFixed(3), JSON.stringify(edit.segments), JSON.stringify(selection), peaks ? 1 : 0, strip ? strip.dataset.done : 0].join('|');
     if (!force && key === lastPaintKey) {
       return;
     }
@@ -447,14 +546,19 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
 
     const waveTop = isVideo ? STRIP_HEIGHT : 0;
     const waveHeight = TRACK_HEIGHT - waveTop;
-    if (isVideo && strip) {
-      context.drawImage(strip, 0, 0, width, STRIP_HEIGHT);
+    if (isVideo && strip && duration > 0) {
+      // Only the visible slice of the thumbnails, stretched over the track.
+      const from = (timelineView.start / duration) * strip.width;
+      const span = ((timelineView.end - timelineView.start) / duration) * strip.width;
+      context.drawImage(strip, from, 0, span, strip.height, 0, 0, width, STRIP_HEIGHT);
     }
     const middle = waveTop + waveHeight / 2;
     context.fillStyle = colors.wave;
     if (peaks) {
       for (let x = 0; x < width; x += 2) {
-        const peak = peaks[Math.min(peaks.length - 1, Math.floor((x / width) * peaks.length))];
+        const time = timelineView.start + (x / width) * timelineSpan();
+        const index = duration > 0 ? Math.floor((time / duration) * peaks.length) : 0;
+        const peak = peaks[clamp(index, 0, peaks.length - 1)];
         const bar = Math.max(1, peak * (waveHeight - 10));
         context.fillRect(x, middle - bar / 2, 1.4, bar);
       }
@@ -464,8 +568,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
 
     // What was removed is darkened and hatched.
     for (const [start, end] of removedRanges(edit.segments, duration)) {
-      const left = timeToX(start, width);
-      const right = timeToX(end, width);
+      const left = Math.max(0, timeToX(start, width));
+      const right = Math.min(width, timeToX(end, width));
+      if (!(right > left)) {
+        continue;
+      }
       context.fillStyle = colors.removed;
       context.fillRect(left, 0, right - left, TRACK_HEIGHT);
       context.save();
@@ -483,10 +590,15 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       context.restore();
     }
 
-    // Edges of what is kept: the trim handles.
+    // Edges of what is kept: the trim handles. A handle outside the window is
+    // not drawn at the border: it would look grabable where it is not.
     for (const [start, end] of edit.segments) {
       for (const time of [start, end]) {
-        const x = clamp(timeToX(time, width), 2, width - 2);
+        const raw = timeToX(time, width);
+        if (raw < -GRAB || raw > width + GRAB) {
+          continue;
+        }
+        const x = clamp(raw, 2, width - 2);
         context.fillStyle = colors.edge;
         context.fillRect(x - 2, 0, 4, TRACK_HEIGHT);
         context.fillStyle = colors.grip;
@@ -495,24 +607,34 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     }
 
     if (selection) {
-      const left = timeToX(selection[0], width);
-      const right = timeToX(selection[1], width);
-      context.fillStyle = colors.selection;
-      context.fillRect(left, 0, right - left, TRACK_HEIGHT);
+      const leftRaw = timeToX(selection[0], width);
+      const rightRaw = timeToX(selection[1], width);
+      const left = Math.max(0, leftRaw);
+      const right = Math.min(width, rightRaw);
+      if (right > left) {
+        context.fillStyle = colors.selection;
+        context.fillRect(left, 0, right - left, TRACK_HEIGHT);
+      }
       context.fillStyle = colors.selectionEdge;
-      context.fillRect(left - 1, 0, 2, TRACK_HEIGHT);
-      context.fillRect(right - 1, 0, 2, TRACK_HEIGHT);
+      if (leftRaw >= 0 && leftRaw <= width) {
+        context.fillRect(leftRaw - 1, 0, 2, TRACK_HEIGHT);
+      }
+      if (rightRaw >= 0 && rightRaw <= width) {
+        context.fillRect(rightRaw - 1, 0, 2, TRACK_HEIGHT);
+      }
     }
 
     const head = timeToX(media.currentTime, width);
-    context.fillStyle = colors.head;
-    context.fillRect(head - 1, 0, 2, TRACK_HEIGHT);
-    context.beginPath();
-    context.moveTo(head - 6, 0);
-    context.lineTo(head + 6, 0);
-    context.lineTo(head, 8);
-    context.closePath();
-    context.fill();
+    if (head >= -6 && head <= width + 6) {
+      context.fillStyle = colors.head;
+      context.fillRect(head - 1, 0, 2, TRACK_HEIGHT);
+      context.beginPath();
+      context.moveTo(head - 6, 0);
+      context.lineTo(head + 6, 0);
+      context.lineTo(head, 8);
+      context.closePath();
+      context.fill();
+    }
   }
 
   // Thumbnails along the timeline, read from a second, hidden video.
@@ -586,7 +708,13 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   function seek(time) {
-    media.currentTime = clamp(time, 0, Math.max(0, duration - 0.01));
+    const at = clamp(time, 0, Math.max(0, duration - 0.01));
+    media.currentTime = at;
+    // A seek outside the zoomed window brings the window back on the playhead,
+    // so the head never disappears from the track.
+    if (timelineZoomFactor(timelineView, duration) > 1.0001) {
+      setTimelineView(revealTimelineTime(timelineView, duration, at));
+    }
   }
 
   function setPlayIcon() {
@@ -642,6 +770,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     }
     applyGain();
     updateClock();
+    // While playing in a zoomed window, the playhead stays visible instead of
+    // sliding out of the slice.
+    if (!media.paused && timelineZoomFactor(timelineView, duration) > 1.0001) {
+      setTimelineView(revealTimelineTime(timelineView, duration, media.currentTime));
+    }
     paintTimeline();
     requestAnimationFrame(tick);
   }
@@ -776,19 +909,31 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   }
 
   // --- timeline pointer: trim handles, selection, seek ---
+  // The screen x of a handle, but only when it is (nearly) in the window.
+  function visibleHandle(time, width) {
+    const x = timeToX(time, width);
+    return x >= -GRAB && x <= width + GRAB ? clamp(x, 2, width - 2) : null;
+  }
+
   function grabTarget(x, width) {
     if (selection) {
-      if (Math.abs(x - timeToX(selection[0], width)) <= GRAB) {
+      const left = visibleHandle(selection[0], width);
+      const right = visibleHandle(selection[1], width);
+      if (left !== null && Math.abs(x - left) <= GRAB) {
         return { kind: 'selection', side: 0 };
       }
-      if (Math.abs(x - timeToX(selection[1], width)) <= GRAB) {
+      if (right !== null && Math.abs(x - right) <= GRAB) {
         return { kind: 'selection', side: 1 };
       }
     }
     let best = null;
     edit.segments.forEach(([start, end], index) => {
       for (const [side, time] of [[0, start], [1, end]]) {
-        const distance = Math.abs(x - clamp(timeToX(time, width), 2, width - 2));
+        const handle = visibleHandle(time, width);
+        if (handle === null) {
+          continue;
+        }
+        const distance = Math.abs(x - handle);
         if (distance <= GRAB && (!best || distance < best.distance)) {
           best = { kind: 'edge', index, side, distance };
         }
@@ -868,6 +1013,37 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     track.style.cursor = grabTarget(event.clientX - box.left, box.width).kind === 'free' ? 'text' : 'ew-resize';
   });
 
+  // Ctrl + molette zoome la frise autour du pointeur. Une fois zoomée, la
+  // molette sans Ctrl la fait défiler au lieu de faire défiler la page.
+  track.addEventListener('wheel', (event) => {
+    const box = track.getBoundingClientRect();
+    if (!(event.ctrlKey || event.metaKey)) {
+      if (timelineZoomFactor(timelineView, duration) <= 1.0001) {
+        return;
+      }
+      event.preventDefault();
+      const unit = event.deltaMode === 1 ? 40 : event.deltaMode === 2 ? 800 : 1;
+      const pixels = (Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY) * unit;
+      setTimelineView(panTimelineView(timelineView, duration, (pixels / Math.max(1, box.width)) * timelineSpan()));
+      return;
+    }
+    event.preventDefault();
+    const anchor = xToTime(clamp(event.clientX - box.left, 0, box.width), box.width);
+    setTimelineView(zoomTimelineView(timelineView, duration, anchor, wheelZoomFactor(event.deltaY, event.deltaMode)));
+  }, { passive: false });
+
+  // Double-clic : retour à la frise entière, le geste naturel pour dézoomer.
+  track.addEventListener('dblclick', () => setTimelineView({ start: 0, end: duration }));
+
+  // Molette maintenue : la frise suit le pointeur, la fenêtre remonte donc le
+  // temps quand on tire vers la droite. Sans zoom, il n'y a rien à déplacer ;
+  // le clique molette reste malgré tout neutralisé.
+  const timelinePan = createMiddlePan(track, (dx) => {
+    setTimelineView(panTimelineByDrag(timelineView, duration, dx, track.clientWidth));
+  }, {
+    canStart: () => timelineZoomFactor(timelineView, duration) > 1.0001,
+  });
+
   // --- video crop ---
   function cropAspect() {
     return (CROP_RATIOS.find((entry) => entry.id === cropRatio) || CROP_RATIOS[0]).ratio;
@@ -897,7 +1073,7 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
       const width = media.videoWidth;
       const height = media.videoHeight;
       cropOverlay = createCropOverlay({
-        host: inner,
+        host: frameLayer,
         bounds: () => ({ width, height }),
         aspect: cropAspect,
         onChange: () => {},
@@ -1215,7 +1391,11 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     previewShown = next;
     // The preview takes the stage over, like the picture editor does while its
     // display tool is open.
-    stageContent.hidden = previewShown;
+    if (stageZoom) {
+      stageZoom.setVisible(!previewShown);
+    } else {
+      stageContent.hidden = previewShown;
+    }
     if (previewShown) {
       preview.show();
       previewFrames.start();
@@ -1519,6 +1699,10 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     destroy() {
       destroyed = true;
       resizeObserver.disconnect();
+      timelinePan.destroy();
+      if (stageZoom) {
+        stageZoom.destroy();
+      }
       if (annotations) {
         annotations.destroy();
       }

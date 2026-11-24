@@ -29,7 +29,7 @@ const CATALOG = {
     label: 'Découper',
     glyph: 'scissors',
     hints: {
-      default: 'Tire les bords clairs de la frise pour raccourcir. Glisse sur la frise pour sélectionner un passage, puis garde-le ou supprime-le.',
+      default: 'Tire les bords clairs de la frise pour raccourcir. Glisse sur la frise pour sélectionner un passage, puis garde-le ou supprime-le. Ctrl + molette zoome la frise, molette maintenue la déplace\u00A0; un double-clic la remet entière.',
     },
   },
   speed: {

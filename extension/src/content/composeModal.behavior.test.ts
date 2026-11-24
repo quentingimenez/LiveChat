@@ -1,6 +1,7 @@
 // Caractérisation de la modale montée : état aria, champ durée tel que vu par
 // l'utilisateur (invariant ex-test ?raw), validation, payload soumis,
 // événements non trusted et fermeture. Une table évite trois copies.
+import { readFile } from 'node:fs/promises';
 import { Window } from 'happy-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { INVALID_DURATION_MESSAGE } from '../lib/duration';
@@ -158,5 +159,24 @@ describe.each(sites)('modale de composition — %s', (site) => {
     reopen();
     expect(overlay.classList.contains('is-hidden')).toBe(false);
     expect(duration.value).toBe('');
+  });
+});
+
+// Le champ du popup n'est pas monté par les tests de l'extension (popup.js est
+// une entrée HTML autonome). On constate son invariant sur le DOM issu de
+// popup.html, sans import ?raw : le fichier est lu puis monté par happy-dom.
+describe('champ durée du popup', () => {
+  it('reste un champ texte numérique sans contrainte native', async () => {
+    const html = await readFile(new URL('../../popup.html', import.meta.url), 'utf8');
+    const win = new Window({ url: 'moz-extension://popup/popup.html' });
+    mounted.push(win);
+    win.document.body.innerHTML = html;
+    const field = win.document.getElementById('compose-duration') as HTMLInputElement | null;
+    expect(field).not.toBeNull();
+    expect(field!.getAttribute('type')).toBe('text');
+    expect(field!.getAttribute('inputmode')).toBe('numeric');
+    expect(field!.hasAttribute('min')).toBe(false);
+    expect(field!.hasAttribute('max')).toBe(false);
+    expect(field!.hasAttribute('step')).toBe(false);
   });
 });

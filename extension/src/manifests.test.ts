@@ -24,8 +24,20 @@ const MEDIA_HOSTS = [
   'https://*.twitter.com/*',
 ];
 
-const WIDE_PATTERNS = ['<all_urls>', '*://*/*', 'http://*/*', 'https://*'];
+const HOST_PERMISSION_KEYS = ['host_permissions', 'optional_host_permissions'] as const;
+const MANIFEST_NAMES = ['base', 'chromium', 'firefox'] as const;
+// Motifs grossiers interdits partout, y compris sous forme de chaîne ailleurs
+// dans le fichier. Le guillemet fermant sur `https://*` vise le motif nu, sans
+// le `/*` final du motif déclaratif retenu en C-05.
+const WIDE_PATTERNS = ['<all_urls>', '*://*/*', 'http://*/*', '"https://*"'];
+const DECLARATIVE_PATTERN = 'https://*/*';
 const SECURITY_REVIEW = 'élargir les permissions d’hôte exige une revue de sécurité';
+
+const declaredHostPatterns = (manifest: Record<string, unknown>): string[] =>
+  HOST_PERMISSION_KEYS.flatMap((key) => {
+    const value = manifest[key];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  });
 
 describe('invariants des manifestes (décision C-05)', () => {
   it('ne déclare qu’un seul motif d’hôte optionnel, volontairement large en déclaratif', async () => {
@@ -46,23 +58,44 @@ describe('invariants des manifestes (décision C-05)', () => {
     expect(base.permissions, SECURITY_REVIEW).toEqual(['storage', 'contextMenus', 'tabs', 'webRequest']);
   });
 
+  it('ne laisse aucune surcouche déclarer d’hôtes supplémentaires', async () => {
+    for (const name of ['chromium', 'firefox']) {
+      const overlay = await readJson(`${name}.json`);
+
+      for (const key of HOST_PERMISSION_KEYS) {
+        const value = overlay[key];
+        expect(
+          value === undefined || (Array.isArray(value) && value.length === 0),
+          `${name}.json: ${SECURITY_REVIEW} (${key} interdit dans une surcouche)`,
+        ).toBe(true);
+      }
+    }
+  });
+
   it('ne contient aucun motif d’hôte large dans base, chromium ni firefox', async () => {
-    const manifests = await Promise.all(['base.json', 'chromium.json', 'firefox.json'].map(readJson));
+    const manifests = await Promise.all(MANIFEST_NAMES.map((name) => readJson(`${name}.json`)));
 
     for (const [index, manifest] of manifests.entries()) {
       const serialized = JSON.stringify(manifest);
+      const name = MANIFEST_NAMES[index];
 
       for (const pattern of WIDE_PATTERNS) {
-        // "https://*" est interdit sauf sous la forme exacte "https://*/*" :
-        // c'est le motif optionnel déclaratif retenu en C-05.
-        const forbidden =
-          pattern === 'https://*'
-            ? serialized.includes('"https://*"')
-            : serialized.includes(pattern);
+        expect(
+          serialized.includes(pattern),
+          `${name}.json: ${SECURITY_REVIEW} (motif ${pattern})`,
+        ).toBe(false);
+      }
 
-        expect(forbidden, `${['base', 'chromium', 'firefox'][index]}: ${SECURITY_REVIEW} (motif ${pattern})`).toBe(
-          false,
-        );
+      // `https://*/*` est le motif déclaratif retenu, autorisé uniquement dans
+      // optional_host_permissions de base.json. Partout ailleurs (hôtes
+      // statiques, surcouches), il doit faire échouer le test.
+      for (const pattern of declaredHostPatterns(manifest)) {
+        const optional = manifest.optional_host_permissions;
+        const allowed = name === 'base' && Array.isArray(optional) && optional[0] === pattern;
+        expect(
+          allowed || pattern !== DECLARATIVE_PATTERN,
+          `${name}.json: ${SECURITY_REVIEW} (motif ${DECLARATIVE_PATTERN} hors base.optional_host_permissions)`,
+        ).toBe(true);
       }
     }
   });

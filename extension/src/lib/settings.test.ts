@@ -127,7 +127,6 @@ describe('rétrécissement de la demande de permission d’hôte (C-05)', () => 
 
     expect(permissionsRequest).toHaveBeenCalledTimes(1);
     expect(permissionsRequest).toHaveBeenCalledWith({ origins: ['https://board.example.com/*'] });
-    expect(permissionsRequest.mock.calls[0][0].origins).not.toContain('https://*/*');
   });
 
   it('ignore chemin, query et slash final : seule l’origine est demandée', async () => {
@@ -137,7 +136,6 @@ describe('rétrécissement de la demande de permission d’hôte (C-05)', () => 
 
     expect(permissionsRequest).toHaveBeenCalledTimes(1);
     expect(permissionsRequest).toHaveBeenCalledWith({ origins: ['https://board.example.com:8443/*'] });
-    expect(permissionsRequest.mock.calls[0][0].origins).not.toContain('https://*/*');
   });
 
   it('ne fait aucune demande pour une URL API en http (refus de normalizeApiUrl)', async () => {
@@ -151,7 +149,7 @@ describe('rétrécissement de la demande de permission d’hôte (C-05)', () => 
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 
-  it('ne demande rien de plus quand l’autorisation est déjà accordée : contains cible la même origine', async () => {
+  it('sonde uniquement l’origine configurée sans émettre de demande', async () => {
     // Les fonctions de demande restent idempotentes (Firefox impose le geste
     // utilisateur) : aucune ne court-circuite `request`. L'invariant vérifiable
     // est que la lecture d'état `hasApiHostPermission` ne sonde QUE l'origine
@@ -163,7 +161,6 @@ describe('rétrécissement de la demande de permission d’hôte (C-05)', () => 
 
     expect(permissionsContains).toHaveBeenCalledTimes(1);
     expect(permissionsContains).toHaveBeenCalledWith({ origins: ['https://board.example.com/*'] });
-    expect(permissionsContains.mock.calls[0][0].origins).not.toContain('https://*/*');
     expect(permissionsRequest).not.toHaveBeenCalled();
   });
 });

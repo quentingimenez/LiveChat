@@ -122,22 +122,7 @@ jobs:
           toolchain: "1.90.0"
       # libwebkit2gtk/gtk : requis pour compiler apps/lc-overlay (Tauri 2) sur Linux.
       - name: Linux system dependencies (Tauri)
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libxdo-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            pkg-config \
-            patchelf
+        run: bash scripts/ci/install-linux-tauri-deps.sh
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: cargo check (MSRV)
@@ -158,22 +143,7 @@ jobs:
       # libwebkit2gtk/gtk : requis pour compiler apps/lc-overlay (Tauri 2) sur Linux.
       # libssl-dev + pkg-config : backend TLS native-tls de l'overlay.
       - name: Linux system dependencies (Tauri)
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libxdo-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            pkg-config \
-            patchelf
+        run: bash scripts/ci/install-linux-tauri-deps.sh
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       - name: cargo clippy (-D warnings)
@@ -196,22 +166,7 @@ jobs:
           toolchain: stable
       - name: Linux system dependencies (Tauri)
         if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          sudo apt-get update
-          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libxdo-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libssl-dev \
-            pkg-config \
-            patchelf
+        run: bash scripts/ci/install-linux-tauri-deps.sh
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # `rust-embed` embeds apps/lc-admin-web/dist at compile time: build it
@@ -265,23 +220,35 @@ jobs:
         run: |
           npm ci
           npm run typecheck
-      - name: Bombadil — admin console
+      # Les deux cibles sont indépendantes (serveur et port distincts, sorties
+      # distinctes) : elles tournent en parallèle, une exploration de 3 min au
+      # lieu de deux. Advisory comme avant : une violation échoue l'étape sans
+      # bloquer le job, et les traces restent téléversées.
+      - name: Bombadil — admin console and overlay board
         if: runner.os == 'Linux'
         continue-on-error: true
         working-directory: tools/bombadil
         env:
           LC_SERVER_BIN: ${{ github.workspace }}/target/debug/lc-server
+          LC_BOMBADIL_ADMIN_PORT: "39417"
+          LC_BOMBADIL_BOARD_PORT: "39418"
           BOMBADIL_TIME_LIMIT: 3m
           BOMBADIL_NO_SANDBOX: "1"
-        run: npm run admin
-      - name: Bombadil — overlay board
-        if: runner.os == 'Linux'
-        continue-on-error: true
-        working-directory: tools/bombadil
-        env:
-          BOMBADIL_TIME_LIMIT: 3m
-          BOMBADIL_NO_SANDBOX: "1"
-        run: npm run board
+        run: |
+          set -uo pipefail
+          npm run admin > /tmp/bombadil-admin.log 2>&1 &
+          admin_pid=$!
+          npm run board > /tmp/bombadil-board.log 2>&1 &
+          board_pid=$!
+          failed=0
+          wait "$admin_pid" || failed=1
+          wait "$board_pid" || failed=1
+          cat /tmp/bombadil-admin.log
+          cat /tmp/bombadil-board.log
+          if [ "$failed" -ne 0 ]; then
+            echo "::error::Bombadil a signalé une violation (console admin ou board overlay)"
+          fi
+          exit "$failed"
       - name: Upload the Bombadil traces
         if: runner.os == 'Linux' && always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

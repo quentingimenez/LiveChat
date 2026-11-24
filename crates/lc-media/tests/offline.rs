@@ -11,6 +11,7 @@ use lc_media::{MediaError, MediaErrorCode};
 
 const TIKTOK_VIDEO: &str = include_str!("fixtures/tiktok_video.html");
 const TIKTOK_PHOTO: &str = include_str!("fixtures/tiktok_photo.html");
+const TIKTOK_AUDIO_ONLY: &str = include_str!("fixtures/tiktok_audio_only.html");
 const TIKTOK_OEMBED: &str = include_str!("fixtures/tiktok_oembed.json");
 const TWITTER_SYNDICATION: &str = include_str!("fixtures/twitter_syndication.json");
 const YOUTUBE_OEMBED: &str = include_str!("fixtures/youtube_oembed.json");
@@ -61,6 +62,24 @@ fn parses_tiktok_photo_page() {
         .iter()
         .flatten()
         .all(|candidate| candidate.url.starts_with("http")));
+}
+
+#[test]
+fn tiktok_audio_only_page_is_incomplete_for_a_visual_post() {
+    let page = tiktok::parse_page_html(
+        TIKTOK_AUDIO_ONLY,
+        "https://www.tiktok.com/@livechat/video/7300000000000000003",
+    );
+    assert_eq!(page.item_id.as_deref(), Some("7300000000000000003"));
+    assert!(page.video_candidates.is_empty());
+    assert!(page.photo_slides.is_empty());
+    assert!(!page.audio_candidates.is_empty());
+    // La page n'est pas « vide » (elle contient la musique) : sans la notion
+    // de publication visuelle, aucun repli `ttwid`/embed ne serait tenté.
+    assert!(!page.is_empty());
+    assert!(page.has_only_audio());
+    assert!(page.needs_visual_retry(true));
+    assert!(!page.needs_visual_retry(false));
 }
 
 #[test]

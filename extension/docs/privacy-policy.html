@@ -100,6 +100,8 @@
         <h2>Securite</h2>
         <ul>
           <li>L'extension utilise le token configure par l'utilisateur pour authentifier les requetes d'ingestion.</li>
+          <li>Le stockage local de l'extension est limite aux contextes de confiance (TRUSTED_CONTEXTS) quand le navigateur le permet ; il reste en clair dans le profil et n'est pas chiffre.</li>
+          <li>Le token n'est jamais ecrit dans les journaux ni dans les messages d'erreur de l'extension.</li>
           <li>L'utilisateur reste responsable de la securite de son serveur API et de son token.</li>
         </ul>
 

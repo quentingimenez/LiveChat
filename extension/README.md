@@ -118,6 +118,36 @@ chargement temporaire sert au développement, la version publiée passe par AMO
 - Navigateurs supportés : Chromium ≥ 148 (namespace `browser` avec promesses) et Firefox ≥ 140.
 - Certificats TLS invalides/self-signed non supportés côté extension.
 
+### Jeton d'ingestion et stockage local — décision C-03
+
+`INGEST_API_TOKEN` est sauvegardé en clair dans `browser.storage.local` avec la
+configuration. Au démarrage du service worker, l'extension appelle
+`setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' })` sur cette area (Chrome ≥ 102)
+pour la rendre illisible depuis les content scripts injectés sur les pages tierces.
+L'API est absente sur Firefox et sur Chrome < 102 : l'appel est alors un no-op
+documenté, sans erreur. Les content scripts n'accèdent plus au stockage : la
+préférence de thème leur est fournie par messages runtime.
+
+**Limite technique assumée, pas une acceptation de confort :** ce n'est pas du
+chiffrement. `storage.local` reste en clair dans le profil du navigateur
+(sauvegarde de profil, synchro, autre processus local). Chiffrer le jeton avec
+une clé conservée dans la même extension ne protégerait de rien : en MV3, sans
+keystore OS ni native messaging dans cette extension, toute clé stockée à côté
+du chiffré est lisible par le même adversaire. Le backlog autorise explicitement
+« chiffrer **ou** documenter l'acceptation » ; la réduction de surface above
+est le correctif réel, la limitation de stockage est documentée avec sa preuve :
+la [documentation Chrome de `StorageArea.setAccessLevel`](https://developer.chrome.com/docs/extensions/reference/api/storage/StorageArea#method-setAccessLevel)
+indique que `local` autorise par défaut les contextes fiables *et* non fiables,
+et que `TRUSTED_CONTEXTS` restreint l'accès aux contextes de l'extension.
+
+Le jeton n'est jamais journalisé : sur le chemin d'erreur d'`ingestClient`, les
+messages d'erreur réseau sont filtrés (`lib/redact.ts`) avant d'être exposés,
+et le champ « Tester la config » des options applique le même masquage.
+
+**Suivi :** la protection dépend du niveau d'accès fourni par le navigateur ;
+si un moteur expose un stockage sécurisé (keystore OS ou native messaging), le
+chiffrement redevient envisageable et cette note devra être révisée.
+
 ## CI / Release GitHub
 
 Workflow: [`extension.yml`](../.github/workflows/extension.yml) (racine du monorepo)

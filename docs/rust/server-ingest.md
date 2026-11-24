@@ -300,9 +300,10 @@ non `DOWNLOAD_FAILED` comme le legacy : décision assumée, documentée ici.
 - **Sorties de commandes bornées** (AUD-A4-005) : `lc_media::process::run_command`
   draine stdout/stderr avec un plafond de 8 Mio ; dépassement →
   `INVALID_MEDIA` (« sortie de … trop volumineuse »), plus de buffer illimité.
-- **Cookie TikTok** (AUD-A4-013) : `sanitize_tiktok_cookie` trim, retire le
-  préfixe `cookie:`, refuse vide/caractères de contrôle, plafonne à 4096
-  caractères ; la valeur n'est jamais journalisée.
+- **Cookies des sources** (AUD-A4-013) : `sanitize_tiktok_cookie` et
+  `sanitize_youtube_cookie` trim, retirent le préfixe `cookie:`, refusent
+  vide/caractères de contrôle, plafonnent à 4096 caractères ; la valeur n'est
+  jamais journalisée.
 - **Sanitizers HTML allowlist** (AUD-A4-015) : `lc_media::html::sanitize_embed_html`
   (oEmbed/embed) et `crate::media::html::sanitize_tweet_embed` (carte tweet,
   Phase 6b) n'autorisent qu'une liste fermée de tags/attributs, suppriment
@@ -507,7 +508,7 @@ Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --c
 | Corps JSON invalide | 400 Fastify (parsing avant handler) | 400 `invalid_payload` dédié ; l'auth/token reste évaluée avant le refus de corps (AUD-A2-009) |
 | SVG / MIME distant | SVG accepté, Content-Type distant de confiance | SVG refusé (`INVALID_MEDIA`), MIME dérivé du probe (AUD-A4-004/A4-010) |
 | Commandes externes | sortie non bornée | stdout/stderr plafonnés à 8 Mio (`run_command`), ffprobe `-i` (AUD-A4-005/A4-012) |
-| Cookie TikTok | préfixe retiré, valeur brute | validation contrôle/cap 4096, jamais journalisée (AUD-A4-013) |
+| Cookies TikTok/YouTube | préfixe retiré, valeur brute | validation contrôle/cap 4096, jamais journalisée (AUD-A4-013) |
 | HTML embeds | suppression script/iframe seulement | allowlist tags/attrs + `rel`/`target` forcés (AUD-A4-015) |
 | SQL direct | Prisma | `db.pool()` pour `mark_ready` et l'éviction (repositories lc-db incomplets) |
 

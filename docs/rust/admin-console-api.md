@@ -64,7 +64,7 @@ vide).
 |---|---|
 | `GET /admin/auth/session` | `200 {"method":"discord"\|"secret","user":{"id","name","avatarUrl"}\|null,"expiresAt"}` ; sans session `401 {"error":"unauthorized","methods":{"discord":bool,"secret":bool}}` |
 | `POST /admin/auth/secret` `{"secret"}` | comparaison à temps constant ; `204` + `Set-Cookie` ; mauvais secret `401 invalid_secret` ; désactivé `404 method_disabled` |
-| `GET /admin/auth/discord` | `302` vers `https://discord.com/oauth2/authorize` (scope `identify`, `state` aléatoire posé dans le cookie `lc_admin_oauth_state`, `HttpOnly; SameSite=Lax; Path=/admin/auth; Max-Age=600`) ; `redirect_uri` = `{API_URL}/admin/auth/discord/callback` |
+| `GET /admin/auth/discord` | `302` vers `https://discord.com/oauth2/authorize` (scope `identify`, `state` posé dans le cookie `lc_admin_oauth_state`, `HttpOnly; SameSite=Lax; Path=/admin/auth; Max-Age=600`) ; le `state` déjà épinglé dans le navigateur est réutilisé et le cookie réémis (fenêtre de 10 minutes rafraîchie), un cookie absent ou d'une autre forme reçoit un `state` neuf ; `redirect_uri` = `{API_URL}/admin/auth/discord/callback` |
 | `GET /admin/auth/discord/callback?code&state` | vérifie `state`, échange le code, lit `GET /users/@me`, refuse un id hors liste ; succès `302 /admin/#/dashboard` + cookie ; échec `302 /admin/#/login?error=<code>` (`oauth_state`, `oauth_failed`, `not_allowed`) |
 | `POST /admin/auth/logout` | supprime la session, efface le cookie, `204` |
 
@@ -207,15 +207,16 @@ d'ingestion (membre exclu ou action refusée : `403 forbidden_role`).
 
 ## 7. Paramètres du serveur à chaud
 
-`admin_runtime.json` (existant, cookie TikTok) gagne : `defaultDuration`,
+`admin_runtime.json` (existant, cookies TikTok et YouTube) gagne : `defaultDuration`,
 `mediaCacheTtlHours`, `mediaCacheMaxTotalMb`, `mediaBoardMaxTotalMb`,
 `mediaMaxSizeMb`, `mediaVideoMaxHeight`, `minOverlayVersion`,
 `ttsEnabled`. Valeur absente = valeur d'environnement. `GET` renvoie
-`{"settings":{clé:{"value","source":"runtime"|"env","default"}}, "readOnly":{…}}`
+`{"hasTikTokCookie":bool,"hasYouTubeCookie":bool,"settings":{clé:{"value","source":"runtime"|"env","default"}}, "readOnly":{…}}`
 où `readOnly` liste les réglages d'environnement non modifiables (port,
 `API_URL`, chemins, présence des secrets en booléen — jamais leur valeur).
 `PATCH` accepte un sous-ensemble des clés modifiables (`null` = revenir à
-l'environnement).
+l'environnement) ; `tiktokCookie` et `youtubeCookie` sont écrits en clair dans
+`admin_runtime.json` mais jamais renvoyés par l'API.
 
 ## 8. Flux temps réel
 

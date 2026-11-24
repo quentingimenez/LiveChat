@@ -38,12 +38,13 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use lc_domain::MediaKind;
 use lc_media::poster::{extract_poster_at, PosterSource};
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::media::thumbnails;
 
 use super::auth::AuthedOverlayClient;
@@ -116,7 +117,7 @@ pub(crate) async fn apply_cover(
         Err(db_error) => return db_failure("overlay_media_cover.asset_lookup", &db_error),
     };
     if asset.kind != MediaKind::Video {
-        return invalid_payload("only a video can take its picture from a frame".to_owned());
+        return invalid_payload("Seule une vidéo peut fournir une image extraite d’une frame.");
     }
     let input = match super::media::resolve_media_file(state, &asset).await {
         Ok(path) => path,
@@ -174,15 +175,15 @@ pub(crate) async fn apply_cover(
 
 /// Reads `{"atSec": <seconds>}`; the error is the `message` of the
 /// `400 invalid_payload` response.
-fn parse_request(body: serde_json::Value) -> Result<f64, String> {
+fn parse_request(body: serde_json::Value) -> Result<f64, &'static str> {
     let serde_json::Value::Object(object) = body else {
-        return Err("a JSON object is expected".to_owned());
+        return Err("Un objet JSON est attendu.");
     };
     let Some(at_sec) = object.get("atSec").and_then(serde_json::Value::as_f64) else {
-        return Err("atSec is required: the position of the player, in seconds".to_owned());
+        return Err("La position du lecteur (atSec), en secondes, est requise.");
     };
     if !at_sec.is_finite() || at_sec < 0.0 {
-        return Err("atSec must be a positive number of seconds".to_owned());
+        return Err("La position du lecteur doit être un nombre de secondes positif.");
     }
     Ok(at_sec)
 }
@@ -193,11 +194,10 @@ fn optional_side(value: Option<i64>) -> Option<u32> {
 }
 
 /// `400 invalid_payload` with a message.
-fn invalid_payload(message: String) -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({"error": "invalid_payload", "message": message}),
-    )
+fn invalid_payload(message: &'static str) -> Response {
+    ApiError::invalid_payload()
+        .with_message(message)
+        .into_response()
 }
 
 #[cfg(test)]
@@ -214,22 +214,22 @@ mod tests {
         assert_eq!(parse_request(json!({"atSec": 0})).unwrap(), 0.0);
 
         for (body, message) in [
-            (json!([]), "a JSON object is expected"),
+            (json!([]), "Un objet JSON est attendu."),
             (
                 json!({}),
-                "atSec is required: the position of the player, in seconds",
+                "La position du lecteur (atSec), en secondes, est requise.",
             ),
             (
                 json!({"atSec": "2"}),
-                "atSec is required: the position of the player, in seconds",
+                "La position du lecteur (atSec), en secondes, est requise.",
             ),
             (
                 json!({"atSec": null}),
-                "atSec is required: the position of the player, in seconds",
+                "La position du lecteur (atSec), en secondes, est requise.",
             ),
             (
                 json!({"atSec": -1}),
-                "atSec must be a positive number of seconds",
+                "La position du lecteur doit être un nombre de secondes positif.",
             ),
         ] {
             assert_eq!(parse_request(body).err().unwrap(), message);

@@ -43,9 +43,10 @@
 //!
 //! - AUCUN handler ne lit l'horloge système : tout instant vient de
 //!   `state.clock` (tests déterministes, cf. `docs/rust/server-core.md` §9).
-//! - Les erreurs applicatives sont déjà au format JSON minimal du legacy
-//!   (`{"error": "<code>"}`, éventuellement enrichi de `message`/`code`) : le
-//!   middleware `normalize_errors` laisse intact un corps JSON.
+//! - Les erreurs applicatives suivent le contrat central
+//!   `{"error": "<code>", "message": "<phrase française>"}` via `ApiError` ;
+//!   les détails additifs (`code` média, `maxBytes`…) sont aplatis à côté, et
+//!   aucune sortie brute d'outil n'est exposée.
 //! - Les accès base passent par `state.db` (`Option<Db>`) ; une base absente
 //!   répond `503 {"error":"database_unavailable"}` plutôt que de paniquer.
 //! - Aucun `unwrap`/`expect`/`panic` (lints workspace).
@@ -487,9 +488,9 @@ fn json_response(status: StatusCode, body: Value) -> Response {
     (status, Json(body)).into_response()
 }
 
-/// Erreur JSON minimale du legacy (`{"error": code}`).
+/// Erreur JSON applicative : code stable et message français centralisé.
 fn error(status: StatusCode, code: &'static str) -> Response {
-    crate::http::error::json_error(status, code)
+    crate::http::error::ApiError::new(status, code).into_response()
 }
 
 /// `401 {"error":"unauthorized"}`.

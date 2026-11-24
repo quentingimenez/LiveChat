@@ -49,12 +49,13 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use lc_domain::Permission;
 use lc_media::edit::{EditRecipe, EditSource};
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::ingestions::StartIngestionError;
 
 use super::auth::AuthedOverlayClient;
@@ -152,7 +153,7 @@ pub(crate) async fn start_edit(
     };
     if request.replace && plan.output_kind() != asset.kind {
         return invalid_payload(
-            "a replacement must produce the same kind of media as the original".to_owned(),
+            "Un remplacement doit produire le même type de média que l’original.",
         );
     }
     let source_path = match super::media::resolve_media_file(state, &asset).await {
@@ -255,27 +256,34 @@ pub async fn edit_item(
 
 /// Reads `{replace?, title?, recipe}`; the error is the `message` of the
 /// `400 invalid_payload` response.
-fn parse_request(body: serde_json::Value) -> Result<EditRequest, String> {
+fn parse_request(body: serde_json::Value) -> Result<EditRequest, &'static str> {
     let serde_json::Value::Object(mut object) = body else {
-        return Err("a JSON object is expected".to_owned());
+        return Err("Un objet JSON est attendu.");
     };
     let replace = match object.get("replace") {
         None | Some(serde_json::Value::Null) => false,
         Some(serde_json::Value::Bool(replace)) => *replace,
-        Some(_) => return Err("replace must be a boolean".to_owned()),
+        Some(_) => return Err("Le paramètre replace doit être un booléen."),
     };
     let title = match object.get("title") {
         None | Some(serde_json::Value::Null) => None,
         Some(serde_json::Value::String(title)) => {
             Some(truncate_chars(title, TITLE_MAX_CHARS)).filter(|title| !title.is_empty())
         }
-        Some(_) => return Err("title must be a string".to_owned()),
+        Some(_) => return Err("Le titre doit être une chaîne de caractères."),
     };
     let recipe = match object.remove("recipe") {
-        Some(recipe @ serde_json::Value::Object(_)) => serde_json::from_value::<EditRecipe>(recipe)
-            .map_err(|error| format!("recipe is invalid: {error}"))?,
-        Some(_) => return Err("recipe must be an object".to_owned()),
-        None => return Err("recipe is required".to_owned()),
+        Some(recipe @ serde_json::Value::Object(_)) => {
+            match serde_json::from_value::<EditRecipe>(recipe) {
+                Ok(recipe) => recipe,
+                Err(error) => {
+                    tracing::debug!(error = %error, "recette d’édition invalide");
+                    return Err("La recette d’édition est invalide.");
+                }
+            }
+        }
+        Some(_) => return Err("La recette d’édition doit être un objet."),
+        None => return Err("La recette d’édition est requise."),
     };
     Ok(EditRequest {
         replace,
@@ -316,11 +324,10 @@ fn filename_stem(title: &str) -> String {
 }
 
 /// `400 invalid_payload` with a message.
-fn invalid_payload(message: String) -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({"error": "invalid_payload", "message": message}),
-    )
+fn invalid_payload(message: impl Into<String>) -> Response {
+    ApiError::invalid_payload()
+        .with_owned_message(message.into())
+        .into_response()
 }
 
 #[cfg(test)]
@@ -363,20 +370,26 @@ mod tests {
         assert_eq!(blank.title, None);
 
         for (body, message) in [
-            (json!([]), "a JSON object is expected"),
-            (json!({}), "recipe is required"),
-            (json!({"recipe": 3}), "recipe must be an object"),
+            (json!([]), "Un objet JSON est attendu."),
+            (json!({}), "La recette d’édition est requise."),
+            (
+                json!({"recipe": 3}),
+                "La recette d’édition doit être un objet.",
+            ),
             (
                 json!({"recipe": {}, "replace": "yes"}),
-                "replace must be a boolean",
+                "Le paramètre replace doit être un booléen.",
             ),
-            (json!({"recipe": {}, "title": 3}), "title must be a string"),
+            (
+                json!({"recipe": {}, "title": 3}),
+                "Le titre doit être une chaîne de caractères.",
+            ),
         ] {
             assert_eq!(parse_request(body).err().unwrap(), message);
         }
         let error = parse_request(json!({"recipe": {"speed": "fast"}}))
             .err()
             .unwrap();
-        assert!(error.starts_with("recipe is invalid: "), "{error}");
+        assert_eq!(error, "La recette d’édition est invalide.");
     }
 }

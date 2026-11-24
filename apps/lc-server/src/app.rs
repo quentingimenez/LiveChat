@@ -46,7 +46,6 @@ use axum::extract::{DefaultBodyLimit, Request, State};
 use axum::http::{header, Extensions, HeaderMap, Method, StatusCode, Version};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use axum::Router;
 use lc_db::{Db, DbConfig};
 use lc_domain::{Clock, SystemClock};
@@ -65,6 +64,7 @@ use crate::http::admin::hub::{AdminHub, NoopAdminHub};
 use crate::http::admin::{
     AdminEvents, AdminOAuth, BinaryProbe, DisabledOAuth, DiscordOAuth, SystemBinaryProbe,
 };
+use crate::http::error::ApiError;
 use crate::http::health::{DiscordProbe, HealthProbe};
 use crate::http::rate_limit::RateLimitState;
 use crate::ingestions::IngestionRegistry;
@@ -129,11 +129,7 @@ async fn enforce_timeout(
     }
     match tokio::time::timeout(timeout, next.run(request)).await {
         Ok(response) => response,
-        Err(_) => (
-            StatusCode::REQUEST_TIMEOUT,
-            Json(serde_json::json!({ "error": "request_timeout" })),
-        )
-            .into_response(),
+        Err(_) => ApiError::new(StatusCode::REQUEST_TIMEOUT, "request_timeout").into_response(),
     }
 }
 
@@ -530,7 +526,10 @@ mod tests {
         let app = router(state());
         let (status, _, body) = send(&app, request(Method::GET, "/inconnu")).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert_eq!(
+            body,
+            serde_json::json!({ "error": "request_error", "message": "Ressource introuvable." })
+        );
     }
 
     #[tokio::test]
@@ -538,7 +537,13 @@ mod tests {
         let app = router(state());
         let (status, _, body) = send(&app, request(Method::POST, "/")).await;
         assert_eq!(status, StatusCode::METHOD_NOT_ALLOWED);
-        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "request_error",
+                "message": "La requête n'a pas pu être traitée.",
+            })
+        );
     }
 
     #[tokio::test]
@@ -617,6 +622,7 @@ mod tests {
                 body,
                 serde_json::json!({
                     "error": "overlay_outdated",
+                    "message": "L'overlay doit être mis à jour.",
                     "protocolVersion": 2,
                     "minOverlayVersion": "3.0.0",
                 }),
@@ -710,7 +716,13 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "too_many_requests",
+                "message": "Trop de requêtes. Réessayez dans un instant.",
+            })
+        );
         assert_eq!(
             *headers.get("x-ratelimit-limit").unwrap(),
             AUTH_RATE_LIMIT_MAX.to_string()
@@ -848,7 +860,13 @@ mod tests {
         let (status, headers, body) =
             send(&app, from_client(request(Method::GET, "/admin/"), client)).await;
         assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "too_many_requests",
+                "message": "Trop de requêtes. Réessayez dans un instant.",
+            })
+        );
         assert_eq!(
             *headers.get("x-ratelimit-limit").unwrap(),
             RATE_LIMIT_MAX.to_string()
@@ -947,7 +965,13 @@ mod tests {
 
         let (status, _, body) = send(&app, request(Method::GET, "/slow")).await;
         assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
-        assert_eq!(body, serde_json::json!({ "error": "request_timeout" }));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "request_timeout",
+                "message": "Le serveur n'a pas répondu à temps.",
+            })
+        );
 
         // Les routes JSON ordinaires restent soumises au timeout, y compris
         // l'ajout d'un lien au board, qui répond `202` sans attendre.
@@ -1006,7 +1030,13 @@ mod tests {
             .unwrap();
         let (status, _, body) = send(&app, request).await;
         assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-        assert_eq!(body, serde_json::json!({ "error": "request_error" }));
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "error": "payload_too_large",
+                "message": "Le corps de la requête est trop volumineux.",
+            })
+        );
     }
 
     #[tokio::test]

@@ -28,6 +28,7 @@ use serde_json::{json, Value};
 use subtle::ConstantTimeEq as _;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 
 use super::session::{self, AdminSession};
 
@@ -171,10 +172,7 @@ pub fn check_local_only(
     };
 
     if state.config.admin_ui_local_only && !loopback {
-        return Err(json_status(
-            StatusCode::FORBIDDEN,
-            json!({ "error": "admin_local_only" }),
-        ));
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "admin_local_only").into_response());
     }
 
     Ok(())
@@ -269,18 +267,12 @@ pub fn origin_allowed(headers: &HeaderMap, state: &AppState) -> bool {
 
 /// Response used when no admin login method is configured.
 pub fn disabled_response() -> Response {
-    json_status(
-        StatusCode::SERVICE_UNAVAILABLE,
-        json!({
-            "error": "admin_ui_disabled",
-            "message": "admin authentication is not configured",
-        }),
-    )
+    ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "admin_ui_disabled").into_response()
 }
 
 /// Response used for a missing or invalid session.
 pub fn unauthorized_response() -> Response {
-    json_status(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" }))
+    ApiError::unauthorized().into_response()
 }
 
 /// `401` for a session cookie that exists but is no longer usable (expired,
@@ -308,28 +300,22 @@ pub fn has_session_cookie(headers: &HeaderMap) -> bool {
 
 /// Response used when the shared secret does not match.
 pub fn invalid_secret_response() -> Response {
-    json_status(
-        StatusCode::UNAUTHORIZED,
-        json!({ "error": "invalid_secret" }),
-    )
+    ApiError::new(StatusCode::UNAUTHORIZED, "invalid_secret").into_response()
 }
 
 /// Response used when a specific login method is disabled.
 pub fn method_disabled_response() -> Response {
-    json_status(StatusCode::NOT_FOUND, json!({ "error": "method_disabled" }))
+    ApiError::new(StatusCode::NOT_FOUND, "method_disabled").into_response()
 }
 
 /// Response used when a mutation origin is missing or foreign.
 pub fn invalid_origin_response() -> Response {
-    json_status(StatusCode::FORBIDDEN, json!({ "error": "invalid_origin" }))
+    ApiError::new(StatusCode::FORBIDDEN, "invalid_origin").into_response()
 }
 
 /// Neutral internal error (details are only logged).
 pub fn internal_error_response() -> Response {
-    json_status(
-        StatusCode::INTERNAL_SERVER_ERROR,
-        json!({ "error": "internal_error" }),
-    )
+    ApiError::internal().into_response()
 }
 
 /// JSON response with the given status.

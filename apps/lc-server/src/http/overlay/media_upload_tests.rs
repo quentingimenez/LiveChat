@@ -576,13 +576,23 @@ async fn declared_size_over_the_limit_is_refused_before_any_byte() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(
         body,
-        json!({"error": "payload_too_large", "maxBytes": 1024 * 1024})
+        json!({
+            "error": "payload_too_large",
+            "message": "Le corps de la requête est trop volumineux.",
+            "maxBytes": 1024 * 1024,
+        })
     );
     assert!(state.uploads.is_empty());
 
     for (description, message) in [
-        (json!({"filename": "a.png"}), "size is required"),
-        (json!({"filename": "a.png", "size": 0}), "file is empty"),
+        (
+            json!({"filename": "a.png"}),
+            "La taille du fichier est requise.",
+        ),
+        (
+            json!({"filename": "a.png", "size": 0}),
+            "Le fichier est vide.",
+        ),
     ] {
         let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{description}");
@@ -599,7 +609,7 @@ async fn upload_rejects_missing_or_unsafe_filename() {
     let (status, body) = send_json(&app, create_request(TOKEN, &json!({"size": 10}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["error"], "invalid_payload");
-    assert_eq!(body["message"], "filename is required");
+    assert_eq!(body["message"], "Le nom du fichier est requis.");
 
     for filename in ["../x.png", "\u{0}x.png", "x\\y.png"] {
         let description = json!({"filename": filename, "size": 10});
@@ -670,7 +680,11 @@ async fn parts_accept_over_one_mib_while_json_routes_keep_the_limit() {
         .unwrap();
     let (status, body) = send_json(&app, request).await;
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert_eq!(body["error"], "request_error");
+    assert_eq!(body["error"], "payload_too_large");
+    assert_eq!(
+        body["message"],
+        "Le corps de la requête est trop volumineux."
+    );
 }
 
 #[tokio::test]
@@ -695,7 +709,11 @@ async fn a_part_over_the_part_limit_is_refused_and_ends_the_upload() {
     assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
     assert_eq!(
         body,
-        json!({"error": "part_too_large", "maxBytes": super::MAX_PART_BYTES})
+        json!({
+            "error": "part_too_large",
+            "message": "Un fragment envoyé dépasse la taille maximale.",
+            "maxBytes": super::MAX_PART_BYTES,
+        })
     );
     assert!(state.uploads.is_empty());
     let (status, _) = send_json(&app, complete_request(TOKEN, &upload_id)).await;
@@ -729,7 +747,11 @@ async fn parts_must_follow_each_other_and_fill_the_declared_size() {
         assert_eq!(status, StatusCode::CONFLICT, "offset {offset}");
         assert_eq!(
             body,
-            json!({"error": "upload_offset_mismatch", "received": 20})
+            json!({
+                "error": "upload_offset_mismatch",
+                "message": "La position du fragment envoyé est incohérente.",
+                "received": 20,
+            })
         );
     }
     let request = Request::builder()
@@ -740,12 +762,12 @@ async fn parts_must_follow_each_other_and_fill_the_declared_size() {
         .unwrap();
     let (status, body) = send_json(&app, request).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["message"], "offset is required");
+    assert_eq!(body["message"], "L’offset est requis.");
 
     // Completing before the declared size was received ends the upload.
     let (status, body) = send_json(&app, complete_request(TOKEN, &upload_id)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["message"], "the file was not fully received");
+    assert_eq!(body["message"], "Le fichier n’a pas été reçu en totalité.");
     assert!(state.uploads.is_empty());
 
     // More bytes than declared end the upload too.
@@ -758,7 +780,10 @@ async fn parts_must_follow_each_other_and_fill_the_declared_size() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(body["message"], "more bytes than the declared size");
+    assert_eq!(
+        body["message"],
+        "La requête contient plus d’octets que la taille déclarée."
+    );
     assert!(state.uploads.is_empty());
 }
 
@@ -1294,7 +1319,7 @@ async fn play_once_upload_validates_the_display_time() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(
         body["message"],
-        "displayDurationSec is only allowed for a play once"
+        "La durée d’affichage n’est autorisée que pour une lecture unique."
     );
     assert!(state.uploads.is_empty());
 }
@@ -1430,7 +1455,7 @@ async fn upload_lookup_rejects_invalid_or_unauthorized_requests() {
 
     let (status, body) = send_json(&app, lookup_request(Some(TOKEN), json!({}))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-    assert_eq!(body["message"], "sha256 is required");
+    assert_eq!(body["message"], "Le sha256 est requis.");
 
     let (status, body) = send_json(
         &app,
@@ -1548,6 +1573,9 @@ async fn play_once_upload_checks_the_right_and_refuses_a_replacement() {
     let (status, body) = send_json(&app, create_request(TOKEN, &description)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["error"], "invalid_payload");
-    assert_eq!(body["message"], "playOnce cannot replace a board item");
+    assert_eq!(
+        body["message"],
+        "Une lecture unique ne peut pas remplacer un item du board."
+    );
     assert!(state.uploads.is_empty());
 }

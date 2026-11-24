@@ -195,7 +195,7 @@ pub async fn submit(
     // 4. Auteur lié au token : le client ne peut pas le surcharger.
     if request.author_name.is_some() || request.author_image.is_some() {
         return invalid_payload(Some(
-            "authorName/authorImage are token-bound for ingest clients",
+            "Le nom et l'image de l'auteur sont imposés par le jeton d'ingestion.",
         ));
     }
 
@@ -205,14 +205,16 @@ pub async fn submit(
         return invalid_payload(None);
     }
     if request.save_to_board && !has_source {
-        return invalid_payload(Some("saveToBoard requires a resolvable media source"));
+        return invalid_payload(Some(
+            "Enregistrer sur le board exige une source média résolvable.",
+        ));
     }
     if request.duration_sec_unusable
         || request
             .duration_sec
             .is_some_and(|seconds| !lc_domain::entities::is_valid_display_duration(seconds))
     {
-        return invalid_payload(Some("durationSec must be between 1 and 600"));
+        return invalid_payload(Some("La durée doit être comprise entre 1 et 600 secondes."));
     }
 
     // 5b. Politique de source (garde SSRF/LFI) : une source refusée est
@@ -311,7 +313,7 @@ pub(super) async fn finish_ingest(
     // 8. Enregistrement sur le board média (pas de job, parité legacy).
     if outcome.save_to_board {
         let Some(asset) = outcome.asset else {
-            return invalid_payload(Some("saveToBoard requires media"));
+            return invalid_payload(Some("Enregistrer sur le board exige un média."));
         };
         let Some(media_service) = outcome.service else {
             return media_service_error(MediaServiceError::unavailable(
@@ -588,7 +590,7 @@ mod tests {
         assert!(body["message"]
             .as_str()
             .expect("message")
-            .contains("token-bound"));
+            .contains("imposés par le jeton d'ingestion"));
     }
 
     #[tokio::test]
@@ -615,7 +617,7 @@ mod tests {
         assert!(body["message"]
             .as_str()
             .expect("message")
-            .contains("durationSec"));
+            .contains("durée doit être comprise entre 1 et 600 secondes"));
     }
 
     #[tokio::test]
@@ -858,7 +860,7 @@ mod tests {
         assert!(body["message"]
             .as_str()
             .expect("message")
-            .contains("resolvable media source"));
+            .contains("source média résolvable"));
     }
 
     async fn post_raw(app: Router, token: Option<&str>, raw: &str) -> (StatusCode, Value) {

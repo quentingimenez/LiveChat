@@ -64,10 +64,10 @@ use std::time::{Duration, Instant};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderName, HeaderValue, Method, StatusCode};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 
 use crate::config::Config;
-use crate::http::error::{json_error, REQUEST_ERROR};
+use crate::http::error::ApiError;
 use crate::http::proxy::{canonical_ip, forwarded_client_ip};
 
 /// General budget per window and per client (overlay API, `/ws`, ingestion).
@@ -281,7 +281,8 @@ pub async fn enforce(
             retry_after_secs = decision.reset_after.as_secs(),
             "limite de débit dépassée"
         );
-        let mut response = json_error(StatusCode::TOO_MANY_REQUESTS, REQUEST_ERROR);
+        let mut response =
+            ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too_many_requests").into_response();
         insert_rate_limit_headers(&mut response, decision);
         insert_numeric_header(
             &mut response,

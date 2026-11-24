@@ -47,6 +47,16 @@ impl MediaServiceError {
     pub fn media_code(&self) -> Option<MediaErrorCode> {
         self.media_error().map(MediaError::code)
     }
+
+    /// Message utilisateur français sûr pour cette erreur, si elle porte un
+    /// code média.
+    ///
+    /// Le détail technique (`MediaError::message`, sortie brute de l'outil)
+    /// reste dans les journaux ; ce message est le seul texte destiné aux
+    /// clients (extension, board).
+    pub fn user_message_fr(&self) -> Option<&'static str> {
+        self.media_code().map(MediaErrorCode::user_message_fr)
+    }
 }
 
 #[cfg(test)]
@@ -67,6 +77,10 @@ mod tests {
             error.media_error().map(MediaError::message),
             Some("média invalide")
         );
+        assert_eq!(
+            error.user_message_fr(),
+            Some("Ce fichier n'est pas un média lisible.")
+        );
         assert!(error.to_string().contains("média invalide"));
     }
 
@@ -74,6 +88,7 @@ mod tests {
     fn internal_errors_have_no_media_code() {
         let unavailable = MediaServiceError::unavailable("pas de pipeline");
         assert_eq!(unavailable.media_code(), None);
+        assert_eq!(unavailable.user_message_fr(), None);
         assert!(unavailable.media_error().is_none());
 
         let database = MediaServiceError::Database(DbError::InvalidUrl("file:".into()));

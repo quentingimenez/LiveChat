@@ -17,7 +17,6 @@
 use axum::body::to_bytes;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
@@ -41,7 +40,8 @@ fn parse_guild_id(raw: &str) -> Result<GuildId, AdminError> {
 /// Maps the shared overlay result to an admin HTTP response.
 ///
 /// Error responses produced by the extracted overlay logic are returned
-/// untouched, so the status and `{"error": code}` body stay identical.
+/// untouched, so the status and `{"error": code, "message": phrase}` body stay
+/// identical.
 fn to_admin_response(result: Result<Value, Response>) -> Result<Response, AdminError> {
     match result {
         Ok(payload) => Ok(Json(payload).into_response()),
@@ -217,7 +217,7 @@ pub(super) async fn media_board_items(
         .filter(|value| !value.is_empty())
     {
         if requested != guild_id.as_str() {
-            return Ok((StatusCode::FORBIDDEN, Json(json!({"error": "forbidden"}))).into_response());
+            return Err(AdminError::forbidden("forbidden"));
         }
     }
     let actor = operator_actor(&state, &guild_id).await?;

@@ -109,17 +109,17 @@ async fn a_malformed_body_is_refused_before_the_item_is_looked_up() {
     for (body, message) in [
         (
             json!({}),
-            "atSec is required: the position of the player, in seconds",
+            "La position du lecteur (atSec), en secondes, est requise.",
         ),
         (
             json!({"atSec": "2"}),
-            "atSec is required: the position of the player, in seconds",
+            "La position du lecteur (atSec), en secondes, est requise.",
         ),
         (
             json!({"atSec": -1}),
-            "atSec must be a positive number of seconds",
+            "La position du lecteur doit être un nombre de secondes positif.",
         ),
-        (json!([]), "a JSON object is expected"),
+        (json!([]), "Un objet JSON est attendu."),
     ] {
         let (status, response) = cover(&harness, &member, &unknown, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
@@ -193,7 +193,7 @@ async fn only_the_items_editor_can_choose_its_picture() {
         assert_eq!(response["error"], "invalid_payload");
         assert_eq!(
             response["message"],
-            "only a video can take its picture from a frame"
+            "Seule une vidéo peut fournir une image extraite d’une frame."
         );
     }
 }

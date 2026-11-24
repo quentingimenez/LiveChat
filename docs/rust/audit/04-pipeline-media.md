@@ -238,7 +238,7 @@ GET /overlay/media/bb54d992-...?clientId=...&exp=...&sig=...
 
 ## 5. Points forts
 
-- **Erreurs legacy normalisées** : 11 codes `MediaErrorCode` avec priorités, `raw_message` tronqué à 2 000 caractères, message court à 500 (`crates/lc-media/src/error.rs:18-21,28-90`), mapping API `media_ingestion_failed` + code (`http/ingest/mod.rs:75-102`) — pas de fuite de sortie brute vers le client.
+- **Erreurs legacy normalisées** : 11 codes `MediaErrorCode` avec priorités, `raw_message` tronqué à 2 000 caractères, message court à 500 (`crates/lc-media/src/error.rs:18-21,28-90`), mapping API 422 `media_ingestion_failed` + code + `user_message_fr()` (`http/ingest/mod.rs:102-133`, `http/overlay/media_board.rs:2261`) : la sortie brute de l'outil ne part que dans les journaux, jamais dans `message`.
 - **Service média confiné** : `resolve_media_file` canonicalise et vérifie le préfixe (défaut : skip si racine introuvable, cf. AUD-A4-014) ; `Content-Type` contrôlé, `Cache-Control: no-store`, Range/HEAD géré (`http/overlay/media.rs`).
 - **Storage content-addressed** : `sanitize_hash` neutralise tout caractère hors `[a-z0-9_-]` (`crates/lc-media/src/storage.rs:220-234`) ⇒ pas de traversal via le hash.
 - **Jetons d'ingestion** : 32 octets aléatoires, stockés en SHA-256 hex, comparaison par lookup (`apps/lc-server/src/media/tokens.rs`), pas de token en clair en base.

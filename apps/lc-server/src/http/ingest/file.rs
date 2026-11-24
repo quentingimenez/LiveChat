@@ -29,10 +29,9 @@ use axum::body::Body;
 use axum::extract::{Query, State};
 use axum::http::header::{CONTENT_DISPOSITION, CONTENT_LENGTH, CONTENT_TYPE};
 use axum::http::{HeaderMap, StatusCode, Uri};
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use futures_util::StreamExt;
 use serde::Deserialize;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::io::AsyncWriteExt;
 use uuid::Uuid;
@@ -41,13 +40,13 @@ use lc_domain::entities::{GuildMember, IngestClient};
 use lc_domain::rights::{Action, Surface};
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::media::MediaService;
 
 use super::auth::{self, IngestAuth};
 use super::submit::{finish_ingest, owning_member, resolved_author, IngestOutcome};
 use super::{
-    error_response, expired_token_error, internal_error, invalid_payload, media_service_error,
-    simple_error,
+    expired_token_error, internal_error, invalid_payload, media_service_error, simple_error,
 };
 
 /// Nom de repli quand ni la query ni `Content-Disposition` ne fournissent de nom.
@@ -106,8 +105,7 @@ pub async fn upload(
         Ok(Query(query)) => query,
         Err(rejection) => {
             tracing::debug!(error = %rejection, "query invalide (ingest file)");
-            let message = rejection.body_text();
-            return invalid_payload(Some(&message));
+            return invalid_payload(Some("Les paramètres de la requête sont invalides."));
         }
     };
 
@@ -245,7 +243,9 @@ async fn receive_file(body: Body, path: &PathBuf, max_bytes: u64) -> Result<Stri
             Ok(chunk) => chunk,
             Err(error) => {
                 tracing::warn!(error = %error, "lecture du corps d'upload interrompue");
-                return Err(invalid_payload(Some("could not read request body")));
+                return Err(invalid_payload(Some(
+                    "Impossible de lire le corps de la requête.",
+                )));
             }
         };
         total = total.saturating_add(chunk.len() as u64);
@@ -260,7 +260,7 @@ async fn receive_file(body: Body, path: &PathBuf, max_bytes: u64) -> Result<Stri
     }
 
     if total == 0 {
-        return Err(invalid_payload(Some("empty request body")));
+        return Err(invalid_payload(Some("Le corps de la requête est vide.")));
     }
     if let Err(error) = file.flush().await {
         tracing::error!(error = %error, "flush du fichier temporaire d'upload impossible");
@@ -273,7 +273,8 @@ async fn receive_file(body: Body, path: &PathBuf, max_bytes: u64) -> Result<Stri
 /// Filename from the query, else `Content-Disposition`, else the default.
 fn upload_filename(query_filename: Option<&str>, headers: &HeaderMap) -> Result<String, Response> {
     if let Some(raw) = query_filename {
-        return validate_filename(raw).ok_or_else(|| invalid_payload(Some("invalid filename")));
+        return validate_filename(raw)
+            .ok_or_else(|| invalid_payload(Some("Le nom du fichier est invalide.")));
     }
     if let Some(raw) = headers
         .get(CONTENT_DISPOSITION)
@@ -344,13 +345,13 @@ fn display_duration(raw: Option<f64>) -> Result<Option<i64>, Response> {
     };
     if !number.is_finite() || number <= 0.0 {
         return Err(invalid_payload(Some(
-            "durationSec must be between 1 and 600",
+            "La durée doit être comprise entre 1 et 600 secondes.",
         )));
     }
     let ceil = number.ceil();
     if ceil > i64::MAX as f64 || !lc_domain::entities::is_valid_display_duration(ceil as i64) {
         return Err(invalid_payload(Some(
-            "durationSec must be between 1 and 600",
+            "La durée doit être comprise entre 1 et 600 secondes.",
         )));
     }
     Ok(Some(ceil as i64))
@@ -358,10 +359,9 @@ fn display_duration(raw: Option<f64>) -> Result<Option<i64>, Response> {
 
 /// `413` with the same `maxBytes` shape as the board upload routes.
 fn payload_too_large(max_bytes: u64) -> Response {
-    error_response(
-        StatusCode::PAYLOAD_TOO_LARGE,
-        json!({ "error": "payload_too_large", "maxBytes": max_bytes }),
-    )
+    ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large")
+        .detail("maxBytes", max_bytes)
+        .into_response()
 }
 
 /// Temporary directory holding one upload, removed on drop.
@@ -677,7 +677,7 @@ mod tests {
         assert!(body["message"]
             .as_str()
             .unwrap_or_default()
-            .contains("durationSec"));
+            .contains("durée doit être comprise entre 1 et 600 secondes"));
     }
 
     #[tokio::test]

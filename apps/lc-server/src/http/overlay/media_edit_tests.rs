@@ -131,13 +131,19 @@ async fn a_malformed_body_is_refused_before_the_item_is_looked_up() {
     let member = member_token(&harness, GuildRole::Member, "Bob").await;
     let unknown = MediaBoardItemId::new_v4().to_canonical();
     for (body, message) in [
-        (json!({}), "recipe is required"),
-        (json!({"recipe": []}), "recipe must be an object"),
+        (json!({}), "La recette d’édition est requise."),
+        (
+            json!({"recipe": []}),
+            "La recette d’édition doit être un objet.",
+        ),
         (
             json!({"recipe": {}, "replace": 1}),
-            "replace must be a boolean",
+            "Le paramètre replace doit être un booléen.",
         ),
-        (json!({"recipe": {}, "title": 1}), "title must be a string"),
+        (
+            json!({"recipe": {}, "title": 1}),
+            "Le titre doit être une chaîne de caractères.",
+        ),
     ] {
         let (status, response) = edit(&harness, &member, &unknown, body).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
@@ -152,10 +158,7 @@ async fn a_malformed_body_is_refused_before_the_item_is_looked_up() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(response["message"]
-        .as_str()
-        .unwrap()
-        .starts_with("recipe is invalid: "));
+    assert_eq!(response["message"], "La recette d’édition est invalide.");
 }
 
 #[tokio::test]
@@ -176,7 +179,10 @@ async fn an_annotated_recipe_larger_than_a_megabyte_is_read() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{response}");
     assert_eq!(response["error"], "invalid_payload");
-    assert_eq!(response["message"], "the annotation overlay is not a PNG");
+    assert_eq!(
+        response["message"],
+        "La couche d’annotation n’est pas un PNG."
+    );
 }
 
 #[tokio::test]
@@ -269,32 +275,32 @@ async fn a_recipe_that_does_not_fit_the_media_is_refused() {
         (
             &image_item,
             json!({"recipe": {}}),
-            "images are edited on the board",
+            "Les images se modifient directement sur le board.",
         ),
         (
             &video_item,
             json!({"recipe": {"segments": [[10, 45]]}}),
-            "segment 1 is outside the media (30.00 s)",
+            "Le segment 1 dépasse la durée du média (30.00 s).",
         ),
         (
             &video_item,
             json!({"recipe": {"speed": 9}}),
-            "speed must be between 0.25 and 4",
+            "La valeur de speed doit être comprise entre 0.25 et 4.",
         ),
         (
             &audio_item,
             json!({"recipe": {"output": "gif"}}),
-            "this output is only available for a video",
+            "Ce format de sortie n’est disponible que pour une vidéo.",
         ),
         (
             &video_item,
             json!({"replace": true, "recipe": {"output": "gif", "segments": [[0, 5]]}}),
-            "a replacement must produce the same kind of media as the original",
+            "Un remplacement doit produire le même type de média que l’original.",
         ),
         (
             &video_item,
             json!({"replace": true, "recipe": {"output": "audio"}}),
-            "a replacement must produce the same kind of media as the original",
+            "Un remplacement doit produire le même type de média que l’original.",
         ),
     ] {
         let (status, response) = edit(&harness, &member, item_id, body).await;

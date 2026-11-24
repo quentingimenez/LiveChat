@@ -22,7 +22,7 @@
 use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::Response;
+use axum::response::{IntoResponse as _, Response};
 use axum::Json;
 use lc_db::Db;
 use lc_domain::{MediaBoardItem, MediaBoardItemId, Permission};
@@ -32,6 +32,7 @@ use serde_json::{json, Value};
 use time::UtcDateTime;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::media::assets;
 
 use super::auth::{authenticate_token, AuthedOverlayClient};
@@ -94,7 +95,7 @@ pub async fn import_items(
         Err(response) => return response,
     };
     if source.guild_id() == auth.guild_id() {
-        return invalid_payload("source and target are the same guild");
+        return invalid_payload("La source et la destination sont la même guilde.");
     }
     if let Err(response) =
         ensure_board_visible_for(&state, &db, source.guild_id(), source.role()).await
@@ -212,14 +213,15 @@ async fn copy_artwork(db: &Db, source: &MediaBoardItem, copy: &MediaBoardItem, a
 /// Validates and deduplicates the ids, keeping their order.
 fn parse_item_ids(raw: &[String]) -> Result<Vec<MediaBoardItemId>, &'static str> {
     if raw.is_empty() {
-        return Err("itemIds must not be empty");
+        return Err("La liste itemIds ne doit pas être vide.");
     }
     if raw.len() > MAX_IMPORT_ITEMS {
-        return Err("too many itemIds (50 at most)");
+        return Err("Trop d’identifiants dans itemIds (50 au maximum).");
     }
     let mut ids: Vec<MediaBoardItemId> = Vec::with_capacity(raw.len());
     for value in raw {
-        let id = MediaBoardItemId::parse(value.trim()).map_err(|_| "invalid item id")?;
+        let id =
+            MediaBoardItemId::parse(value.trim()).map_err(|_| "Identifiant d’item invalide.")?;
         if !ids.contains(&id) {
             ids.push(id);
         }
@@ -235,11 +237,10 @@ fn failed(source_item_id: &str, code: &str, message: Option<String>) -> Value {
     result
 }
 
-fn invalid_payload(message: &str) -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        json!({ "error": "invalid_payload", "message": message }),
-    )
+fn invalid_payload(message: &'static str) -> Response {
+    ApiError::invalid_payload()
+        .with_message(message)
+        .into_response()
 }
 
 fn invalid_source_token() -> Response {

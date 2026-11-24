@@ -83,6 +83,7 @@ use time::UtcDateTime;
 use url::Url;
 
 use crate::app::AppState;
+use crate::http::error::ApiError;
 use crate::ingestions::{IngestionEntry, StartIngestionError};
 use crate::media::assets;
 use crate::media::errors::MediaServiceError;
@@ -402,13 +403,9 @@ pub async fn create_item(
     // The display time only belongs to a play once; its media kind is unknown
     // until the ingestion, so only the bounds are checked here.
     if !payload.play_once && payload.display_duration_sec.is_some() {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({
-                "error": "invalid_payload",
-                "message": "displayDurationSec is only allowed for a play once",
-            }),
-        );
+        return ApiError::invalid_payload()
+            .with_message("La durée d’affichage n’est autorisée que pour une lecture unique.")
+            .into_response();
     }
     let display_duration_sec =
         match play_once_display_duration(payload.display_duration_sec.as_ref()) {
@@ -422,10 +419,9 @@ pub async fn create_item(
         .unwrap_or_default()
         .to_owned();
     if url.is_empty() {
-        return json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "invalid_payload", "message": "url is required"}),
-        );
+        return ApiError::invalid_payload()
+            .with_message("L’URL du média est requise.")
+            .into_response();
     }
     let force_refresh = coerce_flag(payload.force_refresh.as_ref());
 
@@ -472,10 +468,7 @@ pub async fn create_item(
 
 /// `429 {"error":"too_many_ingestions"}` (20 concurrent ingestions per client).
 pub(super) fn too_many_ingestions() -> Response {
-    json_response(
-        StatusCode::TOO_MANY_REQUESTS,
-        serde_json::json!({ "error": "too_many_ingestions" }),
-    )
+    ApiError::new(StatusCode::TOO_MANY_REQUESTS, "too_many_ingestions").into_response()
 }
 
 /// Handler `GET /overlay/media-board/ingestions`.
@@ -1282,10 +1275,9 @@ pub(crate) async fn update_item_payload(
         return Err(error(StatusCode::FORBIDDEN, "read_only_session"));
     }
     let Some(object) = body.as_object() else {
-        return Err(json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
-        ));
+        return Err(ApiError::invalid_payload()
+            .with_message("Un titre ou un message est requis.")
+            .into_response());
     };
     let has_title = object.contains_key("title");
     let has_message = object.contains_key("message");
@@ -1293,10 +1285,9 @@ pub(crate) async fn update_item_payload(
         None => None,
         Some(serde_json::Value::Bool(value)) => Some(*value),
         Some(_) => {
-            return Err(json_response(
-                StatusCode::BAD_REQUEST,
-                serde_json::json!({"error": "invalid_payload", "message": "artworkOnOverlay must be a boolean"}),
-            ));
+            return Err(ApiError::invalid_payload()
+                .with_message("L’option d’illustration doit être un booléen.")
+                .into_response());
         }
     };
     // Absent → kept; `null` → cleared; else an integer within the bounds.
@@ -1327,10 +1318,9 @@ pub(crate) async fn update_item_payload(
         && display_duration.is_none()
         && display_scale.is_none()
     {
-        return Err(json_response(
-            StatusCode::BAD_REQUEST,
-            serde_json::json!({"error": "invalid_payload", "message": "title or message is required"}),
-        ));
+        return Err(ApiError::invalid_payload()
+            .with_message("Un titre ou un message est requis.")
+            .into_response());
     }
     let Ok(item_id) = item_id_raw.trim().parse::<MediaBoardItemId>() else {
         return Err(error(StatusCode::NOT_FOUND, "item_not_found"));
@@ -1652,13 +1642,11 @@ pub(super) async fn ensure_can_edit(
 /// `400 invalid_payload` for a display time out of bounds, not an integer, or
 /// set on a media that is not an image.
 fn invalid_display_duration() -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({
-            "error": "invalid_payload",
-            "message": "displayDurationSec must be an integer between 1 and 600, or null, on an image",
-        }),
-    )
+    ApiError::invalid_payload()
+        .with_message(
+            "La durée d’affichage doit être un entier entre 1 et 600 secondes, ou null, sur une image.",
+        )
+        .into_response()
 }
 
 /// Reads the optional `displayDurationSec` sent with a play once.
@@ -1685,24 +1673,16 @@ pub(super) fn play_once_display_duration(
 /// integer. The media kind is not known yet, so this message never mentions
 /// the kind.
 pub(super) fn invalid_play_once_duration() -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({
-            "error": "invalid_payload",
-            "message": "displayDurationSec must be an integer between 1 and 600, or null",
-        }),
-    )
+    ApiError::invalid_payload()
+        .with_message("La durée d’affichage doit être un entier entre 1 et 600 secondes, ou null.")
+        .into_response()
 }
 
 /// `400 invalid_payload` for a display scale out of bounds, or not an integer.
 fn invalid_display_scale() -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({
-            "error": "invalid_payload",
-            "message": "displayScalePercent must be an integer between 10 and 1000, or null",
-        }),
-    )
+    ApiError::invalid_payload()
+        .with_message("Le facteur d’échelle doit être un entier entre 10 et 1000, ou null.")
+        .into_response()
 }
 
 /// Payload JSON d'un item de board (format legacy exact).
@@ -2265,13 +2245,14 @@ fn media_service_error_payload(service_error: &MediaServiceError) -> MediaErrorP
         tracing::info!(
             code = media_error.code().as_str(),
             detail = media_error.message(),
+            raw = media_error.raw_message().unwrap_or(""),
             "média du board refusé"
         );
         return MediaErrorPayload {
             status: StatusCode::UNPROCESSABLE_ENTITY,
             error: "media_ingestion_failed",
             rest_code: Some(media_error.code().as_str()),
-            message: Some(media_error.code().user_message_fr().to_owned()),
+            message: service_error.user_message_fr().map(str::to_owned),
             ws_code: "media_ingestion_failed",
         };
     }
@@ -2295,19 +2276,16 @@ pub(super) fn media_service_error(service_error: &MediaServiceError) -> Response
 /// status; other rejections remain `400 invalid_payload` (AUD-A2-009).
 pub(super) fn json_rejection_error(rejection: JsonRejection) -> Response {
     if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
-        // Keep the rejection's `413` and let `normalize_errors` produce the
-        // usual `{"error":"request_error"}` body.
-        return rejection.into_response();
+        return ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large").into_response();
     }
     invalid_json()
 }
 
 /// Réponse `400 invalid_payload` pour un corps JSON malformé (AUD-A2-009).
 fn invalid_json() -> Response {
-    json_response(
-        StatusCode::BAD_REQUEST,
-        serde_json::json!({"error": "invalid_payload", "message": "corps JSON invalide"}),
-    )
+    ApiError::invalid_payload()
+        .with_message("Le corps de la requête n’est pas un JSON valide.")
+        .into_response()
 }
 
 /// Tronque proprement (frontières UTF-8) après trim.

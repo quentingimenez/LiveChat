@@ -278,7 +278,7 @@ async fn silent_video_and_audio_edits_run_with_real_ffmpeg() {
         .render_edit(&silent, MediaKind::Video, &recipe)
         .await
         .expect_err("pas de piste audio");
-    assert!(error.message().contains("no audio track"), "{error}");
+    assert!(error.message().contains("piste audio"), "{error}");
 
     // Audio.
     let audio = sample_audio(&config, directory.path());

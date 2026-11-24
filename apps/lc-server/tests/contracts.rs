@@ -205,9 +205,12 @@ async fn anonymous_admin_overview_is_rejected() {
 
     let text = response.text().await.expect("raw 401 body");
     assert_eq!(
-        text, r#"{"error":"unauthorized"}"#,
+        text, r#"{"error":"unauthorized","message":"Authentification requise."}"#,
         "the anonymous 401 body must stay byte-exact"
     );
     let body: Value = serde_json::from_str(&text).expect("JSON 401 body");
-    assert_eq!(body, json!({ "error": "unauthorized" }));
+    assert_eq!(
+        body,
+        json!({ "error": "unauthorized", "message": "Authentification requise." })
+    );
 }

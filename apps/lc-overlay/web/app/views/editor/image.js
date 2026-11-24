@@ -30,6 +30,7 @@ import {
 } from '../../core/editor-helpers.js';
 import { createCropOverlay } from './crop-overlay.js';
 import { createDisplayPreview } from './display-preview.js';
+import { createStageZoom } from './stage-zoom.js';
 import {
   COLORS,
   EMOJIS,
@@ -115,6 +116,7 @@ export async function createImageEditor({
   const view = h('canvas', { class: 'img-canvas' });
   const selBox = h('div', { class: 'sel-box', hidden: true }, h('span', { class: 'sel-handle' }));
   const wrap = h('div', { class: 'img-wrap' }, view, selBox);
+  const stageZoom = createStageZoom({ content: wrap, onResize: () => layout() });
 
   // --- live preview of the display size ---
   // The overlay draws the picture at `natural size × scale`, capped by the
@@ -129,7 +131,7 @@ export async function createImageEditor({
   });
   const zone = preview.zone;
 
-  frame.stage.replaceChildren(wrap, preview.node);
+  frame.stage.replaceChildren(stageZoom.node, stageZoom.chip, preview.node);
 
   // One length unit follows the picture: a stroke looks the same on a small
   // and on a large picture.
@@ -277,6 +279,7 @@ export async function createImageEditor({
   function syncStage() {
     const shown = previewVisible();
     wrap.hidden = shown;
+    stageZoom.setVisible(!shown);
     if (shown) {
       preview.show();
     } else {
@@ -305,18 +308,28 @@ export async function createImageEditor({
   }
 
   function layout() {
-    const availableWidth = frame.stage.clientWidth - 48;
-    const availableHeight = frame.stage.clientHeight - 48;
-    if (availableWidth <= 0 || availableHeight <= 0) {
+    const area = stageZoom.available();
+    if (area.width <= 0 || area.height <= 0) {
       return;
     }
-    const scale = Math.min(availableWidth / doc.base.width, availableHeight / doc.base.height, 8);
-    const cssWidth = Math.max(1, Math.round(doc.base.width * scale));
-    const cssHeight = Math.max(1, Math.round(doc.base.height * scale));
+    // Le zoom agrandit la taille du cadre, il ne déforme pas son contenu :
+    // poignées et sélection gardent leur taille d'écran.
+    const fit = Math.min(area.width / doc.base.width, area.height / doc.base.height, 8);
+    const zoom = stageZoom.zoom();
+    const cssWidth = Math.max(1, Math.round(doc.base.width * fit * zoom));
+    const cssHeight = Math.max(1, Math.round(doc.base.height * fit * zoom));
     wrap.style.width = `${cssWidth}px`;
     wrap.style.height = `${cssHeight}px`;
+    stageZoom.fit({ width: cssWidth, height: cssHeight });
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
-    ensureSize(view, Math.round(cssWidth * ratio), Math.round(cssHeight * ratio));
+    // Le tampon suit le zoom sans dépasser les pixels de l'image : agrandir
+    // ne peut pas inventer de détail, et rester au natif économise la mémoire.
+    const density = Math.min(fit * zoom * ratio, 1);
+    ensureSize(
+      view,
+      Math.max(1, Math.round(doc.base.width * density)),
+      Math.max(1, Math.round(doc.base.height * density)),
+    );
     frame.setStatus(`${doc.base.width}\u00A0×\u00A0${doc.base.height}\u00A0px`);
     preview.invalidate();
     repaint();
@@ -1099,6 +1112,7 @@ export async function createImageEditor({
     },
     destroy() {
       resizeObserver.disconnect();
+      stageZoom.destroy();
       preview.destroy();
       stopCrop();
     },

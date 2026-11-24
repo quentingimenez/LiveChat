@@ -56,7 +56,7 @@ use lc_media::edit::{EditRecipe, EditSource};
 
 use crate::app::AppState;
 use crate::http::error::ApiError;
-use crate::ingestions::StartIngestionError;
+use crate::ingestions::{IngestionSource, StartIngestionError};
 
 use super::auth::AuthedOverlayClient;
 use super::media_board::{
@@ -161,17 +161,6 @@ pub(crate) async fn start_edit(
         Err(response) => return response,
     };
 
-    let ingested_at = now(state);
-    let authed = actor.to_authed(ingested_at);
-    let ingestion_id = match state.ingestions.start(
-        actor.guild_id().clone(),
-        actor.client.id.as_uuid(),
-        ingested_at,
-    ) {
-        Ok(ingestion_id) => ingestion_id,
-        Err(StartIngestionError::TooManyProcessing) => return too_many_ingestions(),
-    };
-
     let (target, title, message, name) = if request.replace {
         (
             BoardTarget::Replace(item.id),
@@ -196,6 +185,18 @@ pub(crate) async fn start_edit(
             title,
         )
     };
+    let stem = filename_stem(&name);
+    let ingested_at = now(state);
+    let authed = actor.to_authed(ingested_at);
+    let ingestion_id = match state.ingestions.start(
+        actor.guild_id().clone(),
+        actor.client.id.as_uuid(),
+        IngestionSource::edit(&stem),
+        ingested_at,
+    ) {
+        Ok(ingestion_id) => ingestion_id,
+        Err(StartIngestionError::TooManyProcessing) => return too_many_ingestions(),
+    };
     spawn_ingestion(
         state.clone(),
         authed,
@@ -204,7 +205,7 @@ pub(crate) async fn start_edit(
             source_path,
             kind: asset.kind,
             recipe: Box::new(request.recipe),
-            filename_stem: filename_stem(&name),
+            filename_stem: stem,
         },
         target,
         title,

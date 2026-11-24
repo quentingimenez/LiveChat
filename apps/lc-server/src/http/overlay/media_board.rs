@@ -84,7 +84,7 @@ use url::Url;
 
 use crate::app::AppState;
 use crate::http::error::ApiError;
-use crate::ingestions::{IngestionEntry, StartIngestionError};
+use crate::ingestions::{IngestionEntry, IngestionSource, StartIngestionError};
 use crate::media::assets;
 use crate::media::errors::MediaServiceError;
 
@@ -434,6 +434,7 @@ pub async fn create_item(
     let ingestion_id = match state.ingestions.start(
         auth.guild_id().clone(),
         auth.client.id.as_uuid(),
+        IngestionSource::link(url.clone()),
         now(&state),
     ) {
         Ok(ingestion_id) => ingestion_id,

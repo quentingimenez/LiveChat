@@ -226,7 +226,7 @@ async fn a_mutation_triggers_a_debounced_overview_with_the_hot_setting() {
 
 #[tokio::test]
 async fn audit_and_ingestion_entries_are_streamed() {
-    use crate::ingestions::IngestionErrorInfo;
+    use crate::ingestions::{IngestionErrorInfo, IngestionSource};
 
     let harness = Harness::new().await;
     let (status, _, stream) = open_events(&harness).await;
@@ -249,14 +249,21 @@ async fn audit_and_ingestion_entries_are_streamed() {
     assert_eq!(audit["path"], "/admin/api/runtime-settings");
     assert!(audit["id"].as_i64().is_some());
 
-    // A finished ingestion is published when it enters the admin history.
+    // A finished ingestion is published when it enters the admin history; the
+    // stream resolves the guild name the registry does not know.
+    insert_guild_without_override(&harness, "123456789012345678").await;
     let guild_id = GuildId::parse("123456789012345678").expect("valid guild id");
     let now = harness.state().clock.now();
     let client = uuid::Uuid::new_v4();
     let ingestion_id = harness
         .state()
         .ingestions
-        .start(guild_id, client, now)
+        .start(
+            guild_id,
+            client,
+            IngestionSource::link("https://example.invalid/clip.mp4"),
+            now,
+        )
         .expect("ingestion started");
     harness.state().ingestions.complete_failure(
         &ingestion_id,
@@ -270,6 +277,9 @@ async fn audit_and_ingestion_entries_are_streamed() {
     let ingestion = reader.next_named("ingestion").await;
     assert_eq!(ingestion["id"], ingestion_id);
     assert_eq!(ingestion["guildId"], "123456789012345678");
+    assert_eq!(ingestion["guildName"], "Guild 123456789012345678");
+    assert_eq!(ingestion["url"], "https://example.invalid/clip.mp4");
+    assert_eq!(ingestion["source"], "link");
     assert_eq!(ingestion["status"], "failed");
     assert_eq!(ingestion["error"], "unsupported_media");
 }

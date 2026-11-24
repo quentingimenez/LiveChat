@@ -28,7 +28,8 @@ use crate::http::health::{HealthState, DATABASE_CHECK_TIMEOUT};
 use super::auth::AdminAccess;
 use super::{opt_iso, require_db, to_iso, AdminError};
 use crate::ingestions::{
-    FinishedIngestion, IngestionEntry, IngestionErrorInfo, IngestionStatus, HISTORY_LIMIT,
+    FinishedIngestion, IngestionEntry, IngestionErrorInfo, IngestionSource, IngestionStatus,
+    HISTORY_LIMIT,
 };
 
 /// Maximum accepted `limit` for `GET /admin/api/ingestions`.
@@ -408,7 +409,7 @@ pub(super) struct IngestionsQuery {
 struct IngestionRow {
     id: String,
     guild_id: GuildId,
-    item_id: Option<String>,
+    source: IngestionSource,
     status: &'static str,
     error: Option<String>,
     started_at: UtcDateTime,
@@ -443,24 +444,12 @@ pub(super) async fn ingestions(
     rows.truncate(limit);
 
     let guild_names = guild_names(state.db.as_ref(), &rows).await?;
-    let source_urls = source_urls(state.db.as_ref(), &rows).await?;
 
     let items: Vec<Value> = rows
         .into_iter()
         .map(|row| {
-            let source_url = row
-                .item_id
-                .as_deref()
-                .and_then(|item_id| source_urls.get(item_id))
-                .cloned()
-                .unwrap_or_default();
-            let source = if source_url.starts_with("upload:") {
-                "upload"
-            } else if source_url.is_empty() {
-                "unknown"
-            } else {
-                "link"
-            };
+            let source_url = row.source.url();
+            let source = row.source.kind();
             let duration_ms =
                 lc_domain::time::duration_to_ms(row.finished_at.unwrap_or(now) - row.started_at)
                     .max(0);
@@ -492,7 +481,7 @@ fn finished_row(entry: FinishedIngestion) -> IngestionRow {
     IngestionRow {
         id: entry.ingestion_id,
         guild_id: entry.guild_id,
-        item_id: entry.item_id,
+        source: entry.source,
         status,
         error: entry.error.map(ingestion_error_text),
         started_at: entry.started_at,
@@ -505,7 +494,7 @@ fn active_row(entry: IngestionEntry) -> IngestionRow {
     IngestionRow {
         id: entry.ingestion_id,
         guild_id: entry.guild_id,
-        item_id: entry.item_id,
+        source: entry.source,
         status: "running",
         error: entry.error.map(ingestion_error_text),
         started_at: entry.created_at,
@@ -541,36 +530,6 @@ async fn guild_names(
         names.insert(id.to_owned(), name);
     }
     Ok(names)
-}
-
-/// Reads the source URL of every board item referenced by `rows`.
-async fn source_urls(
-    db: Option<&Db>,
-    rows: &[IngestionRow],
-) -> Result<HashMap<String, String>, AdminError> {
-    let Some(db) = db else {
-        return Ok(HashMap::new());
-    };
-    let mut urls = HashMap::new();
-    for item_id in rows.iter().filter_map(|row| row.item_id.as_deref()) {
-        if urls.contains_key(item_id) {
-            continue;
-        }
-        let url = sqlx::query_scalar::<_, String>(
-            "SELECT assets.source_url \
-               FROM media_board_items AS items \
-               JOIN media_assets AS assets ON assets.id = items.media_asset_id \
-              WHERE items.id = ?1",
-        )
-        .bind(item_id)
-        .fetch_optional(db.pool())
-        .await
-        .map_err(|error| AdminError::db("reading ingestion source URL", error))?;
-        if let Some(url) = url {
-            urls.insert(item_id.to_owned(), url);
-        }
-    }
-    Ok(urls)
 }
 
 /// One media asset row used by the maintenance actions.

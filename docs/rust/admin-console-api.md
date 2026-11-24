@@ -103,6 +103,12 @@ CSP : `style-src 'self'` (plus de `'unsafe-inline'`).
 | `GET /admin/api/rights` | § 5 |
 | `GET /admin/api/runtime-settings` | existant, étendu § 7 |
 
+Les `url`/`source` de `GET /admin/api/ingestions` viennent de la source
+enregistrée à l'acceptation (URL soumise, `upload:<fichier>` pour un upload),
+pas d'une jointure sur le board : une lecture unique ou une ingestion échouée,
+qui ne laisse aucun item, reste donc renseignée. `source` vaut `link` ou
+`upload`.
+
 `clientIp` est l'adresse cliente résolue : le pair direct quand il n'est pas
 déclaré, sinon le premier saut non-proxy de `X-Forwarded-For` (droite → gauche,
 proxys déclarés sautés ; `X-Real-IP` en repli). `null` signifie que le pair
@@ -224,5 +230,6 @@ l'environnement) ; `tiktokCookie` et `youtubeCookie` sont écrits en clair dans
 `overview` (même JSON que `GET /admin/api/overview`, émis à la connexion puis
 au plus une fois par seconde quand une guilde, un overlay, la file ou le board
 change), `audit` (une entrée du journal), `ingestion` (une entrée de
-`/ingestions`). Le front remplace le rafraîchissement toutes les 2 s par ce
-flux et ne relit les détails qu'à réception d'un `overview`.
+`/ingestions`, `guildName` résolu en base à l'émission). Le front remplace le
+rafraîchissement toutes les 2 s par ce flux et ne relit les détails qu'à
+réception d'un `overview`.

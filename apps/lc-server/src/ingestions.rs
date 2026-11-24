@@ -68,6 +68,74 @@ pub struct IngestionErrorInfo {
     pub message: Option<String>,
 }
 
+/// Where an ingestion comes from, recorded when it starts.
+///
+/// The admin console shows it in its « Média » and « Origine » columns. It has
+/// to be stored with the entry: a play-once ingestion and a failed one leave no
+/// board item behind, so the database cannot resolve their source afterwards.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IngestionSource {
+    /// Source URL shown in the console: the submitted link, the
+    /// `upload:<filename>` cache key of an upload, or the name of an edit.
+    url: String,
+}
+
+impl IngestionSource {
+    /// A link submitted through `POST /overlay/media-board/items`.
+    #[must_use]
+    pub fn link(url: impl Into<String>) -> Self {
+        Self { url: url.into() }
+    }
+
+    /// An uploaded file, kept under the same `upload:<filename>` key as
+    /// `media_assets.source_url`.
+    #[must_use]
+    pub fn upload(filename: &str) -> Self {
+        Self {
+            url: format!("upload:{filename}"),
+        }
+    }
+
+    /// An upload re-imported from the content cache: the cached asset source
+    /// URL when known, the content hash otherwise.
+    #[must_use]
+    pub fn cached(source_url: Option<&str>, source_hash: &str) -> Self {
+        Self {
+            url: source_url
+                .filter(|url| !url.is_empty())
+                .unwrap_or(source_hash)
+                .to_owned(),
+        }
+    }
+
+    /// The media produced by an edit, named after its board title.
+    #[must_use]
+    pub fn edit(filename_stem: &str) -> Self {
+        Self {
+            url: filename_stem.to_owned(),
+        }
+    }
+
+    /// Source URL shown in the console's « Média » column.
+    #[must_use]
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    /// Kind shown in the console's « Origine » column: uploads are recognised
+    /// by their cache key, every other source is a link.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        if self.url.starts_with("upload:") {
+            "upload"
+        } else if self.url.is_empty() {
+            "unknown"
+        } else {
+            "link"
+        }
+    }
+}
+
 /// Snapshot of one ingestion.
 #[derive(Debug, Clone)]
 pub struct IngestionEntry {
@@ -77,6 +145,8 @@ pub struct IngestionEntry {
     pub guild_id: GuildId,
     /// UUID of the requesting overlay client (target of `media.ingestion`).
     pub client_id: Uuid,
+    /// Where the media comes from, known before the download starts.
+    pub source: IngestionSource,
     /// Current lifecycle state.
     pub status: IngestionStatus,
     /// Instant the ingestion was accepted.
@@ -136,13 +206,16 @@ impl IngestionEntry {
 ///
 /// Unlike [`IngestionEntry`], this history outlives [`FINISHED_RETENTION`] and
 /// is bounded by [`HISTORY_LIMIT`]. It deliberately stores no model payload:
-/// the admin handler resolves the guild name and the source URL from SQLite.
+/// the admin handler resolves the guild name from SQLite. The source is kept
+/// here because a play-once or failed ingestion has no board item to join.
 #[derive(Debug, Clone)]
 pub struct FinishedIngestion {
     /// Identifier returned by the `202` response.
     pub ingestion_id: String,
     /// Guild of the authenticated overlay client.
     pub guild_id: GuildId,
+    /// Where the media comes from, as recorded when the ingestion started.
+    pub source: IngestionSource,
     /// Board item holding the media, when the ingestion succeeded.
     pub item_id: Option<String>,
     /// Terminal lifecycle state (`Ready` or `Failed`).
@@ -206,13 +279,16 @@ impl IngestionRegistry {
 
     /// Registers a new `processing` ingestion and returns its UUID v4.
     ///
-    /// Fails with [`StartIngestionError::TooManyProcessing`] once the client has
+    /// `source` is recorded with the entry so the admin console can show it in
+    /// every terminal state. Fails with
+    /// [`StartIngestionError::TooManyProcessing`] once the client has
     /// [`MAX_PROCESSING_PER_CLIENT`] running ingestions. Finished entries older
     /// than [`FINISHED_RETENTION`] are purged before the check.
     pub fn start(
         &self,
         guild_id: GuildId,
         client_id: Uuid,
+        source: IngestionSource,
         now: UtcDateTime,
     ) -> Result<String, StartIngestionError> {
         let ingestion_id = Uuid::new_v4().to_string();
@@ -233,6 +309,7 @@ impl IngestionRegistry {
                 ingestion_id: ingestion_id.clone(),
                 guild_id,
                 client_id,
+                source,
                 status: IngestionStatus::Processing,
                 created_at: now,
                 created: None,
@@ -269,6 +346,7 @@ impl IngestionRegistry {
             (!already_finished).then(|| FinishedIngestion {
                 ingestion_id: entry.ingestion_id.clone(),
                 guild_id: entry.guild_id.clone(),
+                source: entry.source.clone(),
                 item_id: Some(item_id),
                 status: IngestionStatus::Ready,
                 error: None,
@@ -303,6 +381,7 @@ impl IngestionRegistry {
             (!already_finished).then(|| FinishedIngestion {
                 ingestion_id: entry.ingestion_id.clone(),
                 guild_id: entry.guild_id.clone(),
+                source: entry.source.clone(),
                 item_id: None,
                 status: IngestionStatus::Ready,
                 error: None,
@@ -339,6 +418,7 @@ impl IngestionRegistry {
             (!already_finished).then(|| FinishedIngestion {
                 ingestion_id: entry.ingestion_id.clone(),
                 guild_id: entry.guild_id.clone(),
+                source: entry.source.clone(),
                 item_id: None,
                 status: IngestionStatus::Failed,
                 error: Some(error),
@@ -438,9 +518,9 @@ impl IngestionRegistry {
 
 /// JSON payload of one `ingestion` admin event.
 ///
-/// It follows the shape of an item of `GET /admin/api/ingestions`; the guild
-/// name and the source URL require database lookups and are therefore left
-/// empty (`guildName: null`, `source: "unknown"`).
+/// It follows the shape of an item of `GET /admin/api/ingestions`. The guild
+/// name requires a database lookup and is left `null` here; the admin SSE
+/// stream enriches it before forwarding the event.
 fn ingestion_event(finished: &FinishedIngestion) -> Value {
     let status = match finished.status {
         IngestionStatus::Ready => "done",
@@ -458,8 +538,8 @@ fn ingestion_event(finished: &FinishedIngestion) -> Value {
         "id": finished.ingestion_id,
         "guildId": finished.guild_id.as_str(),
         "guildName": Value::Null,
-        "source": "unknown",
-        "url": "",
+        "source": finished.source.kind(),
+        "url": finished.source.url(),
         "status": status,
         "error": error,
         "startedAt": lc_domain::time::to_rfc3339_millis(finished.started_at),
@@ -492,26 +572,58 @@ mod tests {
         GuildId::parse("123456789012345678").unwrap()
     }
 
+    fn source() -> IngestionSource {
+        IngestionSource::link("https://example.invalid/media.png")
+    }
+
+    #[test]
+    fn source_constructors_feed_the_console_columns() {
+        let link = IngestionSource::link("https://example.invalid/clip.mp4");
+        assert_eq!(link.url(), "https://example.invalid/clip.mp4");
+        assert_eq!(link.kind(), "link");
+
+        let upload = IngestionSource::upload("clip.mp4");
+        assert_eq!(upload.url(), "upload:clip.mp4");
+        assert_eq!(upload.kind(), "upload");
+
+        let cached = IngestionSource::cached(Some("upload:clip.mp4"), "upload:sha256:00");
+        assert_eq!(cached.url(), "upload:clip.mp4");
+        assert_eq!(cached.kind(), "upload");
+        // Without a known source URL the content hash stays visible instead of
+        // turning into a blank « Média » cell.
+        let cached = IngestionSource::cached(None, "upload:sha256:00");
+        assert_eq!(cached.url(), "upload:sha256:00");
+        assert_eq!(cached.kind(), "upload");
+
+        let edit = IngestionSource::edit("clip-annoté");
+        assert_eq!(edit.url(), "clip-annoté");
+        assert_eq!(edit.kind(), "link");
+    }
+
     #[test]
     fn start_limits_processing_entries_per_client() {
         let registry = IngestionRegistry::new();
         let client = Uuid::new_v4();
         for _ in 0..MAX_PROCESSING_PER_CLIENT {
-            registry.start(guild(), client, now()).unwrap();
+            registry.start(guild(), client, source(), now()).unwrap();
         }
         assert_eq!(
-            registry.start(guild(), client, now()).unwrap_err(),
+            registry
+                .start(guild(), client, source(), now())
+                .unwrap_err(),
             StartIngestionError::TooManyProcessing
         );
         // Another client is unaffected.
-        registry.start(guild(), Uuid::new_v4(), now()).unwrap();
+        registry
+            .start(guild(), Uuid::new_v4(), source(), now())
+            .unwrap();
     }
 
     #[test]
     fn finished_entries_are_retained_for_one_hour_then_purged() {
         let registry = IngestionRegistry::new();
         let client = Uuid::new_v4();
-        let id = registry.start(guild(), client, now()).unwrap();
+        let id = registry.start(guild(), client, source(), now()).unwrap();
         registry.complete_success(&id, true, "item-1".to_owned(), now());
         assert!(registry.get(client, &id, now()).is_some());
 
@@ -528,8 +640,8 @@ mod tests {
         let registry = IngestionRegistry::new();
         let first = Uuid::new_v4();
         let second = Uuid::new_v4();
-        let first_id = registry.start(guild(), first, now()).unwrap();
-        let second_id = registry.start(guild(), second, now()).unwrap();
+        let first_id = registry.start(guild(), first, source(), now()).unwrap();
+        let second_id = registry.start(guild(), second, source(), now()).unwrap();
 
         let listed = registry.list_for_client(first, now());
         assert_eq!(listed.len(), 1);
@@ -545,7 +657,7 @@ mod tests {
         let mut ids = Vec::new();
         for index in 0..(HISTORY_LIMIT + 5) {
             let started = now() + Duration::seconds(i64::try_from(index).unwrap_or(0));
-            let id = registry.start(guild(), client, started).unwrap();
+            let id = registry.start(guild(), client, source(), started).unwrap();
             registry.complete_failure(
                 &id,
                 IngestionErrorInfo {
@@ -577,7 +689,7 @@ mod tests {
         let mut receiver = events.subscribe();
         let registry = IngestionRegistry::with_events(events);
         let client = Uuid::new_v4();
-        let id = registry.start(guild(), client, now()).unwrap();
+        let id = registry.start(guild(), client, source(), now()).unwrap();
         registry.complete_failure(
             &id,
             IngestionErrorInfo {
@@ -591,6 +703,8 @@ mod tests {
             AdminEvent::Ingestion(entry) => {
                 assert_eq!(entry["id"], id);
                 assert_eq!(entry["guildId"], "123456789012345678");
+                assert_eq!(entry["source"], "link");
+                assert_eq!(entry["url"], "https://example.invalid/media.png");
                 assert_eq!(entry["status"], "failed");
                 assert_eq!(entry["error"], "source non supportée");
             }
@@ -602,7 +716,7 @@ mod tests {
     fn failure_payload_carries_code_and_optional_message() {
         let registry = IngestionRegistry::new();
         let client = Uuid::new_v4();
-        let id = registry.start(guild(), client, now()).unwrap();
+        let id = registry.start(guild(), client, source(), now()).unwrap();
         registry.complete_failure(
             &id,
             IngestionErrorInfo {
@@ -627,7 +741,7 @@ mod tests {
     fn play_once_payload_carries_the_job_and_no_item() {
         let registry = IngestionRegistry::new();
         let client = Uuid::new_v4();
-        let id = registry.start(guild(), client, now()).unwrap();
+        let id = registry.start(guild(), client, source(), now()).unwrap();
         registry.complete_job(&id, "job-1".to_owned(), now());
         let entry = registry.get(client, &id, now()).unwrap();
         assert_eq!(entry.status, IngestionStatus::Ready);

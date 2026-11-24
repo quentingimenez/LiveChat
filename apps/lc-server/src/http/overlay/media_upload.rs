@@ -53,7 +53,7 @@ use uuid::Uuid;
 
 use crate::app::AppState;
 use crate::http::error::ApiError;
-use crate::ingestions::StartIngestionError;
+use crate::ingestions::{IngestionSource, StartIngestionError};
 use crate::media::assets;
 use crate::media::errors::MediaServiceError;
 use crate::media::service::MediaService;
@@ -269,6 +269,8 @@ struct UploadCacheAccess {
     cached: bool,
     /// The guild board already shows a card for this media.
     on_board: bool,
+    /// Source URL of the cached asset, shown by the admin console.
+    source_url: Option<String>,
 }
 
 /// Validates a client SHA-256 and returns the upload cache key
@@ -301,7 +303,7 @@ async fn upload_cache_accessible(
         .get_by_source_hash(source_hash)
         .await
         .map_err(|error| db_failure("overlay_media_upload.cache_asset", &error))?;
-    let on_board = match asset {
+    let on_board = match asset.as_ref() {
         Some(asset) => db
             .media_board()
             .get_by_guild_and_asset(guild_id, asset.id)
@@ -310,11 +312,16 @@ async fn upload_cache_accessible(
             .is_some(),
         None => false,
     };
+    let source_url = asset.as_ref().map(|asset| asset.source_url.clone());
     let cached = (owned || on_board)
         && assets::is_cached(db, source_hash, now(state))
             .await
             .map_err(|error| media_service_error(&error))?;
-    Ok(UploadCacheAccess { cached, on_board })
+    Ok(UploadCacheAccess {
+        cached,
+        on_board,
+        source_url,
+    })
 }
 
 /// Handler for `POST /overlay/media-board/uploads`.
@@ -439,10 +446,11 @@ pub async fn create_upload(
     if !body.force_refresh {
         if let Some(source_hash) = sha256.as_deref() {
             match upload_cache_accessible(&state, db, auth.guild_id(), source_hash).await {
-                Ok(UploadCacheAccess { cached: true, .. }) => {
+                Ok(access) if access.cached => {
                     let ingestion_id = match state.ingestions.start(
                         auth.guild_id().clone(),
                         auth.client.id.as_uuid(),
+                        IngestionSource::cached(access.source_url.as_deref(), source_hash),
                         now(&state),
                     ) {
                         Ok(ingestion_id) => ingestion_id,
@@ -693,6 +701,7 @@ pub async fn complete_upload(
     let ingestion_id = match state.ingestions.start(
         auth.guild_id().clone(),
         auth.client.id.as_uuid(),
+        IngestionSource::upload(&filename),
         now(&state),
     ) {
         Ok(ingestion_id) => ingestion_id,

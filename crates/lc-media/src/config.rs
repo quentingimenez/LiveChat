@@ -60,6 +60,12 @@ impl StorageConfig {
 pub struct DownloadConfig {
     /// Timeout global d'un téléchargement.
     pub timeout: Duration,
+    /// Borne totale d'une ingestion : résolution, attente du permis,
+    /// téléchargement et normalisation. Chaque étape a son propre timeout ;
+    /// celle-ci empêche une ingestion de durer indéfiniment quand les étapes
+    /// se cumulent (résolution d'une URL courte, réessais de cookie TikTok,
+    /// transcodage).
+    pub ingest_timeout: Duration,
     /// Timeout de résolution d'une URL courte.
     pub short_url_timeout: Duration,
     /// Taille maximale d'un média téléchargé.
@@ -278,6 +284,9 @@ impl MediaConfig {
             Duration::from_millis(u64_var(&vars, "MEDIA_DOWNLOAD_TIMEOUT_MS", 180_000).max(1));
         let download = DownloadConfig {
             timeout,
+            ingest_timeout: Duration::from_millis(
+                u64_var(&vars, "MEDIA_INGEST_TIMEOUT_MS", 240_000).max(1),
+            ),
             short_url_timeout: SHORT_URL_RESOLVE_TIMEOUT,
             max_size_bytes: u64_var(&vars, "MEDIA_MAX_SIZE_MB", 2048).max(1) * BYTES_PER_MB,
             max_concurrent_ingestions: usize::try_from(
@@ -386,6 +395,7 @@ pub const ENV_KEYS: &[&str] = &[
     "MEDIA_CACHE_MAX_TOTAL_MB",
     "MEDIA_BOARD_MAX_TOTAL_MB",
     "MEDIA_DOWNLOAD_TIMEOUT_MS",
+    "MEDIA_INGEST_TIMEOUT_MS",
     "MEDIA_MAX_SIZE_MB",
     "MEDIA_MAX_CONCURRENT_INGESTIONS",
     "MEDIA_USER_AGENT",
@@ -565,6 +575,7 @@ mod tests {
         assert_eq!(config.storage.cache_max_total_bytes, 5120 * BYTES_PER_MB);
         assert_eq!(config.storage.board_max_total_bytes, 15360 * BYTES_PER_MB);
         assert_eq!(config.download.timeout, Duration::from_millis(180_000));
+        assert_eq!(config.download.ingest_timeout, Duration::from_secs(240));
         assert_eq!(config.download.short_url_timeout, Duration::from_secs(8));
         assert_eq!(config.download.max_size_bytes, 2048 * BYTES_PER_MB);
         assert_eq!(config.download.max_concurrent_ingestions, 2);
@@ -612,6 +623,7 @@ mod tests {
             ("MEDIA_CACHE_MAX_TOTAL_MB", "100"),
             ("MEDIA_BOARD_MAX_TOTAL_MB", "200"),
             ("MEDIA_DOWNLOAD_TIMEOUT_MS", "60000"),
+            ("MEDIA_INGEST_TIMEOUT_MS", "120000"),
             ("MEDIA_MAX_SIZE_MB", "512"),
             ("MEDIA_MAX_CONCURRENT_INGESTIONS", "4"),
             ("MEDIA_VIDEO_MAX_HEIGHT", "720"),
@@ -639,6 +651,7 @@ mod tests {
         assert_eq!(config.storage.cache_max_total_bytes, 100 * BYTES_PER_MB);
         assert_eq!(config.storage.board_max_total_bytes, 200 * BYTES_PER_MB);
         assert_eq!(config.download.timeout, Duration::from_secs(60));
+        assert_eq!(config.download.ingest_timeout, Duration::from_secs(120));
         assert_eq!(config.download.max_size_bytes, 512 * BYTES_PER_MB);
         assert_eq!(config.download.max_concurrent_ingestions, 4);
         assert_eq!(config.video.max_height, 720);
@@ -695,6 +708,7 @@ mod tests {
             ("MEDIA_CACHE_MAX_TOTAL_MB", "0"),
             ("MEDIA_BOARD_MAX_TOTAL_MB", "0"),
             ("MEDIA_DOWNLOAD_TIMEOUT_MS", "0"),
+            ("MEDIA_INGEST_TIMEOUT_MS", "0"),
             ("MEDIA_MAX_SIZE_MB", "0"),
             ("MEDIA_MAX_CONCURRENT_INGESTIONS", "0"),
             ("YTDLP_CONCURRENT_FRAGMENTS", "0"),
@@ -704,6 +718,7 @@ mod tests {
         assert_eq!(config.storage.cache_max_total_bytes, BYTES_PER_MB);
         assert_eq!(config.storage.board_max_total_bytes, BYTES_PER_MB);
         assert_eq!(config.download.timeout, Duration::from_millis(1));
+        assert_eq!(config.download.ingest_timeout, Duration::from_millis(1));
         assert_eq!(config.download.max_size_bytes, BYTES_PER_MB);
         assert_eq!(config.download.max_concurrent_ingestions, 1);
         assert_eq!(config.tools.ytdlp_concurrent_fragments, 1);

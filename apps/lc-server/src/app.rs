@@ -83,7 +83,8 @@ pub const MAX_REQUEST_BODY_BYTES: usize = 1024 * 1024;
 /// - `/ws` : WebSocket de longue durée (liveness bornée par le hub) ;
 /// - `/overlay/media/` : streaming média `Range`/`206` ;
 /// - `/overlay/media-board/` : réception d'un upload brut et aperçus ;
-/// - `/ingest` : ingestion média synchrone bornée par `MEDIA_DOWNLOAD_TIMEOUT_MS`.
+/// - `/ingest` : ingestion média synchrone bornée par `MEDIA_INGEST_TIMEOUT_MS`
+///   (chaque étape garde son propre budget, `MEDIA_DOWNLOAD_TIMEOUT_MS`).
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Indique si une route est exemptée du timeout global de requête.
@@ -97,7 +98,7 @@ fn is_timeout_exempt(method: &Method, path: &str) -> bool {
     if path == "/ws" {
         return true;
     }
-    // Ingestion média synchrone (bornée par `MEDIA_DOWNLOAD_TIMEOUT_MS`).
+    // Ingestion média synchrone (bornée par `MEDIA_INGEST_TIMEOUT_MS`).
     if path == "/ingest" || path.starts_with("/ingest/") {
         return true;
     }

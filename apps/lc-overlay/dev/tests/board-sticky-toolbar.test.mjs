@@ -11,17 +11,34 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
 
-// Contenu de l'appel ou du bloc qui commence à `marker`, guillemets et gabarits
-// ignorés : les sélecteurs testés peuvent contenir des parenthèses ou des
-// accolades dans leurs chaînes.
+// Contenu de l'appel ou du bloc qui commence à `marker`, guillemets, gabarits
+// et commentaires ignorés : les sélecteurs testés peuvent contenir des
+// parenthèses ou des accolades dans leurs chaînes, et un commentaire peut
+// contenir une apostrophe (qui ouvrirait une fausse chaîne).
 function balancedBlock(source, marker, openChar, closeChar) {
   const start = source.indexOf(marker);
   assert.notEqual(start, -1, `missing block: ${marker}`);
   const open = source.indexOf(openChar, start);
   let depth = 0;
   let quote = '';
+  let lineComment = false;
+  let blockComment = false;
   for (let index = open; index < source.length; index += 1) {
     const char = source[index];
+    const next = source[index + 1];
+    if (lineComment) {
+      if (char === '\n') {
+        lineComment = false;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (char === '*' && next === '/') {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
     if (quote) {
       if (char === '\\') {
         index += 1;
@@ -30,7 +47,13 @@ function balancedBlock(source, marker, openChar, closeChar) {
       }
       continue;
     }
-    if (char === "'" || char === '"' || char === '`') {
+    if (char === '/' && next === '/') {
+      lineComment = true;
+      index += 1;
+    } else if (char === '/' && next === '*') {
+      blockComment = true;
+      index += 1;
+    } else if (char === "'" || char === '"' || char === '`') {
       quote = char;
     } else if (char === openChar) {
       depth += 1;

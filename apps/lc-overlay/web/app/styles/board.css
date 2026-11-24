@@ -952,3 +952,62 @@
     max-width: 260px;
   }
 }
+
+/* -------------------------------------------------------------- retour en haut */
+/* The board is the only view that scrolls, and the toolbar goes with the first
+   rows: past them, the search, the filters and the add button are out of reach.
+   A floating button brings the grid back. It sits at the bottom right of the
+   grid, above the on-air bar, and under every overlay (the media detail page
+   with its backdrop, the selection bar, the toasts). */
+.back-to-top {
+  position: fixed;
+  right: 24px;
+  bottom: 20px;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--slate-700);
+  color: var(--text);
+  box-shadow: var(--shadow-bar);
+  cursor: pointer;
+  animation: back-to-top-in 140ms ease-out;
+}
+
+.back-to-top:hover {
+  background: var(--slate-600);
+}
+
+.back-to-top svg {
+  width: 18px;
+  height: 18px;
+}
+
+@keyframes back-to-top-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .back-to-top {
+    animation: none;
+  }
+}
+
+/* The view shrinks under the on-air bar: the button follows the same shift as
+   the toasts, so it never sits on the bar. */
+body:has(.onair:not([hidden])) .back-to-top {
+  bottom: 72px;
+}
+
+/* The selection bar owns the bottom of the view and already floats: its
+   buttons stay the only targets there. */
+body:has(.selection-bar) .back-to-top {
+  display: none;
+}

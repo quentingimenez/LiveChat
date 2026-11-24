@@ -7,6 +7,7 @@ import { contextMenuOpen, isEditable, openContextMenu } from '../core/contextmen
 import { findAction } from '../core/find-shortcut.js';
 import { acceleratorFromEvent, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
+import { backToTopBehavior, showsBackToTop } from '../core/back-to-top.js';
 import {
   activeFilterCount,
   authorsOf,
@@ -29,7 +30,7 @@ import {
   withVersion,
 } from '../core/detail-drawer.js';
 import { detailActionIds, DOUBLE_CLICK_WINDOW, previewAllowed, previewMeta } from '../core/detail-actions.js';
-import { h, icon, registerIcons } from '../core/dom.js';
+import { h, icon, prefersReducedMotion, registerIcons } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration, relativeDateLabel } from '../core/format.js';
 import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
 import { pastedMediaFiles } from '../core/media-files.js';
@@ -849,7 +850,50 @@ export function renderBoard() {
     stale,
     h('div', { class: 'board' }, content),
     state.selecting ? renderSelectionBar() : null,
+    // Last, so `.board + .selection-bar` stays adjacent for the bar's bottom
+    // padding; the fixed button takes no slot in the flow.
+    backToTopButton(),
   );
+}
+
+// --- retour en haut ---
+// The board is the only view that scrolls: once the toolbar has left with the
+// first rows, this floating button brings the grid back. It belongs to the
+// board's tree, so the other tabs (queue, settings, admin) never show it.
+function backToTopButton() {
+  const view = document.getElementById('view');
+  // The router mounts this tree, then puts the remembered scroll back: recheck
+  // once that is done, so a tab switch from a scrolled page never flashes the
+  // button over a board that is back at its top.
+  queueMicrotask(syncBackToTop);
+  return h(
+    'button',
+    {
+      class: 'back-to-top',
+      type: 'button',
+      title: 'Revenir en haut',
+      'aria-label': 'Revenir en haut',
+      hidden: !view || !showsBackToTop(view.scrollTop),
+      onClick: () => {
+        const node = document.getElementById('view');
+        if (node) {
+          node.scrollTo({ top: 0, behavior: backToTopBehavior(prefersReducedMotion()) });
+        }
+      },
+    },
+    icon('up'),
+  );
+}
+
+// Each render builds a new button: this keeps the one on screen in step with
+// the view's scroll, whichever render put it there. Other views have no button
+// and are left alone.
+function syncBackToTop() {
+  const view = document.getElementById('view');
+  const button = view ? view.querySelector('.back-to-top') : null;
+  if (button) {
+    button.hidden = !showsBackToTop(view.scrollTop);
+  }
 }
 
 // --- selection mode: pick several media, then act on all of them ---
@@ -1359,6 +1403,14 @@ export function closeDetail() {
 // it (capture), and the native double click that follows is swallowed with it.
 document.addEventListener('click', catchCardDoubleClick, true);
 document.addEventListener('dblclick', swallowCardDoubleClickEvent, true);
+
+// The board is the only view that scrolls `#view`: the floating back-to-top
+// follows that scroller. The view router swaps the view's children, not the
+// view itself, so one listener lasts for the whole session.
+const viewNode = document.getElementById('view');
+if (viewNode) {
+  viewNode.addEventListener('scroll', syncBackToTop, { passive: true });
+}
 
 document.addEventListener('keydown', (event) => {
   const action = escapeAction({

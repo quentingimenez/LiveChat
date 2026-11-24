@@ -3088,13 +3088,16 @@ mod tests {
     /// d'asset par item (le N+1 du code legacy : ~2 `get(asset_id)`/item).
     #[tokio::test]
     async fn board_list_page_of_200_uses_a_constant_number_of_queries() {
-        // Une page de 2 items et une page de 200 items doivent provoquer le
-        // même nombre de `get(asset_id)` : le legacy en faisait ~2 par item,
-        // soit +396 lookups entre les deux pages. Mesurer le DELTA annule le
-        // bruit des autres tests parallèles, qui émettent du SQL dans la même
-        // fenêtre (le compteur sqlx est global par construction).
-        const MAX_DELTA: usize = 16;
+        // Le compteur est global (sqlx émet sur les threads de ses connexions)
+        // et d'autres tests du binaire résolvent aussi un asset par id dans la
+        // même fenêtre. Un DELTA entre deux pages est donc asymétrique : la
+        // fenêtre de la page 200 dure plus longtemps, un bruit tardif n'y
+        // apparaît que dans le second comptage et fait rougir le test au
+        // hasard (observé sous exécution parallèle). On assère une borne
+        // absolue par ordre de grandeur : le legacy faisait ~2 lookups par
+        // item (~400 pour 200 items), la pagination en fait zéro.
         const ITEMS: usize = 200;
+        const MAX_LOOKUPS_PER_PAGE: usize = ITEMS / 4;
         let (counter, total, active) = asset_get_counter();
 
         let dir = TempDir::new().expect("tempdir");
@@ -3114,9 +3117,9 @@ mod tests {
         active.store(false, atomic::Ordering::Release);
         let big_lookups = *counter.lock().expect("compteur SQL");
         let total_events = *total.lock().expect("compteur SQL total");
-        let delta = big_lookups.saturating_sub(small_lookups);
+        let extra = big_lookups.saturating_sub(small_lookups);
         eprintln!(
-            "board asset lookups: 2 items = {small_lookups}, 200 items = {big_lookups}, delta = {delta} (SQL events = {total_events})"
+            "board asset lookups: 2 items = {small_lookups}, 200 items = {big_lookups}, extra = {extra} (SQL events = {total_events})"
         );
         assert!(
             total_events > 0,
@@ -3127,8 +3130,12 @@ mod tests {
         assert_eq!(big["total"], ITEMS);
         assert_eq!(big["items"].as_array().expect("items").len(), ITEMS);
         assert!(
-            delta <= MAX_DELTA,
-            "board page200 added {delta} per-item asset lookups vs 2 items (> {MAX_DELTA}: N+1)"
+            small_lookups <= MAX_LOOKUPS_PER_PAGE,
+            "board page2 issued {small_lookups} per-item asset lookups (borne {MAX_LOOKUPS_PER_PAGE})"
+        );
+        assert!(
+            big_lookups <= MAX_LOOKUPS_PER_PAGE,
+            "board page200 issued {big_lookups} per-item asset lookups (legacy N+1 ~2 par item, borne {MAX_LOOKUPS_PER_PAGE})"
         );
     }
 

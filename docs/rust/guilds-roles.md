@@ -557,7 +557,7 @@ les commandes de ce serveur, désormais destinées à la guilde indépendante.
 ## Limites connues
 
 - Aucun message WebSocket ne transporte la file d'attente : l'interface interroge `GET /overlay/queue`.
-- La file se réordonne par `POST /overlay/queue/reorder` (glisser-déposer dans l'overlay et la console admin) ; les autres routes se limitent à la lecture et à la suppression.
+- La file se réordonne par `POST /overlay/queue/reorder` (glisser-déposer ou boutons Monter/Descendre dans l'overlay et la console admin) ; les autres routes se limitent à la lecture et à la suppression.
 - Un job retiré de la file passe à l'état `FAILED` ; la route ne retire pas le job `PLAYING`.
 - Un changement de rôle ferme les sessions WebSocket du membre avec le code `1001` pour qu'elles se reconnectent et reprennent leur mode à jour.
 - Les raccourcis clavier ne valent que pour la guilde active : ils sont lus dans `config.media_bindings`, miroir de cette guilde.

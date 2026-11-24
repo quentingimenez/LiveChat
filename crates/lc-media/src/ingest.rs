@@ -143,8 +143,44 @@ impl MediaPipeline {
         &self.limiter
     }
 
+    /// Applique la borne totale d'une ingestion
+    /// ([`crate::config::DownloadConfig::ingest_timeout`]).
+    ///
+    /// Chaque étape du pipeline a son propre timeout ; celle-ci couvre
+    /// l'ensemble pour qu'une ingestion ne puisse pas enchaîner les étapes
+    /// (résolution d'URL courte, réessais de cookie TikTok, téléchargement,
+    /// transcodage) pendant des dizaines de minutes en gardant un permis du
+    /// sémaphore et une requête HTTP ouverte. L'échéance produit
+    /// [`MediaErrorCode::DownloadTimeout`] afin que le service enregistre
+    /// l'échec et nettoie les fichiers partiels.
+    async fn with_deadline<F, T>(&self, future: F) -> MediaResult<T>
+    where
+        F: std::future::Future<Output = MediaResult<T>>,
+    {
+        let deadline = self.config.download.ingest_timeout;
+        match tokio::time::timeout(deadline, future).await {
+            Ok(result) => result,
+            Err(_elapsed) => Err(MediaError::new(
+                MediaErrorCode::DownloadTimeout,
+                format!(
+                    "l'ingestion a dépassé le délai total de {:.1} s",
+                    deadline.as_secs_f64()
+                ),
+            )),
+        }
+    }
+
     /// Ingère une URL brute (résolution de source incluse).
+    ///
+    /// Le travail est borné par [`crate::config::DownloadConfig::ingest_timeout`] : une
+    /// ingestion qui cumule résolution lente, téléchargement et transcodage
+    /// échoue au lieu de tourner indéfiniment.
     pub async fn ingest_url(&self, raw: &str) -> MediaResult<IngestedMedia> {
+        self.with_deadline(self.resolve_and_ingest(raw)).await
+    }
+
+    /// Résout une URL brute puis l'ingère (cœur de [`Self::ingest_url`]).
+    async fn resolve_and_ingest(&self, raw: &str) -> MediaResult<IngestedMedia> {
         let source = source::resolve_source(&self.config, raw)
             .await?
             .ok_or_else(|| {
@@ -153,11 +189,16 @@ impl MediaPipeline {
                     "aucune source média fournie",
                 )
             })?;
-        self.ingest_source(&source).await
+        self.ingest_source_inner(&source).await
     }
 
     /// Ingère une source déjà normalisée.
     pub async fn ingest_source(&self, source: &MediaSource) -> MediaResult<IngestedMedia> {
+        self.with_deadline(self.ingest_source_inner(source)).await
+    }
+
+    /// Corps de [`Self::ingest_source`], sans la borne totale.
+    async fn ingest_source_inner(&self, source: &MediaSource) -> MediaResult<IngestedMedia> {
         match source.source_kind {
             SourceKind::LocalFile | SourceKind::Gtts | SourceKind::Unknown => {
                 return Err(MediaError::new(
@@ -192,11 +233,21 @@ impl MediaPipeline {
             resolve_ms = elapsed_ms(started),
             "ingestion : source résolue"
         );
-        self.ingest_resolved(source, resolved).await
+        self.ingest_resolved_inner(source, resolved).await
     }
 
     /// Ingère une source avec des métadonnées de résolution déjà connues.
     pub async fn ingest_resolved(
+        &self,
+        source: &MediaSource,
+        resolved: Option<ResolvedMedia>,
+    ) -> MediaResult<IngestedMedia> {
+        self.with_deadline(self.ingest_resolved_inner(source, resolved))
+            .await
+    }
+
+    /// Corps de [`Self::ingest_resolved`], sans la borne totale.
+    async fn ingest_resolved_inner(
         &self,
         source: &MediaSource,
         resolved: Option<ResolvedMedia>,
@@ -373,8 +424,27 @@ impl MediaPipeline {
         })
     }
 
-    /// Shared body of the local-file ingestions.
+    /// Shared body of the local-file ingestions, bounded by the total deadline.
     async fn ingest_local(
+        &self,
+        path: &Path,
+        original_filename: &str,
+        content_type_hint: Option<&str>,
+        content_sha256: &str,
+        already_normalized: bool,
+    ) -> MediaResult<IngestedMedia> {
+        self.with_deadline(self.ingest_local_inner(
+            path,
+            original_filename,
+            content_type_hint,
+            content_sha256,
+            already_normalized,
+        ))
+        .await
+    }
+
+    /// Corps de [`Self::ingest_local`], sans la borne totale.
+    async fn ingest_local_inner(
         &self,
         path: &Path,
         original_filename: &str,
@@ -723,6 +793,7 @@ pub(crate) fn elapsed_ms(start: std::time::Instant) -> u64 {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     #[test]
     fn limiter_bounds_concurrency() {
@@ -835,5 +906,46 @@ mod tests {
             .await
             .expect_err("SVG refusé");
         assert_eq!(error.code(), MediaErrorCode::InvalidMedia);
+    }
+
+    /// Une ingestion qui tient dans sa borne n'est pas coupée par l'échéance.
+    #[tokio::test]
+    async fn a_local_ingestion_within_the_deadline_still_succeeds() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let mut config = MediaConfig::default();
+        config.storage.directory = directory.path().join("media");
+        config.tools.ffprobe = directory.path().join("missing-ffprobe");
+        config.download.ingest_timeout = Duration::from_secs(60);
+        let pipeline = MediaPipeline::new(config).unwrap();
+        let path = directory.path().join("upload-tiny.bin");
+        tokio::fs::write(&path, TINY_PNG).await.unwrap();
+
+        let ingested = pipeline
+            .ingest_local_file(&path, "tiny.png", None)
+            .await
+            .expect("ingestion dans les délais");
+        assert_eq!(ingested.normalized.kind, MediaKind::Image);
+    }
+
+    /// Le téléchargement d'une source distante est borné aussi, sans attendre
+    /// le timeout d'une étape (aucune requête réseau n'est nécessaire : la
+    /// borne coupe avant).
+    #[tokio::test]
+    async fn url_ingestion_is_bounded_by_the_total_deadline() {
+        let mut config = MediaConfig::default();
+        config.download.ingest_timeout = Duration::ZERO;
+        let pipeline = MediaPipeline::new(config).unwrap();
+        let source = MediaSource::from_raw("https://example.com/video.mp4").expect("source");
+
+        let started = std::time::Instant::now();
+        let error = pipeline
+            .ingest_resolved(&source, None)
+            .await
+            .expect_err("une ingestion hors délai doit échouer");
+        assert_eq!(error.code(), MediaErrorCode::DownloadTimeout);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "la borne doit couper court, pas attendre une étape"
+        );
     }
 }

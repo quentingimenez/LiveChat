@@ -57,6 +57,7 @@ pub fn media_config(config: &Config) -> MediaConfig {
         },
         download: DownloadConfig {
             timeout: Duration::from_millis(config.media_download_timeout_ms),
+            ingest_timeout: Duration::from_millis(config.media_ingest_timeout_ms),
             short_url_timeout: defaults.download.short_url_timeout,
             max_size_bytes: megabytes_to_bytes(config.media_max_size_mb),
             max_concurrent_ingestions: usize::try_from(config.media_max_concurrent_ingestions)
@@ -162,6 +163,7 @@ mod tests {
             ("MEDIA_CACHE_MAX_TOTAL_MB", "10"),
             ("MEDIA_BOARD_MAX_TOTAL_MB", "20"),
             ("MEDIA_DOWNLOAD_TIMEOUT_MS", "4200"),
+            ("MEDIA_INGEST_TIMEOUT_MS", "9500"),
             ("MEDIA_MAX_SIZE_MB", "7"),
             ("MEDIA_MAX_CONCURRENT_INGESTIONS", "3"),
         ]);
@@ -172,6 +174,7 @@ mod tests {
         assert_eq!(media.storage.cache_max_total_bytes, 10 * 1024 * 1024);
         assert_eq!(media.storage.board_max_total_bytes, 20 * 1024 * 1024);
         assert_eq!(media.download.timeout, Duration::from_millis(4200));
+        assert_eq!(media.download.ingest_timeout, Duration::from_millis(9500));
         assert_eq!(media.download.max_size_bytes, 7 * 1024 * 1024);
         assert_eq!(media.download.max_concurrent_ingestions, 3);
     }

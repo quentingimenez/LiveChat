@@ -13,6 +13,7 @@ import {
   resolveActionButtonTarget,
   resolveAllowedActionTarget,
 } from './shared';
+import { startObservedScanner } from './scan-scheduler';
 
 const STYLE_ID = 'lce-twitter-style';
 const BUTTON_ATTRIBUTE = 'data-lce-twitter-button';
@@ -1159,45 +1160,6 @@ const scanTweets = async (): Promise<void> => {
   if (floatingButton) {
     floatingButton.remove();
   }
-};
-
-const startObservedScanner = (scan: () => void | Promise<void>): void => {
-  let scanQueued = false;
-  let lastUrl = window.location.href;
-
-  const runScan = () => {
-    scanQueued = false;
-    void Promise.resolve(scan()).catch(() => {
-      // Ignore scanner errors to keep observer alive.
-    });
-  };
-
-  const queueScan = () => {
-    if (scanQueued) {
-      return;
-    }
-
-    scanQueued = true;
-    window.requestAnimationFrame(runScan);
-  };
-
-  const observer = new MutationObserver(() => {
-    queueScan();
-  });
-
-  observer.observe(document.documentElement, {
-    subtree: true,
-    childList: true,
-  });
-
-  window.setInterval(() => {
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      queueScan();
-    }
-  }, 700);
-
-  queueScan();
 };
 
 void initInpageTheme();

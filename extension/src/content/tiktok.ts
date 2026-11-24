@@ -7,6 +7,7 @@ import { openComposeModal, type ComposeSubmitPayload, type ComposeSubmitResult }
 import { initInpageTheme } from './inpage-theme';
 import { TIKTOK_BUTTON_LOGO_SIZE_PX, tiktokInpageStyles } from './inpage-styles';
 import { onTrustedPageEvent, resolveAllowedActionTarget } from './shared';
+import { startObservedScanner } from './scan-scheduler';
 
 const STYLE_ID = 'lce-tiktok-style';
 const INLINE_BUTTON_ID = 'lce-tiktok-inline-button';
@@ -1685,45 +1686,6 @@ const registerActiveMediaUrlListener = (): void => {
     markRuntimeContextInvalidatedIfNeeded(error);
     // Ignore runtime invalidation while the extension is reloading.
   }
-};
-
-const startObservedScanner = (scan: () => void | Promise<void>): void => {
-  let scanQueued = false;
-  let lastUrl = window.location.href;
-
-  const runScan = () => {
-    scanQueued = false;
-    void Promise.resolve(scan()).catch(() => {
-      // Ignore scanner errors to keep observer alive.
-    });
-  };
-
-  const queueScan = () => {
-    if (scanQueued) {
-      return;
-    }
-
-    scanQueued = true;
-    window.requestAnimationFrame(runScan);
-  };
-
-  const observer = new MutationObserver(() => {
-    queueScan();
-  });
-
-  observer.observe(document.documentElement, {
-    subtree: true,
-    childList: true,
-  });
-
-  window.setInterval(() => {
-    if (window.location.href !== lastUrl) {
-      lastUrl = window.location.href;
-      queueScan();
-    }
-  }, 700);
-
-  queueScan();
 };
 
 void initInpageTheme();

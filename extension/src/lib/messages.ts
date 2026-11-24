@@ -11,6 +11,8 @@ export const MESSAGE_TYPES = {
   GET_ACTIVE_MEDIA_URL: 'lce/get-active-media-url',
   TIKTOK_SYNC_ACTIVE_ITEM: 'lce/tiktok-sync-active-item',
   TIKTOK_GET_CAPTURED_URL: 'lce/tiktok-get-captured-url',
+  GET_THEME_PREFERENCE: 'lce/theme:get',
+  THEME_PREFERENCE_CHANGED: 'lce/theme:changed',
   SHOW_TOAST: 'lce/show-toast'
 } as const;
 
@@ -53,6 +55,15 @@ export interface TikTokGetCapturedUrlRequestMessage {
   domUrl?: string | null;
 }
 
+export interface GetThemePreferenceRequestMessage {
+  type: (typeof MESSAGE_TYPES)['GET_THEME_PREFERENCE'];
+}
+
+export interface ThemePreferenceChangedMessage {
+  type: (typeof MESSAGE_TYPES)['THEME_PREFERENCE_CHANGED'];
+  preference: 'dark' | 'light' | 'system';
+}
+
 export interface ShowToastMessage {
   type: (typeof MESSAGE_TYPES)['SHOW_TOAST'];
   level: ToastLevel;
@@ -66,7 +77,8 @@ export type BackgroundRequestMessage =
   | GetAuthStateRequestMessage
   | GetActiveMediaUrlRequestMessage
   | TikTokSyncActiveItemRequestMessage
-  | TikTokGetCapturedUrlRequestMessage;
+  | TikTokGetCapturedUrlRequestMessage
+  | GetThemePreferenceRequestMessage;
 
 export interface ActionResponse {
   ok: boolean;
@@ -186,7 +198,20 @@ export const isBackgroundRequestMessage = (value: unknown): value is BackgroundR
     isGetAuthStateRequest(value) ||
     isGetActiveMediaUrlRequest(value) ||
     isTikTokSyncActiveItemRequest(value) ||
-    isTikTokGetCapturedUrlRequest(value)
+    isTikTokGetCapturedUrlRequest(value) ||
+    isGetThemePreferenceRequest(value)
+  );
+};
+
+export const isGetThemePreferenceRequest = (value: unknown): value is GetThemePreferenceRequestMessage => {
+  return isRecord(value) && value.type === MESSAGE_TYPES.GET_THEME_PREFERENCE;
+};
+
+export const isThemePreferenceChangedMessage = (value: unknown): value is ThemePreferenceChangedMessage => {
+  return (
+    isRecord(value) &&
+    value.type === MESSAGE_TYPES.THEME_PREFERENCE_CHANGED &&
+    (value.preference === 'dark' || value.preference === 'light' || value.preference === 'system')
   );
 };
 

@@ -23,7 +23,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          fetch-depth: 1
+          # `git log -- <chemin>` doit voir l'historique complet : le test
+          # d'épinglage des raccourcis iOS compare le SHA documenté dans
+          # ios/README.md au dernier commit qui a touché les fichiers. Dans un
+          # clone shallow, git renvoie HEAD pour ce chemin et le test échoue.
+          fetch-depth: 0
 
       # Le gate tourne depuis la branche de base (script de confiance) ; ce
       # step teste la version du head, pour qu'une PR qui modifie le gate ou

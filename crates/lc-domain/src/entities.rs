@@ -541,10 +541,39 @@ pub struct IngestClient {
     pub revoked_at: Option<UtcDateTime>,
 }
 
+/// Durée d'inactivité maximale d'un client d'ingestion, en millisecondes.
+///
+/// Valeur : 180 jours calendaires (`180 * 24 * 60 * 60 * 1000`). Aucune
+/// migration n'ajoute de colonne `expires_at` : l'expiration est calculée
+/// depuis [`IngestClient::last_activity_at`] (`last_seen_at` ou, à défaut,
+/// `created_at`). 180 jours laisse une large marge face aux raccourcis iOS et
+/// aux extensions qui ne sont utilisés qu'à l'occasion, tout en bornant la
+/// durée de vie d'un jeton oublié sur un ancien appareil. Un client expiré
+/// doit être ré-appairé depuis la board ; aucun heartbeat ne le ressuscite.
+pub const INGEST_CLIENT_IDLE_EXPIRY_MS: i64 = 180 * 24 * 60 * 60 * 1000;
+
 impl IngestClient {
     /// `true` si le client n'est pas révoqué.
     pub fn is_active(&self) -> bool {
         self.revoked_at.is_none()
+    }
+
+    /// Dernière activité connue : le heartbeat si présent, sinon la création.
+    pub fn last_activity_at(&self) -> UtcDateTime {
+        self.last_seen_at.unwrap_or(self.created_at)
+    }
+
+    /// `true` si le client peut encore ingérer à l'instant `now`.
+    ///
+    /// Un client révoqué est toujours inutilisable. Sinon il est utilisable
+    /// jusqu'à `TTL - 1` ms inclus depuis [`Self::last_activity_at`] et expiré
+    /// à `TTL` exactement. Une horloge en arrière (`now` avant l'activité)
+    /// ne fait pas expirer le client.
+    pub fn is_usable_at(&self, now: UtcDateTime) -> bool {
+        self.revoked_at.is_none()
+            && crate::time::datetime_to_ms(now)
+                - crate::time::datetime_to_ms(self.last_activity_at())
+                < INGEST_CLIENT_IDLE_EXPIRY_MS
     }
 }
 
@@ -602,9 +631,12 @@ impl PairingCodeEntry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{MediaAsset, OverlayClient, PairingCodeEntry};
+    use super::INGEST_CLIENT_IDLE_EXPIRY_MS;
+    use super::{IngestClient, MediaAsset, OverlayClient, PairingCodeEntry};
     use crate::enums::{MediaKind, MediaStatus, OverlaySessionMode, PairingMode};
-    use crate::ids::{GuildId, MediaAssetId, OverlayClientId, PairingCode as PairingCodeId};
+    use crate::ids::{
+        GuildId, IngestClientId, MediaAssetId, OverlayClientId, PairingCode as PairingCodeId,
+    };
     use crate::time::ms_to_datetime;
 
     fn date(ms: i64) -> time::UtcDateTime {
@@ -711,6 +743,52 @@ mod tests {
         assert!(invite.is_usable_at(date(999)));
         invite.revoked_at = Some(date(500));
         assert!(!invite.is_usable_at(date(999)));
+    }
+
+    fn sample_ingest_client() -> IngestClient {
+        IngestClient {
+            id: IngestClientId::new_v4(),
+            guild_id: GuildId::parse("123456789012345678").unwrap(),
+            label: "Extension".to_owned(),
+            token_hash: "hash".to_owned(),
+            default_author_name: "LiveChat Extension".to_owned(),
+            default_author_image: None,
+            created_by_discord_user_id: "42".to_owned(),
+            last_seen_at: None,
+            created_at: date(1_700_000_000_000),
+            revoked_at: None,
+        }
+    }
+
+    #[test]
+    fn ingest_client_idle_expiry_boundaries() {
+        let client = sample_ingest_client();
+        // Pas d'activité : `created_at` sert de référence.
+        assert_eq!(client.last_activity_at(), client.created_at);
+        let created = crate::time::datetime_to_ms(client.created_at);
+        let fresh = date(created + INGEST_CLIENT_IDLE_EXPIRY_MS - 1);
+        let expired = date(created + INGEST_CLIENT_IDLE_EXPIRY_MS);
+        assert!(client.is_usable_at(fresh), "TTL-1 ms : encore utilisable");
+        assert!(!client.is_usable_at(expired), "TTL exact : expiré");
+        assert!(!client.is_usable_at(date(created + INGEST_CLIENT_IDLE_EXPIRY_MS + 1)));
+        assert!(client.is_usable_at(client.created_at), "client frais");
+        // Une horloge en arrière ne doit jamais expirer le client.
+        assert!(client.is_usable_at(date(created - 1)));
+    }
+
+    #[test]
+    fn ingest_client_last_seen_takes_precedence_and_revocation_wins() {
+        let mut client = sample_ingest_client();
+        let created = crate::time::datetime_to_ms(client.created_at);
+        let later = created + INGEST_CLIENT_IDLE_EXPIRY_MS / 2;
+        client.last_seen_at = Some(date(later));
+        assert_eq!(client.last_activity_at(), date(later));
+        // `created_at` seul serait déjà expiré : `last_seen_at` fait foi.
+        assert!(client.is_usable_at(date(created + INGEST_CLIENT_IDLE_EXPIRY_MS - 1)));
+        assert!(!client.is_usable_at(date(later + INGEST_CLIENT_IDLE_EXPIRY_MS)));
+
+        client.revoked_at = Some(date(created));
+        assert!(!client.is_usable_at(date(later)), "révoqué même frais");
     }
 
     #[test]

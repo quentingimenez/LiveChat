@@ -130,7 +130,7 @@ form.addEventListener('submit', (event) => {
 
     const url = urlInput.value.trim();
     if (!url) {
-      setStatus('URL obligatoire.', 'error');
+      setStatus('Lien du média obligatoire.', 'error');
       return;
     }
 

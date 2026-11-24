@@ -5,12 +5,16 @@
 // des surcharges claires, préfixées par `html[data-lce-theme='light']`, donc
 // plus spécifiques que les règles d'origine et actives seulement en thème clair.
 //
-// La préférence est la même que celle du popup et des options (`lib/theme.ts`).
+// La préférence est la même que celle du popup et des options. Les content
+// scripts ne lisent pas `storage.local` (TRUSTED_CONTEXTS depuis C-03) : ils
+// la demandent au service worker par message et reçoivent les changements.
 
 import {
-  THEME_STORAGE_KEY,
+  isThemePreferenceChangedMessage,
+  MESSAGE_TYPES,
+} from '../lib/messages';
+import {
   normalizeThemePreference,
-  readThemePreference,
   resolveTheme,
   systemPrefersLight,
   type ResolvedTheme,
@@ -142,8 +146,22 @@ const ensureStyles = (): void => {
   (document.head || document.documentElement).appendChild(styleNode);
 };
 
-const syncTheme = async (): Promise<void> => {
-  applyTheme(resolveTheme(await readThemePreference(), systemPrefersLight()));
+// Demande la préférence au service worker (seul lecteur de storage.local pour
+// le thème). Repli sombre si le message échoue : comportement déjà existant.
+const requestThemePreference = async (): Promise<void> => {
+  if (typeof browser === 'undefined' || typeof browser.runtime?.sendMessage !== 'function') {
+    return;
+  }
+
+  try {
+    const response = (await browser.runtime.sendMessage({
+      type: MESSAGE_TYPES.GET_THEME_PREFERENCE,
+    })) as { preference?: unknown } | null;
+
+    applyTheme(resolveTheme(normalizeThemePreference(response?.preference), systemPrefersLight()));
+  } catch {
+    // Service worker absent : le thème sombre reste appliqué par défaut.
+  }
 };
 
 // À appeler une fois au démarrage d'un content script : injecte les surcharges
@@ -155,21 +173,23 @@ export const initInpageTheme = (): void => {
 
   started = true;
   ensureStyles();
-  void syncTheme();
+  void requestThemePreference();
 
-  if (typeof browser !== 'undefined' && browser.storage?.onChanged) {
-    browser.storage.onChanged.addListener((changes, areaName) => {
-      if (areaName !== 'local' || !(THEME_STORAGE_KEY in changes)) {
+  // Le service worker pousse la nouvelle préférence quand elle change dans
+  // storage.local (qu'on ne peut plus lire depuis un content script).
+  if (typeof browser !== 'undefined' && browser.runtime?.onMessage) {
+    browser.runtime.onMessage.addListener((message: unknown) => {
+      if (!isThemePreferenceChangedMessage(message)) {
         return;
       }
 
-      applyTheme(resolveTheme(normalizeThemePreference(changes[THEME_STORAGE_KEY]?.newValue), systemPrefersLight()));
+      applyTheme(resolveTheme(message.preference, systemPrefersLight()));
     });
   }
 
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
     window.matchMedia(PREFERS_LIGHT_QUERY).addEventListener?.('change', () => {
-      void syncTheme();
+      void requestThemePreference();
     });
   }
 };

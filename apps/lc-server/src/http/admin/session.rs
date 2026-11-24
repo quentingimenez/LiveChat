@@ -4,8 +4,9 @@
 //!
 //! - a session cookie carries 32 random bytes encoded with base64url;
 //! - the database only stores the SHA-256 hexadecimal digest of that value;
-//! - sessions expire after seven days (absolute deadline);
-//! - expired rows are removed on every lookup and once at startup.
+//! - a session expires at a seven-day absolute deadline **and** after 24 hours
+//!   of inactivity (`last_seen_at`, refreshed on every authenticated request);
+//! - expired or idle rows are removed on every lookup and once at startup.
 //!
 //! Raw SQL lives here (like [`super::queries`]) because the repositories of
 //! `lc-db` have no session entity: the table exists only for the admin panel.
@@ -23,12 +24,16 @@ use super::oauth::DiscordIdentity;
 pub const SESSION_COOKIE_NAME: &str = "lc_admin_session";
 /// Name of the short-lived OAuth2 `state` cookie.
 pub const OAUTH_STATE_COOKIE_NAME: &str = "lc_admin_oauth_state";
-/// Session lifetime in seconds (7 days, also used as the cookie `Max-Age`).
+/// Absolute session lifetime in seconds (7 days, also the cookie `Max-Age`).
 pub const SESSION_TTL_SECS: i64 = 7 * 24 * 60 * 60;
+/// Idle session lifetime in seconds (24 hours without any authenticated use).
+pub const SESSION_IDLE_TTL_SECS: i64 = 24 * 60 * 60;
 /// OAuth2 `state` cookie lifetime in seconds (10 minutes).
 pub const OAUTH_STATE_TTL_SECS: i64 = 10 * 60;
-/// Session lifetime in milliseconds (absolute expiry stored in SQLite).
+/// Absolute expiry in milliseconds (stored in SQLite).
 const SESSION_TTL_MS: i64 = SESSION_TTL_SECS * 1000;
+/// Idle expiry in milliseconds (compared against `last_seen_at`).
+const SESSION_IDLE_TTL_MS: i64 = SESSION_IDLE_TTL_SECS * 1000;
 
 /// A persisted admin session (never contains the raw cookie token).
 #[derive(Debug, Clone, FromRow)]
@@ -43,6 +48,8 @@ pub struct AdminSession {
     pub avatar_url: Option<String>,
     /// Absolute expiry time in milliseconds since the Unix epoch.
     pub expires_at: i64,
+    /// Last authenticated use in milliseconds since the Unix epoch.
+    pub last_seen_at: i64,
 }
 
 /// Generates a raw session token (32 random bytes, base64url without padding).
@@ -127,34 +134,56 @@ async fn create(
             display_name,
             avatar_url,
             expires_at,
+            last_seen_at: now_ms,
         },
     ))
 }
 
-/// Looks a raw token up, deletes expired rows, and refreshes `last_seen_at`.
+/// Millisecond cutoffs at or before which a session is invalid at `now_ms`:
+/// the absolute deadline and the idle window. Single source of truth shared by
+/// [`find`]'s guard and [`delete_expired`]'s bulk cleanup, so the strict
+/// boundary (valid at idle-1, expired at idle) can never drift between them.
+fn expiry_cutoffs_ms(now_ms: i64) -> (i64, i64) {
+    (now_ms, now_ms.saturating_sub(SESSION_IDLE_TTL_MS))
+}
+
+/// Looks a raw token up, refreshes `last_seen_at`, and purges expired rows.
 ///
-/// `Ok(None)` covers an unknown, expired, or empty token: callers answer `401`
-/// without distinguishing the cases.
+/// `Ok(None)` covers an unknown, expired, idle, or empty token: callers answer
+/// `401` without distinguishing the cases. A successful lookup also refreshes
+/// the 24 h idle window, so an actively used session stays valid until the
+/// seven-day absolute deadline.
+///
+/// The row is judged against [`expiry_cutoffs_ms`] **before** the sweep, so the
+/// per-row guard is the authority for this token: a session that crosses a
+/// deadline during the round-trip is refused here, not silently refreshed. The
+/// sweep that follows uses the same cutoffs, which is why it can only remove
+/// the refused row and never the one just validated.
 pub async fn find(db: &Db, token: &str, now_ms: i64) -> Result<Option<AdminSession>, DbError> {
     if token.is_empty() {
         return Ok(None);
     }
 
-    delete_expired(db, now_ms).await?;
     let token_hash = hash_token(token);
     let session = sqlx::query_as::<_, AdminSession>(
-        "SELECT method, discord_user_id, display_name, avatar_url, expires_at \
+        "SELECT method, discord_user_id, display_name, avatar_url, expires_at, last_seen_at \
          FROM admin_sessions WHERE token_hash = ?1",
     )
     .bind(&token_hash)
     .fetch_optional(db.pool())
     .await?;
 
+    let (absolute_cutoff, idle_cutoff) = expiry_cutoffs_ms(now_ms);
     let Some(session) = session else {
+        delete_expired(db, now_ms).await?;
         return Ok(None);
     };
-    if session.expires_at <= now_ms {
-        delete_token_hash(db, &token_hash).await?;
+    let usable = session.expires_at > absolute_cutoff && session.last_seen_at > idle_cutoff;
+
+    // One sweep for every lookup: it removes the refused row (same cutoffs) and
+    // any other stale row without a second statement on the happy path.
+    delete_expired(db, now_ms).await?;
+    if !usable {
         return Ok(None);
     }
 
@@ -175,17 +204,26 @@ pub async fn delete_by_token(db: &Db, token: &str) -> Result<u64, DbError> {
     delete_token_hash(db, &hash_token(token)).await
 }
 
-/// Deletes every session whose absolute expiry is at or before `now_ms`.
+/// Deletes every session that is past its absolute expiry or idle window.
+///
+/// Uses [`expiry_cutoffs_ms`], the same helper as [`find`]'s per-row guard, so
+/// the sweep and the guard can never disagree on the strict boundary: a row the
+/// guard refused is removed here, and a row the guard accepted is never
+/// touched. Called on every lookup ([`find`]) and once at startup
+/// ([`purge_expired`]).
 pub async fn delete_expired(db: &Db, now_ms: i64) -> Result<u64, DbError> {
-    let result = sqlx::query("DELETE FROM admin_sessions WHERE expires_at <= ?1")
-        .bind(now_ms)
-        .execute(db.pool())
-        .await?;
+    let (absolute_cutoff, idle_cutoff) = expiry_cutoffs_ms(now_ms);
+    let result =
+        sqlx::query("DELETE FROM admin_sessions WHERE expires_at <= ?1 OR last_seen_at <= ?2")
+            .bind(absolute_cutoff)
+            .bind(idle_cutoff)
+            .execute(db.pool())
+            .await?;
 
     Ok(result.rows_affected())
 }
 
-/// Startup cleanup: expired sessions are removed when the server starts.
+/// Startup cleanup: expired and idle sessions are removed when the server starts.
 pub async fn purge_expired(db: &Db) -> Result<u64, DbError> {
     delete_expired(db, lc_domain::datetime_to_ms(UtcDateTime::now())).await
 }
@@ -331,17 +369,99 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_session_lasts_seven_days_then_is_no_longer_found() {
+    async fn an_active_session_still_dies_at_the_seven_day_absolute_deadline() {
+        const HOUR_MS: i64 = 60 * 60 * 1000;
+        const DAY_HOURS: i64 = 24;
         let db = lc_db::Db::open_in_memory(&lc_db::DbConfig::default())
             .await
             .unwrap();
         let now_ms = 1_800_000_000_000;
         let (token, session) = create_secret(&db, now_ms).await.unwrap();
-        assert_eq!(session.expires_at, now_ms + 7 * 24 * 60 * 60 * 1000);
+        assert_eq!(session.expires_at, now_ms + SESSION_TTL_MS);
 
-        let day_six = now_ms + 6 * 24 * 60 * 60 * 1000;
-        assert!(find(&db, &token, day_six).await.unwrap().is_some());
-        let day_eight = now_ms + 8 * 24 * 60 * 60 * 1000;
-        assert!(find(&db, &token, day_eight).await.unwrap().is_none());
+        // One visit every 23 h keeps the 24 h idle window fresh for the whole
+        // week, so inactivity can never be the reason this session dies.
+        for hour in (23..=6 * DAY_HOURS + 17).step_by(23) {
+            let at = now_ms + hour * HOUR_MS;
+            assert!(
+                find(&db, &token, at).await.unwrap().is_some(),
+                "visite à {hour} h : la session active reste valide"
+            );
+        }
+
+        // 167 h: six hours of inactivity (fresh window) and one hour before the
+        // absolute deadline, so the session must still be accepted.
+        assert!(find(&db, &token, now_ms + (7 * DAY_HOURS - 1) * HOUR_MS)
+            .await
+            .unwrap()
+            .is_some());
+
+        // 168 h: the absolute deadline wins even though the idle window is
+        // fresh — this is the assertion that isolates the seven-day bound.
+        assert!(find(&db, &token, now_ms + 7 * DAY_HOURS * HOUR_MS)
+            .await
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn idle_window_strict_bound_and_activity_refresh() {
+        const HOUR_MS: i64 = 60 * 60 * 1000;
+        const IDLE_MS: i64 = 24 * HOUR_MS;
+        let db = lc_db::Db::open_in_memory(&lc_db::DbConfig::default())
+            .await
+            .unwrap();
+        let start = 1_800_000_000_000;
+        let (token, _) = create_secret(&db, start).await.unwrap();
+
+        // Two independent sessions: the IDLE-1 lookup refreshes `last_seen_at`,
+        // so it cannot also be the one tested at IDLE exactly.
+        assert!(find(&db, &token, start + IDLE_MS - 1)
+            .await
+            .unwrap()
+            .is_some());
+        let (idle_token, _) = create_secret(&db, start).await.unwrap();
+        assert!(find(&db, &idle_token, start + IDLE_MS)
+            .await
+            .unwrap()
+            .is_none());
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM admin_sessions WHERE token_hash = ?1")
+                .bind(hash_token(&idle_token))
+                .fetch_one(db.pool())
+                .await
+                .unwrap();
+        assert_eq!(count, 0, "ligne supprimée à l'échéance de l'inactivité");
+
+        // Activity pushes the window: at t+12 h then t+30 h (18 h idle).
+        let (token, _) = create_secret(&db, start).await.unwrap();
+        assert!(find(&db, &token, start + 12 * HOUR_MS)
+            .await
+            .unwrap()
+            .is_some());
+        assert!(
+            find(&db, &token, start + 30 * HOUR_MS)
+                .await
+                .unwrap()
+                .is_some(),
+            "seules 18 h d'inactivité se sont écoulées"
+        );
+    }
+
+    #[tokio::test]
+    async fn absolute_expiry_wins_over_fresh_activity() {
+        let db = lc_db::Db::open_in_memory(&lc_db::DbConfig::default())
+            .await
+            .unwrap();
+        let start = 1_800_000_000_000;
+        let (token, _) = create_secret(&db, start).await.unwrap();
+        sqlx::query("UPDATE admin_sessions SET expires_at = ?1")
+            .bind(start + 1)
+            .execute(db.pool())
+            .await
+            .unwrap();
+
+        assert!(find(&db, &token, start).await.unwrap().is_some());
+        assert!(find(&db, &token, start + 1).await.unwrap().is_none());
     }
 }

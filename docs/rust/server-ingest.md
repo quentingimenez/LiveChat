@@ -91,6 +91,9 @@ Ordre : purge des codes expirés → lookup du code utilisable → refus si mode
 `INVITE_READ_ONLY` → consommation atomique (usage unique) → révocation des
 anciens clients de la même guilde portant le même libellé → création du client.
 Le token en clair n'est renvoyé qu'une fois ; seul son SHA-256 est persisté.
+`authorName`/`authorImage` de la réponse restent l'instantané d'appairage
+(repli d'affichage) : l'auteur d'un job est relu à chaque envoi (cf.
+« Auteur du job »).
 
 `deviceName` est trimé puis tronqué à **200 caractères** (`MAX_DEVICE_NAME_CHARS`,
 comme l'overlay depuis AUD-A2-012) ; repli `Extension-<authorName>` si absent.
@@ -105,7 +108,9 @@ reçoit `403 {"error":"forbidden"}` et un overlay sans membre
 `409 {"error":"member_required"}`) crée un code `NORMAL` à usage unique dans
 `pairing_codes`. Le nom du membre sert d'`author_name` ; son avatar n'est
 recopié que s'il s'agit d'une URL `http(s)` (une image `data:` est trop
-volumineuse pour l'extension).
+volumineuse pour la réponse d'appairage). Ces valeurs ne sont qu'un instantané
+d'appairage : l'auteur d'un job relit le profil live du membre à chaque envoi
+(cf. « Auteur du job » ci-dessous).
 
 Réponse `200` : `{"code":"ABCD2345","expiresAt":"2026-11-10T12:10:00.000Z",
 "apiBaseUrl":"https://api.exemple.tld"}`. Le code expire au bout de
@@ -147,6 +152,16 @@ nombre fini > 0 (arrondi supérieur).
 YouTube est extrait via `lc_discord::text::youtube_start_offset_sec` puis encodé
 dans le texte du job par `lc_discord::rich_payload::build_media_text_payload`.
 `saveToBoard` ne crée **pas** de `PlaybackJob` (retour anticipé du legacy).
+
+**Auteur du job.** L'auteur n'est jamais choisi par le client : `/ingest` et
+`/ingest/file` relisent à chaque envoi le membre qui possède le client
+d'ingestion (celui du code d'appairage, `created_by_discord_user_id`) et
+reprennent son profil **live** — `display_name` et `avatar`, y compris un avatar
+`data:image/…;base64,` téléversé depuis « Mon profil ». Un profil modifié après
+l'appairage apparaît donc dès l'envoi suivant. Le nom et l'avatar figés sur le
+client à l'appairage (`ingest_clients.default_author_*`) ne servent que de repli
+quand le membre n'a pas d'avatar, comme `play_once_author`/`trigger_author` pour
+l'overlay ; `DEFAULT_INGEST_AUTHOR_NAME` s'applique si le nom est vide.
 
 Un lien de partage de commentaire TikTok (URL vidéo avec `share_comment_id`, y
 compris après redirection d'un lien court) produit une **carte vidéo** : la
@@ -444,9 +459,11 @@ Aucun endpoint de debug/shutdown n'est exposé.
 
 ## 9. Tests
 
-Tests de la lane (état task-49 : **47 tests `media::` + 21 tests `http::ingest`**,
-suite complète `cargo test -p lc-server --lib` = 284 passed, 1 ignoré), unitaires
-et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel :
+Tests de la lane, unitaires et in-process, base SQLite temporaire
+`tempfile::tempdir()`, aucun réseau réel. La colonne « Tests » reflète l'état
+task-49, sauf `http::ingest::submit` et `http::ingest::file`, à jour depuis le
+correctif d'auteur live (`http::ingest` : 42 tests). Suite complète
+`cargo test -p lc-server --lib` : **756 passed, 11 ignorés**.
 
 | Module | Tests | Couverture |
 | --- | --- | --- |
@@ -466,7 +483,8 @@ et in-process, base SQLite temporaire `tempfile::tempdir()`, aucun réseau réel
 | `http::ingest::body` | 4 | normalisation, types, drapeaux, durées |
 | `http::ingest::auth` | 1 | parsing Bearer |
 | `http::ingest::pair` | 6 | succès + hash + code consommé, expiré/inconnu, scope invité, code absent, JSON illisible, deviceName long tronqué à 200 |
-| `http::ingest::submit` | 11 | 503/401, job texte, guild mismatch, champs auteur, corps vide, saveToBoard sans média, texte jamais stocké sur le board, texte conservé sur le job, révocation, JSON illisible |
+| `http::ingest::submit` | 18 | 503/401, job texte, guild mismatch, champs auteur, corps vide, saveToBoard sans média, texte jamais stocké sur le board, texte conservé sur le job, révocation, JSON illisible, auteur live du membre (profil `data:` inclus) et repli client |
+| `http::ingest::file` | 12 | 503/401, upload + texte, cache `upload:sha256`, board titre/durée, `Content-Disposition`, variantes de slash, auteur live du membre |
 | `http::ingest::mod` | 1 | montage des deux variantes de slash |
 
 Vérifications de la lane (task-49) : `cargo fmt -p lc-media -p lc-server -- --check`,

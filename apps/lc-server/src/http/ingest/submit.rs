@@ -4,7 +4,8 @@
 //! et corps JSON restent identiques côté extension navigateur :
 //!
 //! 1. authentification (client d'ingestion uniquement) : 401 si l'ingestion est
-//!    configurée mais le token absent/invalide, 503 si aucun client actif ;
+//!    configurée mais le token absent/invalide, 503 si aucun client actif, puis
+//!    relecture du membre propriétaire (droit `extension.send`) ;
 //! 2. normalisation du corps ;
 //! 3. `guildId` demandé différent de celui du client → 403 `guild_mismatch` ;
 //! 4. `authorName`/`authorImage` → 400 (valeurs liées au token) ;
@@ -13,6 +14,10 @@
 //! 7. `saveToBoard` → 201 avec l'élément de board média ;
 //!    sinon création d'un `PlaybackJob` puis notification du hook temps réel
 //!    (Phase 4b) → 201.
+//!
+//! L'auteur du job (`author_name`/`author_image`) est le profil **live** du
+//! membre propriétaire du client, relu à chaque envoi : un client d'ingestion ne
+//! choisit jamais son pseudo ni son avatar (cf. [`resolved_author`]).
 //!
 //! La branche « rich tweet card » du legacy (résolution oEmbed + carte riche)
 //! est hors périmètre de la Phase 3c : elle sera traitée avec Phase 6b et est
@@ -42,7 +47,10 @@ use crate::media::MediaService;
 
 use super::auth::{self, IngestAuth};
 use super::body::NormalizedIngest;
-use super::{invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME};
+use super::{
+    expired_token_error, invalid_payload, media_service_error, simple_error,
+    DEFAULT_INGEST_AUTHOR_NAME,
+};
 
 /// Author prefix of an ingest client paired from the overlay (`member:<id>`).
 ///
@@ -81,6 +89,47 @@ pub(super) async fn owning_member(
         .await
 }
 
+/// Live author of a job ingested through a client.
+///
+/// The member owning the client wins, re-read at every submission: its
+/// `display_name` and its `avatar` (a `data:` image uploaded from the profile
+/// page included). The values frozen on the client at pairing time are only a
+/// fallback when the member has no avatar — the same rule as
+/// `overlay::media_ingestion::play_once_author` and `ws::session::trigger_author`
+/// — and the default name applies when the member has none. The client can
+/// therefore never choose the author it posts under.
+pub(super) fn resolved_author(
+    client: &IngestClient,
+    member: &GuildMember,
+) -> (String, Option<String>) {
+    let member_name = member.display_name.trim();
+    let name = if member_name.is_empty() {
+        let fallback = client.default_author_name.trim();
+        if fallback.is_empty() {
+            DEFAULT_INGEST_AUTHOR_NAME.to_owned()
+        } else {
+            fallback.to_owned()
+        }
+    } else {
+        member_name.to_owned()
+    };
+    let image = member
+        .avatar
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            client
+                .default_author_image
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+        });
+    (name, image)
+}
+
 /// Handler de `POST /ingest`.
 pub async fn submit(
     State(state): State<AppState>,
@@ -90,6 +139,7 @@ pub async fn submit(
     // 1. Authentification — toujours avant la validation du corps.
     let client = match auth::resolve(&state, &headers).await {
         Ok(IngestAuth::Client(client)) => client,
+        Ok(IngestAuth::Expired) => return expired_token_error(),
         Ok(IngestAuth::Missing { enabled: true }) => {
             return simple_error(StatusCode::UNAUTHORIZED, "unauthorized");
         }
@@ -101,13 +151,13 @@ pub async fn submit(
 
     // 1b. The extension surface re-reads the member owning the ingest client at
     //     every submission: a removed member or a denied `extension.send` is
-    //     `403 forbidden_role`.
+    //     `403 forbidden_role`. That same member is the live author of the job.
     let Some(db) = state.db.as_ref() else {
         tracing::error!("client d'ingestion authentifié sans base de données");
         return super::internal_error();
     };
-    let role = match owning_member(db, &client).await {
-        Ok(Some(member)) => member.role,
+    let member = match owning_member(db, &client).await {
+        Ok(Some(member)) => member,
         Ok(None) => return simple_error(StatusCode::FORBIDDEN, "forbidden_role"),
         Err(error) => {
             tracing::error!(error = %error, "reading the member of an ingest client failed");
@@ -116,7 +166,7 @@ pub async fn submit(
     };
     if !state
         .rights
-        .allowed(Surface::Extension, Action::Send, role.into())
+        .allowed(Surface::Extension, Action::Send, member.role.into())
     {
         return simple_error(StatusCode::FORBIDDEN, "forbidden_role");
     }
@@ -184,16 +234,7 @@ pub async fn submit(
     let job_text =
         lc_discord::rich_payload::build_media_text_payload(request.text.as_deref(), offset);
     let job_show_text = request.show_text.unwrap_or(request.text.is_some());
-    let job_author_name = client.default_author_name.trim().to_owned();
-    let job_author_name = if job_author_name.is_empty() {
-        DEFAULT_INGEST_AUTHOR_NAME.to_owned()
-    } else {
-        job_author_name
-    };
-    let job_author_image = client
-        .default_author_image
-        .clone()
-        .filter(|value| !value.trim().is_empty());
+    let (job_author_name, job_author_image) = resolved_author(&client, &member);
 
     // 7. Ingestion média (si une source est fournie).
     let mut service: Option<MediaService> = None;
@@ -247,9 +288,9 @@ pub(super) struct IngestOutcome<'a> {
     pub(super) title: Option<&'a str>,
     /// Whether the overlay displays `job_text`.
     pub(super) show_text: bool,
-    /// Token-bound author display name.
+    /// Live author display name (member profile, client fallback).
     pub(super) author_name: &'a str,
-    /// Token-bound author avatar.
+    /// Live author avatar (member profile, client fallback).
     pub(super) author_image: Option<&'a str>,
     /// Requested display duration in seconds.
     pub(super) duration_sec: Option<i64>,
@@ -359,7 +400,7 @@ mod tests {
     use axum::http::StatusCode;
     use axum::Router;
     use lc_db::{Db, DbConfig};
-    use lc_domain::entities::{GuildMember, IngestClient};
+    use lc_domain::entities::{GuildMember, IngestClient, PlaybackJob};
     use lc_domain::enums::JobSource;
     use lc_domain::ids::{GuildId, GuildMemberId, IngestClientId, PlaybackJobId};
     use lc_domain::GuildRole;
@@ -397,6 +438,13 @@ mod tests {
     }
 
     async fn insert_client(db: &Db) {
+        insert_client_with(db, None).await;
+    }
+
+    /// Creates the member « Alice » and the ingest client paired on her
+    /// behalf. `client_avatar` is the author image frozen on the client at
+    /// pairing time (the live member avatar stays `None`).
+    async fn insert_client_with(db: &Db, client_avatar: Option<&str>) {
         let now = UtcDateTime::now();
         let guild_id = GuildId::parse(GUILD).expect("guilde");
         // The ingest client is linked to its author, whose guild member owns
@@ -420,13 +468,25 @@ mod tests {
             label: "Extension-Test".into(),
             token_hash: hash_ingest_token(TOKEN),
             default_author_name: "LiveChat Extension".into(),
-            default_author_image: None,
+            default_author_image: client_avatar.map(str::to_owned),
             created_by_discord_user_id: "42".into(),
             last_seen_at: None,
             created_at: now,
             revoked_at: None,
         };
         db.ingest_clients().create(&client).await.expect("client");
+    }
+
+    /// Reads back the playback job created by a 201 response.
+    async fn read_job(fixture: &Fixture, body: &Value) -> PlaybackJob {
+        let job_id = body["jobId"].as_str().expect("jobId");
+        fixture
+            .db
+            .playback_jobs()
+            .get(PlaybackJobId::parse(job_id).expect("uuid"))
+            .await
+            .expect("lecture")
+            .expect("job persisté")
     }
 
     async fn post(app: Router, token: Option<&str>, body: Value) -> (StatusCode, Value) {
@@ -721,6 +781,69 @@ mod tests {
             .is_empty());
     }
 
+    /// The author of an ingested job is the live profile of the member owning
+    /// the client, re-read at every submission: a custom avatar uploaded later
+    /// from the member's computer (a `data:` image) must reach the job, and the
+    /// author frozen on the client at pairing time must not win.
+    #[tokio::test]
+    async fn ingest_uses_the_paired_members_live_profile() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let guild = GuildId::parse(GUILD).unwrap();
+        let member = fixture
+            .db
+            .guild_members()
+            .list_by_guild(&guild)
+            .await
+            .expect("membres")
+            .into_iter()
+            .next()
+            .expect("membre");
+        let avatar = "data:image/png;base64,\
+                      iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8\
+                      z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+        fixture
+            .db
+            .guild_members()
+            .update_profile(member.id, "Nhics_", Some(avatar))
+            .await
+            .expect("profil du membre");
+
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "guildId": GUILD, "text": "bonjour" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let job = read_job(&fixture, &body).await;
+        assert_eq!(job.author_name.as_deref(), Some("Nhics_"));
+        assert_eq!(job.author_image.as_deref(), Some(avatar));
+    }
+
+    /// Without a live avatar, the image frozen at pairing stays the fallback —
+    /// the same rule as an overlay whose member has no live profile. The name
+    /// still comes from the member.
+    #[tokio::test]
+    async fn ingest_falls_back_to_the_client_avatar_without_a_member_one() {
+        let fixture = fixture().await;
+        insert_client_with(&fixture.db, Some("https://cdn.example/pairing.png")).await;
+
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "guildId": GUILD, "text": "bonjour" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let job = read_job(&fixture, &body).await;
+        assert_eq!(job.author_name.as_deref(), Some("Alice"));
+        assert_eq!(
+            job.author_image.as_deref(),
+            Some("https://cdn.example/pairing.png")
+        );
+    }
+
     #[tokio::test]
     async fn save_to_board_requires_a_media_source() {
         let fixture = fixture().await;
@@ -765,6 +888,60 @@ mod tests {
         let (status, body) = post_raw(fixture.app.clone(), Some(TOKEN), "{\"text\": ").await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
         assert_eq!(body["error"], "invalid_payload", "{body}");
+    }
+
+    #[tokio::test]
+    async fn idle_expired_client_returns_401_ingest_token_expired() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let client = fixture
+            .db
+            .ingest_clients()
+            .list()
+            .await
+            .expect("clients")
+            .into_iter()
+            .next()
+            .expect("client");
+        // Force l'inactivité : last_seen_at et created_at trop anciens.
+        let stale = UtcDateTime::now() - Duration::days(181);
+        sqlx::query("UPDATE ingest_clients SET created_at = ?, last_seen_at = ? WHERE id = ?")
+            .bind(lc_domain::datetime_to_ms(stale))
+            .bind(lc_domain::datetime_to_ms(stale))
+            .bind(client.id.to_canonical())
+            .execute(fixture.db.pool())
+            .await
+            .expect("inactivité forcée");
+
+        let (status, body) = post(
+            fixture.app.clone(),
+            Some(TOKEN),
+            json!({ "text": "bonjour" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{body}");
+        assert_eq!(body["error"], "ingest_token_expired");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("board"),
+            "un message de ré-appairage est attendu"
+        );
+
+        // Aucune écriture de heartbeat sur un client expiré.
+        let stored = fixture
+            .db
+            .ingest_clients()
+            .get(client.id)
+            .await
+            .expect("lecture")
+            .expect("client");
+        // La precision SQLite est la milliseconde : comparer en ms tronqués.
+        assert_eq!(
+            stored.last_seen_at.map(lc_domain::datetime_to_ms),
+            Some(lc_domain::datetime_to_ms(stale))
+        );
     }
 
     #[tokio::test]

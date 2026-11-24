@@ -21,7 +21,7 @@
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 use axum::extract::{ConnectInfo, FromRequestParts};
-use axum::http::{header, request::Parts, HeaderMap, Method, StatusCode};
+use axum::http::{header, request::Parts, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
@@ -94,9 +94,16 @@ impl FromRequestParts<AppState> for AdminAccess {
                 .map(|info| info.0.ip()),
         )?;
 
-        let admin_session = current_session(state, &parts.headers)
-            .await?
-            .ok_or_else(unauthorized_response)?;
+        let admin_session = current_session(state, &parts.headers).await?;
+        let Some(admin_session) = admin_session else {
+            // Only clear a cookie that was actually presented: a request without
+            // one must not receive a stray `Set-Cookie`.
+            return Err(if has_session_cookie(&parts.headers) {
+                unauthorized_response_with_cleared_cookie(state.config.cookies_secure())
+            } else {
+                unauthorized_response()
+            });
+        };
 
         // AUD-COR-14: defence in depth against CSRF. Cookies are ambient
         // credentials, so mutations must originate from the panel (or API_URL
@@ -274,6 +281,29 @@ pub fn disabled_response() -> Response {
 /// Response used for a missing or invalid session.
 pub fn unauthorized_response() -> Response {
     json_status(StatusCode::UNAUTHORIZED, json!({ "error": "unauthorized" }))
+}
+
+/// `401` for a session cookie that exists but is no longer usable (expired,
+/// idle, or unknown).
+///
+/// The stale cookie is cleared in the same response: the server already deleted
+/// the row, so keeping the browser-side cookie until its seven-day `Max-Age`
+/// would only make every later request carry a dead credential.
+pub fn unauthorized_response_with_cleared_cookie(secure: bool) -> Response {
+    with_cleared_session_cookie(unauthorized_response(), secure)
+}
+
+/// Adds the `Set-Cookie` that clears the session cookie to `response`.
+pub fn with_cleared_session_cookie(mut response: Response, secure: bool) -> Response {
+    if let Ok(cleared) = HeaderValue::from_str(&session::clear_session_cookie(secure)) {
+        response.headers_mut().insert(header::SET_COOKIE, cleared);
+    }
+    response
+}
+
+/// `true` when the request carries a session cookie, usable or not.
+pub fn has_session_cookie(headers: &HeaderMap) -> bool {
+    session::cookie_value(headers, session::SESSION_COOKIE_NAME).is_some()
 }
 
 /// Response used when the shared secret does not match.

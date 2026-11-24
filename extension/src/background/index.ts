@@ -1,4 +1,5 @@
 import { sendToIngest } from '../lib/ingestClient';
+import { restrictLocalStorageToTrustedContexts } from '../lib/storage-access';
 import {
   MESSAGE_TYPES,
   isGetComposeStateRequest,
@@ -7,6 +8,7 @@ import {
   isSendQuickRequest,
   isTikTokGetCapturedUrlRequest,
   isTikTokSyncActiveItemRequest,
+  isGetThemePreferenceRequest,
   type ActiveMediaUrlResponse,
   type ActionResponse,
   type ComposeStateResponse,
@@ -22,6 +24,11 @@ import {
   setComposeDraft,
   type ComposeDraft,
 } from '../lib/settings';
+import {
+  THEME_STORAGE_KEY,
+  normalizeThemePreference,
+  readThemePreference,
+} from '../lib/theme';
 import {
   normalizeTikTokItemId,
   normalizeTikTokPageUrl,
@@ -56,6 +63,10 @@ const TIKTOK_WEB_REQUEST_PATTERNS = ['*://www.tiktok.com/aweme/v100/play/*', '*:
 const TIKTOK_CAPTURE_STORAGE_PREFIX = 'lce:tiktok:capture:';
 
 const tiktokCaptureStateCache = new Map<number, TikTokCaptureState>();
+
+// Au chargement du service worker : le jeton stocké dans storage.local n'est
+// plus lisible depuis les content scripts (voir lib/storage-access.ts).
+void restrictLocalStorageToTrustedContexts();
 
 const createContextMenus = async (): Promise<void> => {
   // Firefox ne fournit que la variante promesse de `removeAll` : sans l'attente,
@@ -448,6 +459,46 @@ browser.runtime.onStartup.addListener(() => {
   void createContextMenus();
 });
 
+// Le thème vit dans storage.local (TRUSTED_CONTEXTS) : le service worker est
+// le seul à le lire et pousse les changements aux content scripts, qui ne
+// peuvent plus s'abonner directement à onChanged sur cette area.
+browser.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'local' || !(THEME_STORAGE_KEY in changes)) {
+    return;
+  }
+
+  const preference = normalizeThemePreference(changes[THEME_STORAGE_KEY]?.newValue);
+  void broadcastThemePreference(preference);
+});
+
+const broadcastThemePreference = async (preference: string): Promise<void> => {
+  if (typeof browser.tabs?.query !== 'function') {
+    return;
+  }
+
+  try {
+    const tabs = await browser.tabs.query({});
+    for (const tab of tabs) {
+      if (typeof tab.id !== 'number') {
+        continue;
+      }
+
+      // Pas de filtre d'URL : le manifeste est la seule source de vérité des
+      // injections (youtube.com nu, *.youtube.com, youtu.be, *.x.com…). Un
+      // onglet sans content script rejette simplement le message, on l'ignore.
+      void Promise.resolve(
+        browser.tabs.sendMessage(tab.id, {
+          type: MESSAGE_TYPES.THEME_PREFERENCE_CHANGED,
+          preference,
+        }),
+      ).catch(() => undefined);
+    }
+  } catch {
+    // Onglets inaccessibles : le prochain démarrage de content script relira
+    // la préférence via GET_THEME_PREFERENCE.
+  }
+};
+
 browser.webRequest.onCompleted.addListener(
   (details) => {
     captureTikTokWebRequest(details);
@@ -553,6 +604,11 @@ browser.runtime.onMessage.addListener((message: unknown, sender, sendResponse) =
         ok: true,
         hasSettings: isSettingsComplete(settings),
       });
+      return;
+    }
+
+    if (isGetThemePreferenceRequest(message)) {
+      sendResponse({ preference: await readThemePreference() });
       return;
     }
 

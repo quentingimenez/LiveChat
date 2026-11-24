@@ -479,10 +479,13 @@ const broadcastThemePreference = async (preference: string): Promise<void> => {
   try {
     const tabs = await browser.tabs.query({});
     for (const tab of tabs) {
-      if (typeof tab.id !== 'number' || !isSupportedContentTabUrl(tab.url)) {
+      if (typeof tab.id !== 'number') {
         continue;
       }
 
+      // Pas de filtre d'URL : le manifeste est la seule source de vérité des
+      // injections (youtube.com nu, *.youtube.com, youtu.be, *.x.com…). Un
+      // onglet sans content script rejette simplement le message, on l'ignore.
       void Promise.resolve(
         browser.tabs.sendMessage(tab.id, {
           type: MESSAGE_TYPES.THEME_PREFERENCE_CHANGED,
@@ -494,17 +497,6 @@ const broadcastThemePreference = async (preference: string): Promise<void> => {
     // Onglets inaccessibles : le prochain démarrage de content script relira
     // la préférence via GET_THEME_PREFERENCE.
   }
-};
-
-const isSupportedContentTabUrl = (url?: string): boolean => {
-  if (!url) {
-    return false;
-  }
-
-  return SUPPORTED_DOCUMENT_PATTERNS.some((pattern) => {
-    const host = pattern.replace('https://', '').replace('/*', '');
-    return url.startsWith(`https://${host}/`);
-  });
 };
 
 browser.webRequest.onCompleted.addListener(

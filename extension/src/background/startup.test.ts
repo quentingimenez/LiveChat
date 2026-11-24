@@ -6,6 +6,7 @@ const setAccessLevel = vi.fn().mockResolvedValue(undefined);
 const tabsQuery = vi.fn().mockResolvedValue([
   { id: 1, url: 'https://www.youtube.com/watch?v=abc123' },
   { id: 2, url: 'https://example.com/' },
+  { id: 3, url: 'https://youtu.be/abc' },
 ]);
 const tabsSendMessage = vi.fn().mockResolvedValue(undefined);
 let runtimeMessageHandler: ((message: unknown, sender: unknown, sendResponse: (r: unknown) => void) => void) | null = null;
@@ -56,7 +57,7 @@ describe('démarrage du service worker', () => {
     vi.resetModules();
     setAccessLevel.mockClear();
     tabsQuery.mockClear();
-    tabsSendMessage.mockClear();
+    tabsSendMessage.mockReset().mockResolvedValue(undefined);
     installBrowserStub();
   });
 
@@ -83,18 +84,33 @@ describe('démarrage du service worker', () => {
     await vi.waitFor(() => expect(sendResponse).toHaveBeenCalledWith({ preference: 'light' }));
   });
 
-  it('pousse le thème aux onglets supportés quand la préférence change', async () => {
+  it('pousse la préférence à tous les onglets, y compris les hôtes non injectés', async () => {
     await import('./index');
 
     storageChangedHandler?.({ 'lce.theme.v1': { newValue: 'system' } }, 'local');
 
-    await vi.waitFor(() => expect(tabsSendMessage).toHaveBeenCalled());
-    expect(tabsSendMessage).toHaveBeenCalledTimes(1);
-    const pushed = tabsSendMessage.mock.calls[0][1];
-    expect(isThemePreferenceChangedMessage(pushed)).toBe(true);
-    expect(pushed).toMatchObject({
-      type: MESSAGE_TYPES.THEME_PREFERENCE_CHANGED,
-      preference: 'system',
-    });
+    await vi.waitFor(() => expect(tabsSendMessage).toHaveBeenCalledTimes(3));
+    // Le manifeste est la seule source de vérité des injections : on ne filtre
+    // pas les onglets ici, sinon une page injectée comme youtu.be est oubliée.
+    expect(tabsSendMessage.mock.calls.map((call) => call[0])).toEqual([1, 2, 3]);
+    for (const call of tabsSendMessage.mock.calls) {
+      expect(isThemePreferenceChangedMessage(call[1])).toBe(true);
+      expect(call[1]).toMatchObject({
+        type: MESSAGE_TYPES.THEME_PREFERENCE_CHANGED,
+        preference: 'system',
+      });
+    }
+  });
+
+  it('continue la diffusion quand un onglet sans content script rejette le message', async () => {
+    tabsSendMessage.mockImplementation((tabId: number) =>
+      tabId === 2 ? Promise.reject(new Error('Receiving end does not exist')) : Promise.resolve(undefined),
+    );
+    await import('./index');
+
+    storageChangedHandler?.({ 'lce.theme.v1': { newValue: 'dark' } }, 'local');
+
+    await vi.waitFor(() => expect(tabsSendMessage).toHaveBeenCalledTimes(3));
+    expect(tabsSendMessage.mock.calls.map((call) => call[0])).toEqual([1, 2, 3]);
   });
 });

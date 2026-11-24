@@ -1,8 +1,8 @@
-// Rafraîchir une carte depuis sa source existe à deux endroits : le menu de la
-// carte (C) et le dialogue Ajouter quand l’URL est déjà sur la board (E). Ces
-// tests gardent le câblage : le menu n’apparaît que pour un lien avec le droit
-// d’ajouter, l’ingestion repart en `forceRefresh: true`, et la carte existante
-// est rechargée au lieu d’afficher « déjà sur le board ».
+// Rafraîchir une carte depuis sa source (C) : le menu de la carte propose
+// l’action pour un lien avec le droit d’ajouter, et l’ingestion repart en
+// `forceRefresh: true` pour que le serveur remplace le média et sa cover. Le
+// dialogue Ajouter ne doit plus proposer ce bouton : le contournement du cache
+// y est la seule action.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -54,18 +54,11 @@ test('le menu d’une carte de lien propose le rafraîchissement', () => {
   assert.match(helper, /startLinkRefresh\(\{ guildId: state\.activeGuildId, item \}\)/);
 });
 
-test('le dialogue repère l’URL déjà présente et propose le rafraîchissement', () => {
-  const dialog = balancedBlock(addMedia, 'export function openAddDialog(options)', '{', '}');
-  const linkPanel = balancedBlock(dialog, 'const linkPanel = h(', '(', ')');
-  const syncFields = balancedBlock(dialog, 'function syncFields()', '{', '}');
-  const syncDuplicate = balancedBlock(dialog, 'function syncDuplicateLink()', '{', '}');
-  assert.match(dialog, /class: 'add-media-duplicate'/);
-  assert.match(dialog, /'Déjà sur la board\.'/);
-  assert.match(dialog, /'Rafraîchir depuis la source'/);
-  assert.match(dialog, /boardItemForUrl\(state\.items, linkUrl\.value\)/);
-  assert.match(linkPanel, /duplicateLink/);
-  assert.match(syncFields, /syncDuplicateLink\(\)/);
-  assert.match(syncDuplicate, /canAdd && action === 'add' && mode === 'link'/);
+test('le dialogue Ajouter ne propose plus le bouton de rafraîchissement', () => {
+  assert.doesNotMatch(addMedia, /add-media-duplicate/);
+  assert.doesNotMatch(addMedia, /'Rafraîchir depuis la source'/);
+  assert.doesNotMatch(addMedia, /syncDuplicateLink/);
+  assert.doesNotMatch(addMedia, /startLinkRefresh/);
 });
 
 test('un rafraîchissement réutilise l’ingestion de lien avec forceRefresh', () => {

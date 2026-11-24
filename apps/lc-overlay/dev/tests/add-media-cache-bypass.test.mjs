@@ -1,8 +1,8 @@
 // L’option « Ignorer le cache serveur » est propre à une ingestion de lien :
 // la board l’offre dans le panneau Lien du dialogue Ajouter, jamais pour un
-// fichier, et l’envoi transmet `forceRefresh` au serveur. Ces tests gardent le
-// câblage que les helpers purs ne peuvent pas prouver : présence du contrôle,
-// suivi de la source et corps de la requête.
+// fichier, et seulement quand l’URL correspond à un média déjà connu. Ces tests
+// gardent le câblage que les helpers purs ne peuvent pas prouver : présence du
+// contrôle, suivi de la source, condition d’affichage et corps de la requête.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -46,6 +46,7 @@ function balancedBlock(source, marker, openChar, closeChar) {
 
 const dialog = balancedBlock(addMedia, 'export function openAddDialog', '{', '}');
 const syncFields = balancedBlock(dialog, 'function syncFields', '{', '}');
+const syncCache = balancedBlock(dialog, 'function syncCacheOption', '{', '}');
 const linkPanel = balancedBlock(dialog, 'const linkPanel = h(', '(', ')');
 const filePanel = balancedBlock(dialog, 'const filePanel = h(', '(', ')');
 const payload = balancedBlock(dialog, 'const payload = {', '{', '}');
@@ -65,10 +66,13 @@ test('le dialogue offre le contournement dans le panneau du lien', () => {
   assert.doesNotMatch(filePanel, /forceRefreshOption/);
 });
 
-test('le contournement suit la source : lien seulement', () => {
-  assert.match(syncFields, /const bypassCache = canBypassServerCache\(mode\)/);
-  assert.match(syncFields, /forceRefreshOption\.hidden = !bypassCache/);
-  assert.match(syncFields, /forceRefreshInput\.disabled = !bypassCache/);
+test('le contournement suit la source et la présence du média', () => {
+  assert.match(syncCache, /boardItemForUrl\(state\.items, linkUrl\.value\)/);
+  assert.match(syncCache, /cacheBypassVisible\(mode, Boolean\(cached\)\)/);
+  assert.match(syncCache, /forceRefreshOption\.hidden = !bypassCache/);
+  assert.match(syncCache, /forceRefreshInput\.disabled = !bypassCache/);
+  assert.match(syncCache, /if \(!bypassCache\) \{\s*forceRefreshInput\.checked = false/);
+  assert.match(syncFields, /syncCacheOption\(\)/);
 });
 
 test('le formulaire transmet la case au lancement de l’envoi', () => {

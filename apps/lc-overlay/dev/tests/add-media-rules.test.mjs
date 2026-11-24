@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   boardItemForUrl,
+  cacheBypassVisible,
   canBypassServerCache,
   defaultAction,
   forceRefreshFor,
@@ -42,6 +43,13 @@ test('le cache serveur ne se contourne que pour un lien', () => {
   assert.equal(canBypassServerCache('link'), true);
   assert.equal(canBypassServerCache('file'), false);
   assert.equal(canBypassServerCache(''), false);
+});
+
+test('le contournement ne s’affiche que si le média est déjà connu', () => {
+  assert.equal(cacheBypassVisible('link', true), true);
+  assert.equal(cacheBypassVisible('link', false), false);
+  assert.equal(cacheBypassVisible('file', true), false);
+  assert.equal(cacheBypassVisible('file', false), false);
 });
 
 test('un fichier ne demande jamais le contournement, même si la case reste cochée', () => {

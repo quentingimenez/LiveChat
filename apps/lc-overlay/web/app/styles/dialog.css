@@ -240,21 +240,6 @@
   cursor: pointer;
 }
 
-/* « Déjà sur la board. » : une ligne discrète, le bouton de rafraîchissement
-   garde sa taille et ne se comprime pas dans le texte. */
-.dialog .add-media-duplicate {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-soft);
-  font-size: 12px;
-}
-
-.dialog .add-media-duplicate .btn {
-  flex: none;
-}
-
 .dialog .actions {
   display: flex;
   justify-content: flex-end;

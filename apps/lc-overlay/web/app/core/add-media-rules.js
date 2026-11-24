@@ -29,6 +29,13 @@ export function canBypassServerCache(mode) {
   return mode === 'link';
 }
 
+// The bypass only makes sense when the server already holds the media: a new
+// link has no cached copy to ignore. `cached` is the board's knowledge of the
+// URL, not a guess from the field.
+export function cacheBypassVisible(mode, cached) {
+  return canBypassServerCache(mode) && cached === true;
+}
+
 export function forceRefreshFor(mode, checked) {
   return canBypassServerCache(mode) && checked === true;
 }
@@ -50,8 +57,9 @@ function comparableSourceUrl(value) {
 }
 
 // The board item already showing `value`, when it is a link. An uploaded media
-// has no http source URL, so it is never a duplicate of a typed link. Used by
-// the add dialog to offer a refresh instead of a silent "already there".
+// has no http source URL, so it is never a match for a typed link. Used by the
+// add dialog to know whether the server already holds the media, and therefore
+// whether a cache bypass is worth offering.
 export function boardItemForUrl(items, value) {
   const wanted = comparableSourceUrl(value);
   if (!wanted || !Array.isArray(items)) {

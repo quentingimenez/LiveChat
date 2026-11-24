@@ -205,6 +205,8 @@ pub struct ToolsConfig {
     pub ytdlp_format: String,
     /// Cookie TikTok (`TIKTOK_COOKIE`), sans le préfixe `cookie:`.
     pub tiktok_cookie: Option<String>,
+    /// Cookie YouTube (`YOUTUBE_COOKIE`), sans le préfixe `cookie:`.
+    pub youtube_cookie: Option<String>,
 }
 
 /// Sous-configuration de la résolution de sources.
@@ -327,6 +329,7 @@ impl MediaConfig {
                 DEFAULT_YTDLP_FORMAT,
             )),
             tiktok_cookie: value(&vars, "TIKTOK_COOKIE").and_then(sanitize_tiktok_cookie),
+            youtube_cookie: value(&vars, "YOUTUBE_COOKIE").and_then(sanitize_youtube_cookie),
         };
 
         let resolve = ResolveConfig {
@@ -414,6 +417,7 @@ pub const ENV_KEYS: &[&str] = &[
     "YTDLP_CONCURRENT_FRAGMENTS",
     "YTDLP_FORMAT",
     "TIKTOK_COOKIE",
+    "YOUTUBE_COOKIE",
     "YOUTUBE_OEMBED_ENDPOINT",
     "TIKTOK_OEMBED_ENDPOINT",
     "TIKTOK_COMMENT_ENDPOINT",
@@ -513,8 +517,9 @@ fn strip_cookie_prefix(cookie: &str) -> String {
     without_prefix.trim().to_string()
 }
 
-/// Longueur maximale acceptée pour `TIKTOK_COOKIE`.
-const MAX_TIKTOK_COOKIE_CHARS: usize = 4096;
+/// Longueur maximale acceptée pour les cookies de sources (`TIKTOK_COOKIE`,
+/// `YOUTUBE_COOKIE`).
+const MAX_SOURCE_COOKIE_CHARS: usize = 4096;
 
 /// Nettoie et valide le cookie TikTok (`TIKTOK_COOKIE`).
 ///
@@ -525,12 +530,28 @@ const MAX_TIKTOK_COOKIE_CHARS: usize = 4096;
 /// Utilisé pour la valeur d'environnement comme pour l'override runtime de la
 /// console admin, afin que les deux chemins appliquent la même validation.
 pub fn sanitize_tiktok_cookie(raw: &str) -> Option<String> {
+    sanitize_source_cookie(raw, "TikTok")
+}
+
+/// Nettoie et valide le cookie YouTube (`YOUTUBE_COOKIE`).
+///
+/// Même contrat que [`sanitize_tiktok_cookie`] : la valeur est écrite dans un
+/// fichier de cookies Netscape, donc les caractères de contrôle et les valeurs
+/// démesurées sont refusés sans jamais journaliser le contenu.
+pub fn sanitize_youtube_cookie(raw: &str) -> Option<String> {
+    sanitize_source_cookie(raw, "YouTube")
+}
+
+fn sanitize_source_cookie(raw: &str, provider: &str) -> Option<String> {
     let cookie = strip_cookie_prefix(raw);
-    if cookie.is_empty() || cookie.chars().count() > MAX_TIKTOK_COOKIE_CHARS {
+    if cookie.is_empty() || cookie.chars().count() > MAX_SOURCE_COOKIE_CHARS {
         return None;
     }
     if cookie.chars().any(char::is_control) {
-        tracing::warn!("Cookie TikTok ignoré : caractères de contrôle interdits dans la valeur");
+        tracing::warn!(
+            provider = provider,
+            "Cookie ignoré : caractères de contrôle interdits dans la valeur"
+        );
         return None;
     }
     Some(cookie)
@@ -592,6 +613,7 @@ mod tests {
         assert_eq!(config.tools.ytdlp_concurrent_fragments, 1);
         assert_eq!(config.tools.ytdlp_format, DEFAULT_YTDLP_FORMAT);
         assert_eq!(config.tools.tiktok_cookie, None);
+        assert_eq!(config.tools.youtube_cookie, None);
         assert_eq!(
             config.resolve.twitter_oembed_endpoint,
             "https://publish.twitter.com/oembed"
@@ -640,6 +662,7 @@ mod tests {
             ("YTDLP_BINARY", "C:/tools/yt-dlp.exe"),
             ("YTDLP_CONCURRENT_FRAGMENTS", "3"),
             ("TIKTOK_COOKIE", "cookie: sessionid=abc; ttwid=xyz"),
+            ("YOUTUBE_COOKIE", "cookie: SAPISID=secret; SID=session"),
             ("TIKTOK_COMMENT_ENDPOINT", "https://comments.example/api"),
             ("I18N", "en-US"),
             ("MEDIA_TRANSLATE_ENABLED", "false"),
@@ -670,6 +693,10 @@ mod tests {
         assert_eq!(
             config.tools.tiktok_cookie.as_deref(),
             Some("sessionid=abc; ttwid=xyz")
+        );
+        assert_eq!(
+            config.tools.youtube_cookie.as_deref(),
+            Some("SAPISID=secret; SID=session")
         );
         assert_eq!(
             config.resolve.tiktok_comment_endpoint,
@@ -784,32 +811,51 @@ mod tests {
 
     #[test]
     fn cookie_prefix_is_stripped() {
-        let config = MediaConfig::from_pairs([("TIKTOK_COOKIE", "Cookie: a=b")]);
+        let config = MediaConfig::from_pairs([
+            ("TIKTOK_COOKIE", "Cookie: a=b"),
+            ("YOUTUBE_COOKIE", "cookie: c=d"),
+        ]);
         assert_eq!(config.tools.tiktok_cookie.as_deref(), Some("a=b"));
-        let empty = MediaConfig::from_pairs([("TIKTOK_COOKIE", "cookie: ")]);
+        assert_eq!(config.tools.youtube_cookie.as_deref(), Some("c=d"));
+        let empty = MediaConfig::from_pairs([
+            ("TIKTOK_COOKIE", "cookie: "),
+            ("YOUTUBE_COOKIE", "COOKIE: "),
+        ]);
         assert_eq!(empty.tools.tiktok_cookie, None);
+        assert_eq!(empty.tools.youtube_cookie, None);
     }
 
     #[test]
-    fn tiktok_cookie_rejects_control_characters() {
-        for raw in [
-            "cookie: sessionid=a\r\nInjected: b",
-            "sessionid=a\nb",
-            "sessionid=a\tb",
-            "sessionid=a\u{0}b",
-        ] {
-            let config = MediaConfig::from_pairs([("TIKTOK_COOKIE", raw)]);
-            assert!(
-                config.tools.tiktok_cookie.is_none(),
-                "cookie avec caractère de contrôle accepté : {raw:?}"
-            );
+    fn source_cookies_reject_control_characters() {
+        for variable in ["TIKTOK_COOKIE", "YOUTUBE_COOKIE"] {
+            for raw in [
+                "cookie: sessionid=a\r\nInjected: b",
+                "sessionid=a\nb",
+                "sessionid=a\tb",
+                "sessionid=a\u{0}b",
+            ] {
+                let config = MediaConfig::from_pairs([(variable, raw)]);
+                let cookie = if variable == "TIKTOK_COOKIE" {
+                    config.tools.tiktok_cookie
+                } else {
+                    config.tools.youtube_cookie
+                };
+                assert!(
+                    cookie.is_none(),
+                    "{variable} avec caractère de contrôle accepté : {raw:?}"
+                );
+            }
         }
     }
 
     #[test]
-    fn tiktok_cookie_rejects_oversized_values() {
-        let huge = format!("sessionid={}", "a".repeat(MAX_TIKTOK_COOKIE_CHARS));
-        let config = MediaConfig::from_pairs([("TIKTOK_COOKIE", huge.as_str())]);
+    fn source_cookies_reject_oversized_values() {
+        let huge = format!("sessionid={}", "a".repeat(MAX_SOURCE_COOKIE_CHARS));
+        let config = MediaConfig::from_pairs([
+            ("TIKTOK_COOKIE", huge.as_str()),
+            ("YOUTUBE_COOKIE", huge.as_str()),
+        ]);
         assert_eq!(config.tools.tiktok_cookie, None);
+        assert_eq!(config.tools.youtube_cookie, None);
     }
 }

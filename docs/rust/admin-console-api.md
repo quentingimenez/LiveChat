@@ -207,15 +207,16 @@ d'ingestion (membre exclu ou action refusée : `403 forbidden_role`).
 
 ## 7. Paramètres du serveur à chaud
 
-`admin_runtime.json` (existant, cookie TikTok) gagne : `defaultDuration`,
+`admin_runtime.json` (existant, cookies TikTok et YouTube) gagne : `defaultDuration`,
 `mediaCacheTtlHours`, `mediaCacheMaxTotalMb`, `mediaBoardMaxTotalMb`,
 `mediaMaxSizeMb`, `mediaVideoMaxHeight`, `minOverlayVersion`,
 `ttsEnabled`. Valeur absente = valeur d'environnement. `GET` renvoie
-`{"settings":{clé:{"value","source":"runtime"|"env","default"}}, "readOnly":{…}}`
+`{"hasTikTokCookie":bool,"hasYouTubeCookie":bool,"settings":{clé:{"value","source":"runtime"|"env","default"}}, "readOnly":{…}}`
 où `readOnly` liste les réglages d'environnement non modifiables (port,
 `API_URL`, chemins, présence des secrets en booléen — jamais leur valeur).
 `PATCH` accepte un sous-ensemble des clés modifiables (`null` = revenir à
-l'environnement).
+l'environnement) ; `tiktokCookie` et `youtubeCookie` sont écrits en clair dans
+`admin_runtime.json` mais jamais renvoyés par l'API.
 
 ## 8. Flux temps réel
 

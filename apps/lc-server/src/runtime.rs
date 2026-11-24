@@ -37,6 +37,9 @@ pub struct RuntimeOverrides {
     /// `TIKTOK_COOKIE` override (clear text, legacy behaviour).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tiktok_cookie: Option<String>,
+    /// `YOUTUBE_COOKIE` override (clear text, same secret handling as TikTok).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub youtube_cookie: Option<String>,
     /// `DEFAULT_DURATION` override, in seconds.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_duration: Option<u64>,
@@ -180,6 +183,15 @@ impl Runtime {
             .unwrap_or_else(|| normalize_tiktok_cookie(self.config.tiktok_cookie.expose_secret()))
     }
 
+    /// Effective YouTube cookie (override, otherwise the environment value).
+    #[must_use]
+    pub fn youtube_cookie(&self) -> String {
+        self.read()
+            .youtube_cookie
+            .clone()
+            .unwrap_or_else(|| normalize_youtube_cookie(self.config.youtube_cookie.expose_secret()))
+    }
+
     /// Writes the given overrides to `admin_runtime.json` atomically.
     ///
     /// The caller decides when to [`Self::apply`] them to memory, so a failed
@@ -227,6 +239,9 @@ fn load_overrides(config: &Config) -> RuntimeOverrides {
             if let Some(cookie) = overrides.tiktok_cookie.as_deref() {
                 overrides.tiktok_cookie = Some(normalize_tiktok_cookie(cookie));
             }
+            if let Some(cookie) = overrides.youtube_cookie.as_deref() {
+                overrides.youtube_cookie = Some(normalize_youtube_cookie(cookie));
+            }
             overrides
         }
         Err(error) => {
@@ -246,6 +261,16 @@ fn load_overrides(config: &Config) -> RuntimeOverrides {
 /// removed, as the legacy `normalizeTikTokCookie` did.
 #[must_use]
 pub fn normalize_tiktok_cookie(value: &str) -> String {
+    normalize_source_cookie(value)
+}
+
+/// Normalises the YouTube cookie value with the same legacy rule.
+#[must_use]
+pub fn normalize_youtube_cookie(value: &str) -> String {
+    normalize_source_cookie(value)
+}
+
+fn normalize_source_cookie(value: &str) -> String {
     let value = value.trim();
     let without_prefix = value
         .strip_prefix("cookie:")
@@ -320,6 +345,17 @@ mod tests {
         assert_eq!(normalize_tiktok_cookie("   "), "");
         // Only a leading prefix is removed, like the legacy implementation.
         assert_eq!(normalize_tiktok_cookie("abc:cookie:def"), "abc:cookie:def");
+    }
+
+    #[test]
+    fn youtube_cookie_normalisation_reuses_the_same_rule() {
+        assert_eq!(normalize_youtube_cookie("  cookie:abc  "), "abc");
+        assert_eq!(normalize_youtube_cookie("COOKIE: abc"), "abc");
+        assert_eq!(normalize_youtube_cookie("Cookie:abc"), "abc");
+        assert_eq!(normalize_youtube_cookie("abc"), "abc");
+        assert_eq!(normalize_youtube_cookie(""), "");
+        assert_eq!(normalize_youtube_cookie("   "), "");
+        assert_eq!(normalize_youtube_cookie("abc:cookie:def"), "abc:cookie:def");
     }
 
     #[test]

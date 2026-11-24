@@ -1890,7 +1890,7 @@ async fn csp_admin_et_csp_globale_ne_se_recouvrent_pas() {
 }
 
 // ---------------------------------------------------------------------------
-// Réglages runtime (TIKTOK_COOKIE)
+// Réglages runtime (cookies des sources)
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
@@ -1903,6 +1903,8 @@ async fn runtime_settings_valeurs_par_defaut_puis_persistance() {
     assert_eq!(status, StatusCode::OK);
     assert!(body.get("tiktokCookie").is_none());
     assert_eq!(body["hasTikTokCookie"], false);
+    assert!(body.get("youtubeCookie").is_none());
+    assert_eq!(body["hasYouTubeCookie"], false);
 
     let (status, body) = harness
         .call_json(
@@ -1990,6 +1992,99 @@ async fn runtime_settings_never_expose_the_tiktok_cookie() {
 }
 
 #[tokio::test]
+async fn runtime_settings_never_expose_the_youtube_cookie() {
+    let harness =
+        Harness::with_pairs(&[("YOUTUBE_COOKIE", "SAPISID=environment-youtube-secret")]).await;
+
+    let (status, body) = harness
+        .call(Method::GET, "/admin/api/runtime-settings")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("youtubeCookie").is_none());
+    assert_eq!(body["hasYouTubeCookie"], true);
+    assert!(
+        !body.to_string().contains("environment-youtube-secret"),
+        "the environment YouTube cookie leaked in the runtime settings"
+    );
+
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "youtubeCookie": " SAPISID=runtime-youtube-secret " }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("youtubeCookie").is_none());
+    assert_eq!(body["hasYouTubeCookie"], true);
+    assert!(
+        !body.to_string().contains("runtime-youtube-secret"),
+        "the patched YouTube cookie leaked in the PATCH response"
+    );
+
+    // Clearing the override also hides the environment cookie.
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "youtubeCookie": "" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("youtubeCookie").is_none());
+    assert_eq!(body["hasYouTubeCookie"], false);
+
+    let (status, body) = harness
+        .call(Method::GET, "/admin/api/runtime-settings")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body.get("youtubeCookie").is_none());
+    assert_eq!(body["hasYouTubeCookie"], false);
+    assert!(
+        !body.to_string().contains("environment-youtube-secret"),
+        "the environment YouTube cookie leaked after the runtime cookie was cleared"
+    );
+}
+
+#[tokio::test]
+async fn runtime_settings_source_cookies_are_independent() {
+    let harness = Harness::with_pairs(&[
+        ("TIKTOK_COOKIE", "sessionid=tiktok-env"),
+        ("YOUTUBE_COOKIE", "SAPISID=youtube-env"),
+    ])
+    .await;
+
+    let (status, body) = harness
+        .call(Method::GET, "/admin/api/runtime-settings")
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasTikTokCookie"], true);
+    assert_eq!(body["hasYouTubeCookie"], true);
+
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "youtubeCookie": "" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasTikTokCookie"], true);
+    assert_eq!(body["hasYouTubeCookie"], false);
+
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "tiktokCookie": "" }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["hasTikTokCookie"], false);
+    assert_eq!(body["hasYouTubeCookie"], false);
+}
+
+#[tokio::test]
 async fn runtime_settings_payload_invalide() {
     let harness = Harness::new().await;
 
@@ -2004,6 +2099,16 @@ async fn runtime_settings_payload_invalide() {
             Method::PATCH,
             "/admin/api/runtime-settings",
             &json!({ "tiktokCookie": 42 }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"], "invalid_payload");
+
+    let (status, body) = harness
+        .call_json(
+            Method::PATCH,
+            "/admin/api/runtime-settings",
+            &json!({ "youtubeCookie": 42 }),
         )
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);

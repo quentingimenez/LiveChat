@@ -185,6 +185,8 @@ export function SettingsScreen() {
   const [initial, setInitial] = useState<Record<string, DraftValue>>({});
   const [cookieText, setCookieText] = useState('');
   const [cookieInitial, setCookieInitial] = useState<string | null>(null);
+  const [youtubeCookieText, setYoutubeCookieText] = useState('');
+  const [youtubeCookieInitial, setYoutubeCookieInitial] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<unknown>(null);
   // The response the draft was built from: the form is shown only once the
@@ -206,6 +208,10 @@ export function SettingsScreen() {
       typeof settings.data.tiktokCookie === 'string' ? settings.data.tiktokCookie : null;
     setCookieText(serverCookie ?? '');
     setCookieInitial(serverCookie);
+    const serverYoutubeCookie =
+      typeof settings.data.youtubeCookie === 'string' ? settings.data.youtubeCookie : null;
+    setYoutubeCookieText(serverYoutubeCookie ?? '');
+    setYoutubeCookieInitial(serverYoutubeCookie);
     setDraftSource(settings.data);
   }, [settings.data]);
 
@@ -244,10 +250,20 @@ export function SettingsScreen() {
   const cookieConfigured = settings.data?.hasTikTokCookie === true || legacyCookieConfigured;
   const showCookie =
     settings.data?.tiktokCookie !== undefined || settings.data?.hasTikTokCookie !== undefined;
+  const legacyYoutubeCookieConfigured =
+    typeof settings.data?.youtubeCookie === 'string' && settings.data.youtubeCookie.length > 0;
+  const youtubeCookieConfigured =
+    settings.data?.hasYouTubeCookie === true || legacyYoutubeCookieConfigured;
+  const showYoutubeCookie =
+    settings.data?.youtubeCookie !== undefined || settings.data?.hasYouTubeCookie !== undefined;
   const changedKeys = Object.keys(draft).filter((key) => draft[key] !== initial[key]);
   const cookieDirty =
     cookieInitial !== null ? cookieText !== cookieInitial : cookieText.length > 0;
-  const dirty = changedKeys.length > 0 || cookieDirty;
+  const youtubeCookieDirty =
+    youtubeCookieInitial !== null
+      ? youtubeCookieText !== youtubeCookieInitial
+      : youtubeCookieText.length > 0;
+  const dirty = changedKeys.length > 0 || cookieDirty || youtubeCookieDirty;
 
   const setValue = (key: string, value: DraftValue) => {
     setDraft((current) => ({ ...current, [key]: value }));
@@ -267,6 +283,9 @@ export function SettingsScreen() {
       }
       if (cookieDirty) {
         body.tiktokCookie = cookieText;
+      }
+      if (youtubeCookieDirty) {
+        body.youtubeCookie = youtubeCookieText;
       }
       await patchRuntimeSettings(body);
       notify('Paramètres du serveur enregistrés.');
@@ -297,6 +316,24 @@ export function SettingsScreen() {
     }
   };
 
+  const clearYoutubeCookie = async () => {
+    if (!youtubeCookieConfigured || saving) {
+      return;
+    }
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await patchRuntimeSettings({ youtubeCookie: '' });
+      notify('Cookie YouTube supprimé.');
+      settings.reload();
+    } catch (error) {
+      setSaveError(error);
+      notify(describeError(error), 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   let content;
   if (settings.loading && !settings.data) {
     content = <Loading label="Chargement des paramètres…" />;
@@ -313,6 +350,9 @@ export function SettingsScreen() {
       ...grouped.map(([group]) => ({ id: `set-${group.replace(/\s+/g, '-')}`, label: group })),
       ...(readOnlyEntries.length ? [{ id: 'set-environnement', label: 'Environnement' }] : []),
       ...(showCookie ? [{ id: 'set-sources', label: 'Cookie TikTok' }] : []),
+      ...(showYoutubeCookie
+        ? [{ id: 'set-sources-youtube', label: 'Cookie YouTube' }]
+        : []),
     ];
     content = (
       <>
@@ -486,6 +526,52 @@ export function SettingsScreen() {
               </Card>
             ) : null}
 
+            {showYoutubeCookie ? (
+              <Card id="set-sources-youtube">
+                <CardHead title="Source des médias" meta="cookie YouTube" />
+                <div class="card-body">
+                  <label for="youtube-cookie">Cookie YouTube</label>
+                  <textarea
+                    class="field is-after-label mono"
+                    id="youtube-cookie"
+                    rows={2}
+                    placeholder="SAPISID=…"
+                    value={youtubeCookieText}
+                    onInput={(event) => setYoutubeCookieText(event.currentTarget.value)}
+                  />
+                  <p class="hint">
+                    {legacyYoutubeCookieConfigured && settings.data?.hasYouTubeCookie !== true
+                      ? 'Ancien serveur : la valeur affichée est encore renvoyée en clair pour compatibilité. Laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'
+                      : 'Utilisé uniquement après un échec d’authentification YouTube (contrôle d’âge, vidéo privée). Jamais envoyé pour une vidéo publique. La valeur existante n’est jamais renvoyée : laisser vide pour la conserver, saisir une nouvelle valeur pour la remplacer. Appliqué immédiatement après enregistrement.'}
+                  </p>
+                  <p class="hint">
+                    État :{' '}
+                    <Badge
+                      tone={youtubeCookieDirty ? 'info' : youtubeCookieConfigured ? 'ok' : 'neutral'}
+                    >
+                      {youtubeCookieDirty
+                        ? youtubeCookieText.trim()
+                          ? 'Nouveau cookie saisi'
+                          : 'Cookie en cours de suppression'
+                        : youtubeCookieConfigured
+                          ? 'Configuré'
+                          : 'Absent'}
+                    </Badge>
+                    {youtubeCookieConfigured ? (
+                      <button
+                        type="button"
+                        class="btn is-small is-quiet"
+                        disabled={saving}
+                        onClick={() => void clearYoutubeCookie()}
+                      >
+                        Supprimer le cookie
+                      </button>
+                    ) : null}
+                  </p>
+                </div>
+              </Card>
+            ) : null}
+
             <div class="settings-actions">
               <button class="btn is-primary" type="submit" disabled={!dirty || saving}>
                 {saving ? 'Enregistrement…' : 'Enregistrer les paramètres'}
@@ -503,6 +589,7 @@ export function SettingsScreen() {
                 onClick={() => {
                   setDraft({ ...initial });
                   setCookieText(cookieInitial ?? '');
+                  setYoutubeCookieText(youtubeCookieInitial ?? '');
                 }}
               >
                 Annuler

@@ -1,5 +1,6 @@
 {
   "hasTikTokCookie": false,
+  "hasYouTubeCookie": false,
   "readOnly": {
     "adminDiscordUserIds": 0,
     "adminSecretSet": true,

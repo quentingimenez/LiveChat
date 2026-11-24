@@ -81,6 +81,7 @@ propre à chaque ingestion.
 | `tools.ytdlp_format` | `YTDLP_FORMAT` | sélecteur avc1/mp4 ≤ 1080 |
 | `tools.ytdlp_concurrent_fragments` | `YTDLP_CONCURRENT_FRAGMENTS` | 1 |
 | `tools.tiktok_cookie` | `TIKTOK_COOKIE` | vide |
+| `tools.youtube_cookie` | `YOUTUBE_COOKIE` | vide |
 | `translate.enabled` | `MEDIA_TRANSLATE_ENABLED` | `true` |
 | `translate.endpoint` | `MEDIA_TRANSLATE_ENDPOINT` | gtx Google |
 | `translate.timeout` | `MEDIA_TRANSLATE_TIMEOUT_MS` | 3 s (borné 0,5–10 s) |
@@ -92,11 +93,14 @@ propre à chaque ingestion.
 | `resolve.language` | `I18N` (préfixe `fr`) | `fr` |
 
 Les valeurs invalides retombent sur le défaut avec un `tracing::warn` ; les minimas sont
-forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment). `TIKTOK_COOKIE` est
-normalisé par `sanitize_tiktok_cookie` (task-49, AUD-A4-013) : trim, préfixe
-`cookie:` retiré, refus des valeurs vides ou contenant un caractère de contrôle
-(`\r`, `\n`, `\t`…), plafond 4096 caractères ; la valeur n'est **jamais**
-journalisée (remplacement par défaut + `warn` sans le contenu).
+forcés (1 h de TTL, 1 Mo, 1 ms, 1 ingestion, 1 fragment). `TIKTOK_COOKIE` et
+`YOUTUBE_COOKIE` sont normalisés par `sanitize_tiktok_cookie` /
+`sanitize_youtube_cookie` (task-49, AUD-A4-013) : trim, préfixe `cookie:` retiré,
+refus des valeurs vides ou contenant un caractère de contrôle (`\r`, `\n`, `\t`…),
+plafond 4096 caractères ; la valeur n'est **jamais** journalisée (remplacement par
+défaut + `warn` sans le contenu). Chaque cookie reste lié à son site : le cookie
+YouTube n'est envoyé qu'après un échec d'authentification, jamais pour une vidéo
+publique, et aucun cookie n'est envoyé vers un autre hôte.
 
 ### Garde SSRF/LFI (`guard`)
 

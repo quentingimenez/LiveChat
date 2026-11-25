@@ -1,0 +1,63 @@
+/* Motion table of the board: the one place where every duration and curve of
+ * the interface is declared. The hover preview and the card hover read these
+ * tokens from CSS; the media detail window reads the same tokens from the
+ * computed style through core/detail-motion.js:readMotion().
+ *
+ * Curves, two intents:
+ * - --ease-enter: things that appear. The preview grows out of its card, the
+ *   detail window opens from the card: quick departure, soft landing.
+ * - --ease-move: things that move back into place. The preview closes into
+ *   its card, the detail window returns to the grid row: gentle start,
+ *   settled arrival.
+ *
+ * Durations, and the element that uses each one:
+ * - --motion-reveal: the card's favourite and play buttons appearing
+ *   (styles/board.css, `.fav` and `.play`).
+ * - --motion-card-lift: the card's border, shadow and 1 px lift on hover.
+ * - --motion-card-zoom: the card picture's slight zoom on hover.
+ * - --motion-preview-open: the hover preview's transform, clip-path and
+ *   shadow while it grows out of its card, with the media band, the progress
+ *   bar and the body it pulls along (styles/media-detail.css, `.hp-overlay`
+ *   and its children).
+ * - --motion-preview-close: the same, going back into the card
+ *   (`.hp-overlay.is-out` and its children).
+ * - --motion-detail-open / --motion-detail-close: the media detail window
+ *   opening from its card and returning to it (read by
+ *   views/media-detail.js).
+ * - --motion-backdrop-in: the window's dark, blurred backdrop darkening,
+ *   progressively; --motion-backdrop-lead: how long before the end of the
+ *   opening it starts (hidden before that, still darkening after landing).
+ *
+ * Reduced-motion policy: shorten, never remove, the movement that explains
+ * where things come from. A viewer asking for reduced motion still sees the
+ * preview and the detail window leave and return to their card, only faster;
+ * a plain fade would read as a second card popping over the first one. The
+ * cards' own hover transitions are cut by base.css anyway, so the card tokens
+ * keep their full values. The override is scoped to `:root:not(.force-motion)`
+ * so `html.force-motion`, a debug class the application never sets, keeps the
+ * full values without any rule of its own.
+ */
+:root {
+  --ease-enter: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-move: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-reveal: 100ms;
+  --motion-card-lift: 120ms;
+  --motion-card-zoom: 220ms;
+  --motion-preview-open: 240ms;
+  --motion-preview-close: 150ms;
+  --motion-detail-open: 320ms;
+  --motion-detail-close: 210ms;
+  --motion-backdrop-in: 320ms;
+  --motion-backdrop-lead: 90ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root:not(.force-motion) {
+    --motion-preview-open: 200ms;
+    --motion-preview-close: 120ms;
+    --motion-detail-open: 220ms;
+    --motion-detail-close: 150ms;
+    --motion-backdrop-in: 200ms;
+    --motion-backdrop-lead: 100ms;
+  }
+}

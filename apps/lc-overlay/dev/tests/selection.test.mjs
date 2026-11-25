@@ -4,6 +4,7 @@ import { test } from 'node:test';
 import {
   batches,
   cardClickAction,
+  cardPointerAction,
   copiedLinksSummary,
   deletableIds,
   deleteDialogText,
@@ -109,25 +110,25 @@ const keyState = (overrides = {}) => ({
   handled: false,
   capturing: false,
   dialogOpen: false,
-  drawerOpen: false,
+  detailOpen: false,
   selecting: false,
   ...overrides,
 });
 
-test('escapeAction closes the drawer first, then leaves the selection', () => {
-  assert.equal(escapeAction(keyState({ drawerOpen: true, selecting: true })), 'closeDetail');
+test('escapeAction closes the detail window first, then leaves the selection', () => {
+  assert.equal(escapeAction(keyState({ detailOpen: true, selecting: true })), 'closeDetail');
   assert.equal(escapeAction(keyState({ selecting: true })), 'leaveSelection');
   assert.equal(escapeAction(keyState()), null);
 });
 
 test('escapeAction ignores a key already handled by a context menu', () => {
   assert.equal(escapeAction(keyState({ handled: true, selecting: true })), null);
-  assert.equal(escapeAction(keyState({ handled: true, drawerOpen: true })), null);
+  assert.equal(escapeAction(keyState({ handled: true, detailOpen: true })), null);
 });
 
 test('escapeAction leaves dialogs, shortcut capture and other keys alone', () => {
   assert.equal(escapeAction(keyState({ dialogOpen: true, selecting: true })), null);
-  assert.equal(escapeAction(keyState({ capturing: true, drawerOpen: true })), null);
+  assert.equal(escapeAction(keyState({ capturing: true, detailOpen: true })), null);
   assert.equal(escapeAction(keyState({ key: 'Enter', selecting: true })), null);
 });
 
@@ -143,6 +144,61 @@ test('cardClickAction picks with Ctrl/Cmd even outside the selection mode', () =
   assert.equal(cardClickAction({ selecting: false, shiftKey: false, metaKey: true }), 'pick');
   assert.equal(cardClickAction({ selecting: true, shiftKey: false, ctrlKey: true }), 'toggle');
   assert.equal(cardClickAction({ selecting: true, shiftKey: false, metaKey: true }), 'toggle');
+});
+
+const pointerState = (overrides = {}) => ({
+  selecting: false,
+  clickCount: 1,
+  shiftKey: false,
+  ctrlKey: false,
+  metaKey: false,
+  onControl: false,
+  ...overrides,
+});
+
+test('cardPointerAction treats missing modifier and control flags as off', () => {
+  // The card handlers pass only what the event has: absent flags must not
+  // read as a held Ctrl/Meta key or a click on a control.
+  assert.equal(cardPointerAction({ selecting: false, clickCount: 2, shiftKey: false }), 'details');
+  assert.equal(cardPointerAction({ selecting: false, clickCount: 0 }), 'details');
+});
+
+test('cardPointerAction ignores clicks on a card control', () => {
+  assert.equal(cardPointerAction(pointerState({ onControl: true })), 'none');
+  assert.equal(cardPointerAction(pointerState({ onControl: true, clickCount: 2 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ onControl: true, clickCount: 0 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ onControl: true, selecting: true })), 'none');
+  assert.equal(cardPointerAction(pointerState({ onControl: true, ctrlKey: true })), 'none');
+});
+
+test('cardPointerAction opens the details on a double click or a keyboard click', () => {
+  // A single mouse click does nothing on a card: playing left it for the Play
+  // button and the preview.
+  assert.equal(cardPointerAction(pointerState()), 'none');
+  assert.equal(cardPointerAction(pointerState({ clickCount: 2 })), 'details');
+  // Enter or Space on the thumbnail is a click without a count.
+  assert.equal(cardPointerAction(pointerState({ clickCount: 0 })), 'details');
+  // A triple click is not a new double click.
+  assert.equal(cardPointerAction(pointerState({ clickCount: 3 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ shiftKey: true })), 'none');
+  assert.equal(cardPointerAction(pointerState({ shiftKey: true, clickCount: 2 })), 'details');
+});
+
+test('cardPointerAction keeps the selection gestures in the selection mode', () => {
+  assert.equal(cardPointerAction(pointerState({ selecting: true })), 'toggle');
+  assert.equal(cardPointerAction(pointerState({ selecting: true, shiftKey: true })), 'range');
+  assert.equal(cardPointerAction(pointerState({ selecting: true, ctrlKey: true })), 'toggle');
+  assert.equal(cardPointerAction(pointerState({ selecting: true, clickCount: 0 })), 'toggle');
+  // The second click of a double click does not toggle a second time.
+  assert.equal(cardPointerAction(pointerState({ selecting: true, clickCount: 2 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ selecting: true, shiftKey: true, clickCount: 2 })), 'none');
+});
+
+test('cardPointerAction picks with Ctrl/Cmd outside the selection mode', () => {
+  assert.equal(cardPointerAction(pointerState({ ctrlKey: true })), 'pick');
+  assert.equal(cardPointerAction(pointerState({ metaKey: true })), 'pick');
+  assert.equal(cardPointerAction(pointerState({ ctrlKey: true, clickCount: 2 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ metaKey: true, clickCount: 2 })), 'none');
 });
 
 test('menuTargetIds acts on the whole selection only from a picked card', () => {

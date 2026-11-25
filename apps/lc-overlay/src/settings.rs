@@ -51,8 +51,8 @@ pub struct SettingsView {
     /// Every media plays without sound.
     pub media_muted: bool,
     pub show_text: bool,
-    /// A board card shows its details when the pointer stays on it.
-    pub hover_details: bool,
+    /// A board card shows its preview when the pointer stays on it.
+    pub hover_preview: bool,
     pub auto_start: bool,
     pub shortcuts: ShortcutSettings,
     pub layout: OverlayLayout,
@@ -192,7 +192,7 @@ pub fn build_settings_view(
         general_mute: !config.enabled,
         media_muted: config.media_muted,
         show_text: config.show_text,
-        hover_details: config.hover_details,
+        hover_preview: config.hover_preview,
         auto_start,
         shortcuts: config.shortcuts.clone(),
         layout: config.layout.clone(),
@@ -593,8 +593,8 @@ pub fn apply_settings_patch(
     if let Some(show_text) = bool_value(object, "showText")? {
         config.show_text = show_text;
     }
-    if let Some(hover_details) = bool_value(object, "hoverDetails")? {
-        config.hover_details = hover_details;
+    if let Some(hover_preview) = bool_value(object, "hoverPreview")? {
+        config.hover_preview = hover_preview;
     }
     if let Some(auto_start) = bool_value(object, "autoStart")? {
         config.auto_start = auto_start;
@@ -716,33 +716,42 @@ mod tests {
     }
 
     #[test]
-    fn settings_set_round_trips_hover_details_from_an_old_config() {
+    fn settings_set_round_trips_hover_preview_from_an_old_config() {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.6 }));
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
-        assert!(!config.hover_details, "hover previews start off");
+        assert!(config.hover_preview, "the hover preview is on by default");
 
         let view = build_settings_view(&config, &sample_displays(), Some(0), true, idle_update());
         let value = serde_json::to_value(view).expect("serializable view");
-        assert_eq!(value["hoverDetails"], json!(false));
+        assert_eq!(value["hoverPreview"], json!(true));
 
         let patched = apply_settings_patch(
             &config,
-            &json!({ "hoverDetails": true }),
+            &json!({ "hoverPreview": false }),
             &sample_displays(),
         )
         .expect("valid payload");
-        assert!(patched.hover_details);
+        assert!(!patched.hover_preview);
         let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
         let value = serde_json::to_value(view).expect("serializable view");
-        assert_eq!(value["hoverDetails"], json!(true));
+        assert_eq!(value["hoverPreview"], json!(false));
+
+        // The old key is dropped: it no longer drives the setting.
+        let legacy = apply_settings_patch(
+            &config,
+            &json!({ "hoverDetails": false }),
+            &sample_displays(),
+        )
+        .expect("unknown keys are ignored");
+        assert!(legacy.hover_preview);
 
         let error = apply_settings_patch(
             &config,
-            &json!({ "hoverDetails": "off" }),
+            &json!({ "hoverPreview": "off" }),
             &sample_displays(),
         )
         .expect_err("boolean only");
-        assert_eq!(error.field, "hoverDetails");
+        assert_eq!(error.field, "hoverPreview");
     }
 
     #[test]

@@ -6,7 +6,7 @@ import { fitSingleLineDescriptions } from '../core/measure.js';
 import { boardScrollToKeep } from '../core/scroll-memory.js';
 import { state } from '../core/state.js';
 import { renderAdmin } from './admin.js';
-import { renderBoard } from './board.js';
+import { closeDetail, renderBoard } from './board.js';
 import { openJoinDialog } from './join.js';
 import { renderGuildSettings } from './guild-settings.js';
 import { renderQueue } from './queue.js';
@@ -14,6 +14,13 @@ import { renderSettings } from './settings.js';
 
 export function renderView() {
   const view = document.getElementById('view');
+  // The media detail window is appended to the window, not to the view: it
+  // must not stay over another tab. Leaving the board closes it (the board's
+  // own refreshes keep it open and only refresh its information column).
+  const showsBoard = state.page !== 'settings' && Boolean(state.activeGuildId) && state.tab === 'board';
+  if (!showsBoard) {
+    closeDetail();
+  }
   // The board is repainted often (selection mode, refresh, filters). WebView2
   // may clamp the scroller back to the top while its children are replaced, so
   // the position is saved around the swap and put back once the new content is

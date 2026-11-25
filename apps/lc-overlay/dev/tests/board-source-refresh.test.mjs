@@ -31,6 +31,18 @@ function balancedBlock(source, marker, openChar, closeChar) {
       }
       continue;
     }
+    // An apostrophe in a comment is not a string opener (“Another guild's
+    // board…” would swallow the rest of the function).
+    if (char === '/' && source[index + 1] === '/') {
+      const end = source.indexOf('\n', index);
+      index = end === -1 ? source.length : end;
+      continue;
+    }
+    if (char === '/' && source[index + 1] === '*') {
+      const end = source.indexOf('*/', index + 2);
+      index = end === -1 ? source.length : end + 1;
+      continue;
+    }
     if (char === '"' || char === "'" || char === '`') {
       quote = char;
     } else if (char === openChar) {

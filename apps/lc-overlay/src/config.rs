@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 23] = [
+const KNOWN_KEYS: [&str; 24] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -41,6 +41,8 @@ const KNOWN_KEYS: [&str; 23] = [
     "guestMode",
     "showText",
     "mediaMuted",
+    "hoverPreview",
+    // Replaced by hoverPreview: never read, never written back.
     "hoverDetails",
     "serverUrl",
     "clientToken",
@@ -284,8 +286,8 @@ pub struct OverlayConfig {
     pub show_text: bool,
     /// Every media is still shown, without its sound.
     pub media_muted: bool,
-    /// A board card shows its details when the pointer stays on it.
-    pub hover_details: bool,
+    /// A board card shows its preview when the pointer stays on it.
+    pub hover_preview: bool,
     pub server_url: Option<String>,
     pub client_token: Option<String>,
     pub client_id: Option<String>,
@@ -323,8 +325,8 @@ impl Default for OverlayConfig {
             guest_mode: false,
             show_text: true,
             media_muted: false,
-            // Clicking a card is the default: the hover preview is opt-in.
-            hover_details: false,
+            // On by default: the preview opens unless the device turns it off.
+            hover_preview: true,
             server_url: None,
             client_token: None,
             client_id: None,
@@ -389,7 +391,7 @@ impl OverlayConfig {
             .is_some_and(|value| value == &Value::Bool(true));
         config.show_text = bool_field(map, "showText", true, &mut warnings);
         config.media_muted = bool_field(map, "mediaMuted", false, &mut warnings);
-        config.hover_details = bool_field(map, "hoverDetails", false, &mut warnings);
+        config.hover_preview = bool_field(map, "hoverPreview", true, &mut warnings);
         config.server_url = string_field(map, "serverUrl", &mut warnings);
         config.client_token = string_field(map, "clientToken", &mut warnings);
         config.client_id = string_field(map, "clientId", &mut warnings);
@@ -1064,7 +1066,7 @@ mod tests {
         assert!(!config.auto_start);
         assert!(!config.guest_mode);
         assert!(config.show_text);
-        assert!(!config.hover_details);
+        assert!(config.hover_preview);
         assert_eq!(config.display_id, None);
         assert_eq!(config.display_index, None);
         assert_eq!(config.display_key, None);
@@ -1092,19 +1094,39 @@ mod tests {
     }
 
     #[test]
-    fn an_old_settings_json_without_hover_details_loads_with_it_disabled() {
+    fn a_settings_json_without_hover_preview_loads_with_it_enabled() {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({
             "volume": 0.5,
             "showText": false,
             "shortcuts": { "stop": "Ctrl+Shift+S" }
         }));
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
-        assert!(!config.hover_details, "missing field defaults to false");
+        assert!(config.hover_preview, "missing field defaults to true");
         assert!(!config.show_text);
         assert!(
-            !config.extra.contains_key("hoverDetails"),
+            !config.extra.contains_key("hoverPreview"),
             "a known field is not kept as an unknown extra"
         );
+    }
+
+    #[test]
+    fn an_old_hover_details_key_is_ignored_and_dropped() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "hoverDetails": false,
+            "volume": 0.5
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(config.hover_preview, "the old key is never read");
+        assert!(
+            !config.extra.contains_key("hoverDetails"),
+            "the old key is not kept as an unknown extra"
+        );
+        let saved = serde_json::to_value(&config).expect("serializable config");
+        assert!(
+            saved.get("hoverDetails").is_none(),
+            "the old key is not written back"
+        );
+        assert_eq!(saved["hoverPreview"], json!(true));
     }
 
     #[test]
@@ -1249,7 +1271,7 @@ mod tests {
         assert!(!config.auto_start);
         assert!(!config.guest_mode);
         assert!(config.show_text);
-        assert!(!config.hover_details);
+        assert!(config.hover_preview);
         assert_eq!(config.display_id, None);
         assert_eq!(config.server_url, None);
         assert!(warnings.len() >= 5, "warnings: {warnings:?}");

@@ -9,7 +9,6 @@
 import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
-import { AUDIO_RATIO, cardStyle, DEFAULT_RATIO } from '../core/masonry.js';
 import { ERROR_LABELS, state } from '../core/state.js';
 import { notify } from '../core/toast.js';
 import {
@@ -837,8 +836,9 @@ function uploadStateNode(entry) {
   return h('div', { class: 'upload-state', 'aria-live': 'polite' }, label);
 }
 
-// Same size and structure as a normal card (thumbnail + title) so the grid
-// does not move when the provisional card is replaced by the real one.
+// Same regular card anatomy as a normal card (framed surface, 16 / 10
+// thumbnail, body) so the grid does not move when the provisional card is
+// replaced by the real one.
 export function renderUploadCard(entry) {
   const title = uploadTitle(entry);
   return h(
@@ -847,8 +847,6 @@ export function renderUploadCard(entry) {
       class: 'card is-upload',
       'data-upload-id': entry.id,
       'data-guild-id': entry.guildId,
-      // The media's size is only known once converted: a default shape.
-      style: cardStyle(uploadKind(entry) === 'audio' ? AUDIO_RATIO : DEFAULT_RATIO),
     },
     h(
       'div',
@@ -860,7 +858,7 @@ export function renderUploadCard(entry) {
         uploadStateNode(entry),
       ),
     ),
-    h('p', { class: 'card-title', title }, title),
+    h('div', { class: 'card-body' }, h('p', { class: 'card-title', title }, title)),
   );
 }
 

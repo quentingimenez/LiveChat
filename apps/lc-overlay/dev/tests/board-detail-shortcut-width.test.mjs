@@ -1,4 +1,4 @@
-// The media detail drawer puts « Légende » and « Raccourci » in the same facts
+// The media detail window puts « Légende » and « Raccourci » in the same facts
 // grid. The caption button fills the value column. For the shortcut, the whole
 // framed key must be the edit button: the key text and the pencil sit inside a
 // single frame, and the clear cross sits outside it, to the right. The old
@@ -9,12 +9,13 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
 const css = readFileSync(new URL('../../web/app/styles/board.css', import.meta.url), 'utf8');
+const detailCss = readFileSync(new URL('../../web/app/styles/media-detail.css', import.meta.url), 'utf8');
 const view = readFileSync(new URL('../../web/app/views/board.js', import.meta.url), 'utf8');
 
-function ruleOf(selector) {
+function ruleIn(source, selector) {
   const rule = /([^{}]+)\{([^{}]*)\}/g;
   let match;
-  while ((match = rule.exec(css)) !== null) {
+  while ((match = rule.exec(source)) !== null) {
     const selectors = match[1]
       .replace(/\/\*[\s\S]*?\*\//g, '')
       .split(',')
@@ -24,6 +25,10 @@ function ruleOf(selector) {
     }
   }
   return '';
+}
+
+function ruleOf(selector) {
+  return ruleIn(css, selector);
 }
 
 test('the shortcut cell lays the key and the clear button side by side', () => {
@@ -70,9 +75,24 @@ test('the whole key is the edit button and the cross stays a sibling', () => {
   assert.match(view, /class: 'btn is-quiet shortcut-clear'/);
 });
 
-test('the detail body reserves the scrollbar and the capture hint stays on one line', () => {
-  const body = ruleOf('.detail-body');
-  assert.match(body, /scrollbar-gutter:\s*stable/);
+test('the shortcut row holds only the key, without the AltGr hint', () => {
+  // The AltGr explanation stays in the settings page, not in the detail window.
+  assert.doesNotMatch(view, /ALTGR_HINT/);
+  assert.doesNotMatch(view, /shortcut-hint/);
+  assert.doesNotMatch(css, /\.shortcut-hint\b/, 'no rule left for a removed element');
+  const cell = ruleOf('.shortcut-cell');
+  assert.match(cell, /display:\s*flex/);
+});
+
+test('the information column scrolls on its own, so the stage stays in place', () => {
+  const page = ruleIn(detailCss, '.hp-page');
+  assert.match(page, /overflow:\s*hidden/);
+  const info = ruleIn(detailCss, '.hp-page-info');
+  assert.match(info, /overflow-y:\s*auto/);
+  assert.match(info, /scrollbar-gutter:\s*stable/);
+});
+
+test('the detail window keeps the capture hint on one line', () => {
   const capturing = ruleOf('.shortcut-key.is-capturing');
   assert.match(capturing, /white-space:\s*nowrap/);
   assert.match(capturing, /font-size:\s*12px/);

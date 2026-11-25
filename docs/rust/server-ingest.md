@@ -132,11 +132,13 @@ Authentification **avant** toute validation de corps, comme le legacy.
 | corps JSON illisible | 400 | `{"error":"invalid_payload"}` (après l'auth, AUD-A2-009) |
 | aucun client actif / base absente | 503 | `{"error":"ingest_api_disabled"}` |
 | token absent, invalide ou révoqué | 401 | `{"error":"unauthorized"}` |
+| token expiré (180 j sans activité) | 401 | `{"error":"ingest_token_expired"}` |
 | `guildId` ≠ guilde du client | 403 | `{"error":"guild_mismatch"}` |
 | `authorName`/`authorImage` fournis | 400 | `{"error":"invalid_payload","message":"authorName/authorImage are token-bound for ingest clients"}` |
 | ni `url`/`media` ni `text` | 400 | `{"error":"invalid_payload"}` |
 | `saveToBoard` sans `url`/`media` | 400 | `{"error":"invalid_payload","message":"saveToBoard requires a resolvable media source"}` |
 | ingestion média en échec | 422 | `{"error":"media_ingestion_failed","code":<CODE>,"message":…}` |
+| ingestion au-delà du budget `/ingest` | 504 | `{"error":"ingest_timeout","message":…}` |
 | `saveToBoard` réussi | 201 | `{"accepted":true,"savedToBoard":true,"created":bool,"guildId","mediaBoardItemId","mediaAssetId"}` |
 | job créé | 201 | `{"accepted":true,"jobId","guildId","hasMedia":bool,"hasText":bool}` |
 | erreur interne (base) | 500 | `{"error":"internal_error"}` |
@@ -172,6 +174,54 @@ du média reprend le texte du commentaire. L'API tierce reste un point de
 défaillance : si le commentaire n'est pas retrouvé ou si l'API limite/échoue, le
 pipeline retombe sur la vidéo TikTok d'origine, sans échec d'ingestion ; si le
 média lui-même est indisponible, la carte reste une image PNG statique.
+
+### `GET /ingest/whoami`
+
+Vérifie un token seul, sans rien ingérer : c'est le contrôle à utiliser quand un
+client (Raccourci iOS, extension) n'affiche pas le statut de `POST /ingest`.
+
+| Cas | Statut | Corps |
+| --- | --- | --- |
+| token valide | 200 | `{"ok":true,"clientId":"<uuid>","label":"<libellé>","guildId":"<id>"}` |
+| token absent, invalide ou révoqué | 401 | `{"error":"unauthorized"}` |
+| token expiré (180 j sans activité) | 401 | `{"error":"ingest_token_expired"}` |
+| aucun client actif / base absente | 503 | `{"error":"ingest_api_disabled"}` |
+| erreur interne (base) | 500 | `{"error":"internal_error"}` |
+
+Les statuts et codes sont **exactement** ceux de `POST /ingest` : le mapping
+`auth::resolve` → réponse est commun (`auth::require_client`), donc un `401` ici
+signifie le même `401` sur l'envoi. La route ne demande ni membre propriétaire ni
+droit `extension.send`, ne télécharge rien et n'écrit aucun job ; elle rafraîchit
+seulement le heartbeat `last_seen_at` du client, comme une ingestion. `label` et
+`guildId` permettent de vérifier *quel* appairage un raccourci utilise.
+
+### Timeout d'une requête `/ingest`
+
+Les routes `/ingest` et `/ingest/*` **ne sont plus exemptées** du timeout HTTP :
+elles reçoivent un budget propre, dérivé du média et jamais infini.
+
+| Portée | Budget | Dépassement |
+| --- | --- | --- |
+| `/ingest`, `/ingest/*` (JSON, fichier, whoami) | `MEDIA_INGEST_TIMEOUT_MS` + `INGEST_TIMEOUT_GRACE` = 300 s par défaut | `504 {"error":"ingest_timeout","message":…}` |
+| reste de l'API (admin, board, config, pairing, health) | `REQUEST_TIMEOUT` = 30 s | `408 {"error":"request_timeout"}` |
+| `/ws`, `/overlay/media/`, `/overlay/media-board/media/`, `PUT .../uploads/<id>/parts` | aucun | — |
+
+La marge de 60 s couvre ce qui entoure le pipeline média et n'a pas de budget
+propre : résolution du lien court (8 s), validation de la source, cache
+d'assets, quotas, création du job et notification de lecture. Le timeout couvre
+aussi la **lecture du corps** (les extracteurs axum s'exécutent dans le futur du
+handler), donc un client lent est interrompu.
+
+Chaque étape garde par ailleurs sa propre borne, indépendante de la requête :
+résolution DNS du confinement 5 s (`lc_media::guard::DNS_TIMEOUT`), lien court
+8 s (`SHORT_URL_RESOLVE_TIMEOUT`), téléchargement 180 s
+(`MEDIA_DOWNLOAD_TIMEOUT_MS`), pipeline 240 s, notification du hook 5 s
+(`media::hook::NOTIFY_TIMEOUT`, le job reste `PENDING` et sera joué au tick
+suivant).
+
+Un dépassement annule le handler : un asset resté `PROCESSING` devient candidat
+de la purge runtime (`media_assets::list_stale_purge_candidates`) et aucun
+`PlaybackJob` n'est créé.
 
 ## 4. Authentification
 
@@ -375,7 +425,7 @@ client a au plus 8 sessions ouvertes. Le répertoire temporaire passe dans la
 tâche asynchrone à la complétion et est supprimé à sa fin, succès ou échec
 (garde RAII). La limite globale `DefaultBodyLimit` de 1 Mio ne s'applique pas
 aux parties (`Body`, pas `Bytes`) ; seules les parties sont exemptées du
-timeout global (`app::is_timeout_exempt`).
+timeout global (`app::timeout_scope`).
 
 Limites et erreurs synchrones :
 

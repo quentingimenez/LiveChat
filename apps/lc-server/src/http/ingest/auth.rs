@@ -12,13 +12,16 @@
 //! absente.
 
 use axum::http::header::AUTHORIZATION;
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
 use lc_db::Db;
 use lc_domain::entities::IngestClient;
 
 use crate::app::AppState;
 use crate::media::errors::MediaServiceResult;
 use crate::media::tokens::hash_ingest_token;
+
+use super::{expired_token_error, media_service_error, simple_error};
 
 /// Résultat de la résolution d'authentification.
 #[derive(Debug)]
@@ -103,6 +106,33 @@ pub async fn resolve(state: &AppState, headers: &HeaderMap) -> MediaServiceResul
         None => Ok(IngestAuth::Missing {
             enabled: client_is_enabled(db).await?,
         }),
+    }
+}
+
+/// Résout le client d'ingestion d'une requête, ou la réponse d'erreur à
+/// renvoyer.
+///
+/// Centralise le mapping [`IngestAuth`] → réponse pour que `POST /ingest`,
+/// `POST /ingest/file` et `GET /ingest/whoami` répondent exactement le même
+/// statut et le même code à un jeton inconnu (`401 unauthorized`), expiré
+/// (`401 ingest_token_expired`) ou à une ingestion désactivée
+/// (`503 ingest_api_disabled`). Un client authentifié a déjà vu son
+/// `last_seen_at` rafraîchi par [`resolve`].
+pub async fn require_client(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<IngestClient, Response> {
+    match resolve(state, headers).await {
+        Ok(IngestAuth::Client(client)) => Ok(client),
+        Ok(IngestAuth::Expired) => Err(expired_token_error()),
+        Ok(IngestAuth::Missing { enabled: true }) => {
+            Err(simple_error(StatusCode::UNAUTHORIZED, "unauthorized"))
+        }
+        Ok(IngestAuth::Missing { enabled: false }) => Err(simple_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ingest_api_disabled",
+        )),
+        Err(error) => Err(media_service_error(error)),
     }
 }
 

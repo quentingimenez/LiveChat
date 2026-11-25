@@ -43,11 +43,9 @@ use crate::app::AppState;
 use crate::http::error::ApiError;
 use crate::media::MediaService;
 
-use super::auth::{self, IngestAuth};
+use super::auth;
 use super::submit::{finish_ingest, owning_member, resolved_author, IngestOutcome};
-use super::{
-    expired_token_error, internal_error, invalid_payload, media_service_error, simple_error,
-};
+use super::{internal_error, invalid_payload, media_service_error, simple_error};
 
 /// Nom de repli quand ni la query ni `Content-Disposition` ne fournissent de nom.
 const DEFAULT_UPLOAD_FILENAME: &str = "upload";
@@ -193,20 +191,7 @@ async fn authorize(
     db: &lc_db::Db,
     headers: &HeaderMap,
 ) -> Result<(IngestClient, GuildMember), Response> {
-    let client = match auth::resolve(state, headers).await {
-        Ok(IngestAuth::Client(client)) => client,
-        Ok(IngestAuth::Expired) => return Err(expired_token_error()),
-        Ok(IngestAuth::Missing { enabled: true }) => {
-            return Err(simple_error(StatusCode::UNAUTHORIZED, "unauthorized"));
-        }
-        Ok(IngestAuth::Missing { enabled: false }) => {
-            return Err(simple_error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "ingest_api_disabled",
-            ));
-        }
-        Err(error) => return Err(media_service_error(error)),
-    };
+    let client = auth::require_client(state, headers).await?;
 
     let member = match owning_member(db, &client).await {
         Ok(Some(member)) => member,

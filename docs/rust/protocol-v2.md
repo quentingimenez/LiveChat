@@ -1176,7 +1176,9 @@ Décisions appliquées par la rév. 4, sans rupture de structure :
 6. **Timeout HTTP** : diff hors protocole WS ; exemptions resserrées sur les routes réellement
    *streaming* : `/ws` (exact), `/ingest` (exact/méthodes d'upload), préfixes `/overlay/media/` et
    `/overlay/media-board/media/` ; le reste de l'API reçoit `408 request_timeout` à 30 s — voir
-   `docs/rust/server-ws.md` §12.
+   `docs/rust/server-ws.md` §12. Depuis, `/ingest` n'est plus exemptée : elle garde un budget
+   propre de `MEDIA_INGEST_TIMEOUT_MS + 60 s` (`504 ingest_timeout`), cf.
+   `docs/rust/server-ingest.md` §3.
 
 Aucun point ouvert protocole : les 5 points (a)–(e) de la rév. 1 sont soldés par §15.1–§15.5, le
 durcissement COR-06/07 est acté par §15.6 et la dette P2-A par §15.7.

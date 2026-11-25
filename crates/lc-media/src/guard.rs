@@ -20,7 +20,9 @@
 //! [`MediaErrorCode::UnsupportedSource`] (source refusée par la politique) ou
 //! [`MediaErrorCode::DownloadFailed`] (résolution réseau impossible).
 
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
 
 use reqwest::Client;
 use url::{Host, Url};
@@ -30,6 +32,16 @@ use crate::error::{MediaError, MediaErrorCode, MediaResult};
 
 /// Nombre maximal de redirections suivies pour une même requête.
 pub const MAX_REDIRECTS: usize = 3;
+
+/// Délai maximal de résolution DNS d'une cible média.
+///
+/// `tokio::net::lookup_host` délègue à `getaddrinfo` du système, qui n'a pas de
+/// budget propre : un résolveur muet bloquait `validate_target` — et donc toute
+/// l'ingestion, y compris la résolution du lien court TikTok exécutée hors du
+/// budget média — jusqu'à ce que l'OS abandonne. Ce plafond borne l'étape :
+/// au-delà, la cible est refusée avec `DownloadFailed` et la requête se
+/// termine au lieu d'attendre indéfiniment.
+pub const DNS_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Taille maximale d'un corps texte lu par le client HTTP gardé.
 pub const MAX_TEXT_RESPONSE_BYTES: u64 = 4 * 1024 * 1024;
@@ -251,19 +263,15 @@ pub async fn validate_target(raw: &str) -> MediaResult<ValidatedTarget> {
 }
 
 /// Résout les adresses IP d'un hôte (nom de domaine ou IP littérale).
+///
+/// Une IP littérale ne déclenche aucune résolution ; un nom de domaine est
+/// borné par [`DNS_TIMEOUT`] pour qu'une résolution muette ne bloque pas la
+/// requête d'ingestion.
 async fn resolve_host(host: &str, port: u16) -> MediaResult<Vec<IpAddr>> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(vec![ip]);
     }
-    let resolved = tokio::net::lookup_host((host, port))
-        .await
-        .map_err(|error| {
-            MediaError::with_raw(
-                MediaErrorCode::DownloadFailed,
-                format!("résolution DNS impossible pour l'hôte {host} : {error}"),
-                error.to_string(),
-            )
-        })?;
+    let resolved = resolve_within(host, DNS_TIMEOUT, tokio::net::lookup_host((host, port))).await?;
     let addrs: Vec<IpAddr> = resolved.map(|addr| addr.ip()).collect();
     if addrs.is_empty() {
         return Err(MediaError::new(
@@ -272,6 +280,30 @@ async fn resolve_host(host: &str, port: u16) -> MediaResult<Vec<IpAddr>> {
         ));
     }
     Ok(addrs)
+}
+
+/// Applique un budget à une résolution DNS.
+///
+/// À l'échéance, le futur est annulé : la résolution peut continuer côté
+/// runtime, mais la requête ne l'attend plus et reçoit une erreur exploitable
+/// plutôt qu'aucune réponse.
+async fn resolve_within<I>(
+    host: &str,
+    budget: Duration,
+    future: impl Future<Output = std::io::Result<I>>,
+) -> MediaResult<I> {
+    match tokio::time::timeout(budget, future).await {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Err(MediaError::with_raw(
+            MediaErrorCode::DownloadFailed,
+            format!("résolution DNS impossible pour l'hôte {host} : {error}"),
+            error.to_string(),
+        )),
+        Err(_) => Err(MediaError::new(
+            MediaErrorCode::DownloadFailed,
+            format!("résolution DNS trop lente pour l'hôte {host}"),
+        )),
+    }
 }
 
 /// Construit un client HTTP épinglé sur les adresses IP validées.
@@ -557,5 +589,52 @@ mod tests {
             .expect("the reachable address must be used");
         assert_eq!(response.status(), reqwest::StatusCode::OK);
         server.await.expect("server");
+    }
+
+    /// Une résolution DNS qui ne rend jamais la main doit être coupée par
+    /// [`DNS_TIMEOUT`], pas attendue indéfiniment : c'est ce blocage qui
+    /// laissait une requête `/ingest` sans réponse.
+    #[tokio::test]
+    async fn dns_resolution_is_bounded() {
+        let started = std::time::Instant::now();
+        let error = resolve_within(
+            "resolver.muet",
+            Duration::from_millis(20),
+            std::future::pending::<std::io::Result<Vec<SocketAddr>>>(),
+        )
+        .await
+        .expect_err("une résolution muette doit expirer");
+        assert_eq!(error.code(), MediaErrorCode::DownloadFailed);
+        assert!(
+            error.message().contains("résolution DNS trop lente"),
+            "{}",
+            error.message()
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "le budget doit couper l'attente (mesuré {:?})",
+            started.elapsed()
+        );
+    }
+
+    /// Un échec système de résolution garde son message (`impossible`) et ne
+    /// devient pas un timeout : le diagnostic doit distinguer les deux.
+    #[tokio::test]
+    async fn dns_failure_keeps_its_own_diagnostic() {
+        let error = resolve_within("hote.invalide", Duration::from_secs(5), async {
+            Err::<Vec<SocketAddr>, std::io::Error>(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "nom d'hôte inconnu",
+            ))
+        })
+        .await
+        .expect_err("une erreur système doit être remontée");
+        assert_eq!(error.code(), MediaErrorCode::DownloadFailed);
+        assert!(
+            error.message().contains("résolution DNS impossible"),
+            "{}",
+            error.message()
+        );
+        assert!(error.message().contains("nom d'hôte inconnu"));
     }
 }

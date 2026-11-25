@@ -109,3 +109,19 @@ test('the strip above the stuck head matches the view top padding', () => {
   assert.equal(/height:\s*(\d+)px/.exec(mask)?.[1], padTop, 'the strip covers the view padding');
   assert.match(mask, /background:\s*var\(--slate-800\)/, 'the strip uses the view colour');
 });
+
+test('the strip stays under the toolbar so the focus ring above the head is whole', () => {
+  const css = read('styles/board.css');
+  const head = ruleOf(css, '.board-head');
+  const mask = ruleOf(css, '.board-head::before');
+
+  assert.ok(head, 'the head rule must exist');
+  assert.ok(mask, 'the mask rule must exist');
+  assert.match(head, /z-index:\s*\d+/, 'the head needs its own stacking context for a negative child');
+  // The search field sits on the head's top edge; the 2px focus ring drawn 2px
+  // outside its box rises 4px above the head, exactly under the strip. Left at
+  // its natural level, the positioned strip paints over the ring and hides its
+  // top side (user report: "la border bleu est coupé au dessus"). The strip
+  // must keep masking the cards while painting below the head's controls.
+  assert.match(mask, /z-index:\s*-1\b/, 'the strip must paint below the toolbar, not over its focus rings');
+});

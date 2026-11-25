@@ -127,9 +127,12 @@ async fn composes_a_tweet_video_into_the_card() {
     assert_eq!(slot.height % 2, 0);
 }
 
+/// A vertical video makes the card taller than the maximum height: the card
+/// is reduced while it is assembled, so the normalization only copies the
+/// video stream (no second encode) and the AAC track is kept as it is.
 #[tokio::test]
 #[ignore = "nécessite ffmpeg installé"]
-async fn composes_a_vertical_tweet_video_without_cropping() {
+async fn composes_a_tall_card_ready_for_a_stream_copy() {
     let temp = tempfile::TempDir::new().unwrap();
     let config = config(temp.path());
     let clip = sample_video(&config, temp.path());
@@ -137,9 +140,34 @@ async fn composes_a_vertical_tweet_video_without_cropping() {
     let output = compose_tweet_card_video(&config, temp.path(), &card, Some(&clip), None)
         .await
         .unwrap();
-    let (_, stream) = probe(&config.tools.ffmpeg, &output);
+
+    let probed = lc_media::probe::probe(
+        &config.tools.ffprobe,
+        &output,
+        std::time::Duration::from_secs(30),
+    )
+    .await
+    .unwrap();
+    let height = probed.height.expect("hauteur");
+    let width = probed.width.expect("largeur");
+    assert!(height <= config.video.max_height, "{width}x{height}");
+    assert!(height > config.video.max_height - 2, "{width}x{height}");
     assert!(
-        stream.contains("1080x"),
-        "largeur de carte absente du flux : {stream}"
+        width < 1080,
+        "la carte haute doit être réduite : {width}x{height}"
+    );
+    assert_eq!((width % 2, height % 2), (0, 0));
+    assert_eq!(probed.audio_codec.as_deref(), Some("aac"));
+    let duration = probed.duration_sec.expect("durée");
+    assert!(
+        (duration - 4.0).abs() < 0.2,
+        "durée inattendue : {duration}"
+    );
+    assert!(
+        matches!(
+            lc_media::transcode::plan_video(&probed, &config.video, false),
+            lc_media::transcode::VideoPlan::CopyVideo { .. }
+        ),
+        "la normalisation doit copier le flux vidéo"
     );
 }

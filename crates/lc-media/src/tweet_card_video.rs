@@ -4,22 +4,45 @@
 //! fond : chaque flux vidéo est incrusté dans la zone arrondie réservée par
 //! [`crate::tweet_card::render_tweet_card_with_slots`], puis l'ensemble est
 //! encodé en MP4 (H.264/AAC) pour que l'overlay le lise comme n'importe quelle
-//! vidéo.
+//! vidéo. La carte de commentaire TikTok passe par le même assemblage.
 //!
 //! La durée du fichier est celle de la vidéo du tweet parent ; une vidéo citée
 //! plus courte laisse sa zone revenir au fond sombre de la carte, et une vidéo
 //! citée seule fixe la durée.
+//!
+//! ## Coût
+//!
+//! Une carte de commentaire sur une vidéo de 97 s prenait 55 s à assembler sur
+//! le serveur, puis la normalisation réencodait toute la vidéo pour la ramener
+//! à `MEDIA_VIDEO_MAX_HEIGHT`. L'assemblage produit donc directement le flux
+//! final :
+//!
+//! - la carte est réduite à la hauteur maximale **avant** l'incrustation (une
+//!   carte de 1080 × 1900 devient 614 × 1080, trois fois moins de pixels à
+//!   incruster), et la normalisation copie ensuite le flux vidéo sans le
+//!   réencoder ([`crate::transcode::VideoPlan::CopyVideo`]) ;
+//! - le fond PNG est décodé et converti en YUV une seule fois, puis répété par
+//!   le filtre `loop` (une entrée `-loop 1` le décodait à chaque image) ;
+//! - l'incrustation se fait en YUV (`yuva420p`), sans aller-retour RGB ;
+//! - une piste AAC est copiée : la normalisation l'encode de toute façon pour
+//!   régler son volume, et l'encoder ici coûtait autant que tout le reste.
+//!
+//! Résultat mesuré sur le serveur, même carte : 11,5 s au lieu de 55 s.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::config::MediaConfig;
 use crate::error::{MediaError, MediaErrorCode, MediaResult};
+use crate::probe;
 use crate::process;
 use crate::tweet_card::{build_video_mask_png, CardVideoSlot, CardVideoTarget, RenderedCard};
 
-/// Débit de la piste audio conservée (identique aux autres assemblages).
+/// Débit de la piste audio quand elle doit être encodée.
 const AUDIO_BITRATE: &str = "192k";
+
+/// Cadence du fichier assemblé.
+const FRAME_RATE: u32 = 30;
 
 /// Zone vidéo à incruster dans la carte.
 #[derive(Clone, Debug)]
@@ -28,10 +51,107 @@ struct CompositeSlot {
     video: PathBuf,
     /// Masque PNG (blanc opaque dans la zone visible, noir ailleurs).
     mask: PathBuf,
-    /// Géométrie de la zone dans la carte.
+    /// Géométrie de la zone dans la carte, déjà à l'échelle de la sortie.
     slot: CardVideoSlot,
     /// Dernière zone incrustée : elle fixe la durée du fichier.
     primary: bool,
+}
+
+/// Piste audio de la vidéo principale.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompositeAudio {
+    /// Piste AAC : copiée telle quelle dans le MP4.
+    Copy,
+    /// Autre codec, ou sonde impossible : encodée en AAC.
+    Encode,
+}
+
+impl CompositeAudio {
+    /// Copie une piste AAC, encode tout autre codec (ou une piste inconnue).
+    fn for_codec(codec: Option<&str>) -> Self {
+        if codec == Some("aac") {
+            Self::Copy
+        } else {
+            Self::Encode
+        }
+    }
+}
+
+/// Taille de la sortie et facteur appliqué à la carte.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CompositeLayout {
+    /// Largeur de la carte PNG.
+    card_width: u32,
+    /// Hauteur de la carte PNG.
+    card_height: u32,
+    /// Largeur du fichier produit (paire).
+    width: u32,
+    /// Hauteur du fichier produit (paire, au plus la hauteur maximale).
+    height: u32,
+    /// Facteur de réduction (1 si la carte tient déjà dans la hauteur).
+    scale: f64,
+}
+
+impl CompositeLayout {
+    /// Réduit une carte plus haute que `max_height` à cette hauteur, en
+    /// gardant ses proportions ; une carte plus basse garde sa taille.
+    fn new(card_width: u32, card_height: u32, max_height: u32) -> Self {
+        let scale = if max_height >= 2 && card_height > max_height {
+            f64::from(max_height) / f64::from(card_height)
+        } else {
+            1.0
+        };
+        Self {
+            card_width,
+            card_height,
+            width: scaled_even(card_width, scale),
+            height: scaled_even(card_height, scale),
+            scale,
+        }
+    }
+
+    /// `true` quand la carte doit être redimensionnée (réduction, ou taille
+    /// impaire que H.264 4:2:0 refuse).
+    fn resizes_card(&self) -> bool {
+        self.width != self.card_width || self.height != self.card_height
+    }
+
+    /// Zone vidéo à l'échelle de la sortie.
+    fn scale_slot(&self, slot: &CardVideoSlot) -> CardVideoSlot {
+        CardVideoSlot {
+            x: scaled(slot.x, self.scale),
+            y: scaled(slot.y, self.scale),
+            width: scaled_even(slot.width, self.scale),
+            height: scaled_even(slot.height, self.scale),
+            radius: scaled(slot.radius, self.scale),
+            target: slot.target,
+        }
+    }
+}
+
+/// `value × scale`, arrondi au plus proche.
+fn scaled(value: u32, scale: f64) -> u32 {
+    // Le produit reste dans les bornes de u32 : `scale` vaut au plus 1.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let rounded = (f64::from(value) * scale).round() as u32;
+    rounded
+}
+
+/// `value × scale` arrondi, ramené au pair inférieur (au moins 2).
+fn scaled_even(value: u32, scale: f64) -> u32 {
+    let rounded = scaled(value, scale);
+    (rounded - rounded % 2).max(2)
+}
+
+/// Dimensions d'un PNG, lues dans son en-tête `IHDR`.
+fn png_dimensions(png: &[u8]) -> Option<(u32, u32)> {
+    const SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
+    if png.len() < 24 || !png.starts_with(SIGNATURE) || &png[12..16] != b"IHDR" {
+        return None;
+    }
+    let width = u32::from_be_bytes([png[16], png[17], png[18], png[19]]);
+    let height = u32::from_be_bytes([png[20], png[21], png[22], png[23]]);
+    (width > 0 && height > 0).then_some((width, height))
 }
 
 /// Compose la carte PNG et les vidéos en un MP4 prêt pour l'overlay.
@@ -55,16 +175,19 @@ pub async fn compose_tweet_card_video(
     if let Some(video) = parent_video {
         layers.push((CardVideoTarget::Parent, video));
     }
-    if layers.is_empty() {
+    let Some(&(primary, primary_video)) = layers.last() else {
         return Err(MediaError::new(
             MediaErrorCode::TranscodeFailed,
             "carte tweet sans zone vidéo à composer",
         ));
-    }
-    let primary = layers
-        .last()
-        .map(|(target, _)| *target)
-        .unwrap_or(CardVideoTarget::Parent);
+    };
+    let (card_width, card_height) = png_dimensions(&card.png).ok_or_else(|| {
+        MediaError::new(
+            MediaErrorCode::TranscodeFailed,
+            "dimensions de la carte tweet illisibles",
+        )
+    })?;
+    let layout = CompositeLayout::new(card_width, card_height, config.video.max_height);
 
     let background = temp_dir.join("tweet-card.png");
     fs::write(&background, &card.png).map_err(|error| {
@@ -77,7 +200,7 @@ pub async fn compose_tweet_card_video(
 
     let mut slots: Vec<CompositeSlot> = Vec::new();
     for (index, (target, video)) in layers.iter().enumerate() {
-        let slot = *card
+        let slot = card
             .video_slots
             .iter()
             .find(|slot| slot.target == *target)
@@ -87,6 +210,7 @@ pub async fn compose_tweet_card_video(
                     format!("zone vidéo {target:?} absente de la carte"),
                 )
             })?;
+        let slot = layout.scale_slot(slot);
         let mask_path = temp_dir.join(format!("tweet-mask-{index}.png"));
         let mask = build_video_mask_png(slot.width, slot.height, slot.radius)?;
         fs::write(&mask_path, mask).map_err(|error| {
@@ -104,8 +228,22 @@ pub async fn compose_tweet_card_video(
         });
     }
 
+    let audio = match probe::probe(
+        &config.tools.ffprobe,
+        primary_video,
+        config.download.timeout,
+    )
+    .await
+    {
+        Ok(probed) => CompositeAudio::for_codec(probed.audio_codec.as_deref()),
+        Err(error) => {
+            tracing::warn!("piste audio de la carte tweet non sondée : {error}");
+            CompositeAudio::Encode
+        }
+    };
+
     let output = temp_dir.join("tweet-card.mp4");
-    let args = build_composite_args(&background, &slots, &output, config);
+    let args = build_composite_args(&background, &layout, &slots, audio, &output, config);
     process::run_command(
         &config.tools.ffmpeg,
         &args,
@@ -118,12 +256,15 @@ pub async fn compose_tweet_card_video(
 
 /// Construit les arguments ffmpeg d'assemblage (fonction pure, testable).
 ///
-/// Entrée 0 : fond (carte PNG en boucle). Puis, pour chaque zone : le flux
-/// vidéo et son masque. Le fond boucle indéfiniment ; la dernière zone
-/// incrustée est déclarée `shortest` pour que le fichier s'arrête avec elle.
+/// Entrée 0 : fond (carte PNG, une image), mis à l'échelle et converti une fois
+/// puis répété. Puis, pour chaque zone : le flux vidéo et son masque, déjà à
+/// la taille de la zone. La dernière zone incrustée est déclarée `shortest`
+/// pour que le fichier s'arrête avec elle.
 fn build_composite_args(
     background: &Path,
+    layout: &CompositeLayout,
     slots: &[CompositeSlot],
+    audio: CompositeAudio,
     output: &Path,
     config: &MediaConfig,
 ) -> Vec<String> {
@@ -132,10 +273,6 @@ fn build_composite_args(
         "-hide_banner".to_string(),
         "-v".to_string(),
         "error".to_string(),
-        "-loop".to_string(),
-        "1".to_string(),
-        "-framerate".to_string(),
-        "30".to_string(),
         "-i".to_string(),
         background.display().to_string(),
     ];
@@ -150,17 +287,29 @@ fn build_composite_args(
     }
 
     let mut filters: Vec<String> = Vec::new();
-    let mut base = "[0:v]".to_string();
+    let resize = if layout.resizes_card() {
+        format!("scale={}:{},", layout.width, layout.height)
+    } else {
+        String::new()
+    };
+    // Mise à l'échelle et conversion avant `loop` : elles ne portent que sur
+    // l'unique image du fond.
+    filters.push(format!(
+        "[0:v]{resize}format=yuv420p,loop=loop=-1:size=1,fps={FRAME_RATE}[bg]"
+    ));
+    let mut base = "[bg]".to_string();
     for (index, slot) in slots.iter().enumerate() {
         let video_index = 1 + index * 2;
         let mask_index = 2 + index * 2;
         let width = slot.slot.width;
         let height = slot.slot.height;
-        // La vidéo remplit la zone (recadrage centré), le masque arrondi décide
-        // de ce qui reste visible.
+        // La cadence est réduite avant la mise à l'échelle (moins d'images à
+        // traiter) ; la vidéo remplit la zone (recadrage centré) et le masque
+        // arrondi décide de ce qui reste visible.
         filters.push(format!(
-            "[{video_index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,\
-             crop={width}:{height},setsar=1,fps=30,format=rgba[v{index}]"
+            "[{video_index}:v]fps={FRAME_RATE},\
+             scale={width}:{height}:force_original_aspect_ratio=increase,\
+             crop={width}:{height},setsar=1,format=yuva420p[v{index}]"
         ));
         filters.push(format!("[{mask_index}:v]format=gray[m{index}]"));
         filters.push(format!("[v{index}][m{index}]alphamerge[o{index}]"));
@@ -173,7 +322,7 @@ fn build_composite_args(
             ":eof_action=pass".to_string()
         };
         filters.push(format!(
-            "{base}[o{index}]overlay={}:{}{options}{output_label}",
+            "{base}[o{index}]overlay={}:{}{options}:format=yuv420{output_label}",
             slot.slot.x, slot.slot.y
         ));
         base = output_label;
@@ -189,9 +338,14 @@ fn build_composite_args(
         args.push("-map".to_string());
         args.push(format!("{audio_index}:a:0?"));
         args.push("-c:a".to_string());
-        args.push("aac".to_string());
-        args.push("-b:a".to_string());
-        args.push(AUDIO_BITRATE.to_string());
+        match audio {
+            CompositeAudio::Copy => args.push("copy".to_string()),
+            CompositeAudio::Encode => {
+                args.push("aac".to_string());
+                args.push("-b:a".to_string());
+                args.push(AUDIO_BITRATE.to_string());
+            }
+        }
     } else {
         args.push("-an".to_string());
     }
@@ -213,18 +367,22 @@ fn build_composite_args(
 mod tests {
     use super::*;
 
+    fn card_slot(target: CardVideoTarget) -> CardVideoSlot {
+        CardVideoSlot {
+            x: 48,
+            y: 640,
+            width: 540,
+            height: 960,
+            radius: 14,
+            target,
+        }
+    }
+
     fn slot(target: CardVideoTarget, primary: bool) -> CompositeSlot {
         CompositeSlot {
             video: PathBuf::from("clip.mp4"),
             mask: PathBuf::from("mask.png"),
-            slot: CardVideoSlot {
-                x: 48,
-                y: 640,
-                width: 540,
-                height: 960,
-                radius: 14,
-                target,
-            },
+            slot: card_slot(target),
             primary,
         }
     }
@@ -233,50 +391,199 @@ mod tests {
         MediaConfig::default()
     }
 
+    /// A card that already fits the maximum height (1080 × 1000).
+    fn short_layout() -> CompositeLayout {
+        CompositeLayout::new(1080, 1000, 1080)
+    }
+
+    fn filter_of(args: &[String]) -> String {
+        args.iter()
+            .position(|arg| arg == "-filter_complex")
+            .map(|index| args[index + 1].clone())
+            .expect("filtre présent")
+    }
+
     #[test]
     fn builds_the_composite_command_for_a_tweet_video() {
         let args = build_composite_args(
             Path::new("card.png"),
+            &short_layout(),
             &[slot(CardVideoTarget::Parent, true)],
+            CompositeAudio::Encode,
             Path::new("card.mp4"),
             &config(),
         );
         assert_eq!(args.first().map(String::as_str), Some("-y"));
-        let filter = args
-            .iter()
-            .position(|arg| arg == "-filter_complex")
-            .map(|index| args[index + 1].clone())
-            .expect("filtre présent");
-        assert!(filter.contains("[1:v]scale=540:960:force_original_aspect_ratio=increase"));
+        let filter = filter_of(&args);
+        assert!(filter.contains("[1:v]fps=30,scale=540:960:force_original_aspect_ratio=increase"));
         assert!(filter.contains("crop=540:960"));
         assert!(filter.contains("[2:v]format=gray"));
         assert!(filter.contains("alphamerge[o0]"));
-        assert!(filter.contains("[0:v][o0]overlay=48:640:shortest=1[b1]"));
+        assert!(filter.contains("[bg][o0]overlay=48:640:shortest=1:format=yuv420[b1]"));
         assert!(args.contains(&"1:a:0?".to_string()));
         assert!(args.contains(&"libx264".to_string()));
         assert_eq!(args.last().map(String::as_str), Some("card.mp4"));
+    }
+
+    /// The background is one picture decoded and converted once, then
+    /// repeated by `loop`: a `-loop 1` input decoded the PNG for every frame.
+    #[test]
+    fn decodes_the_background_once() {
+        let args = build_composite_args(
+            Path::new("card.png"),
+            &short_layout(),
+            &[slot(CardVideoTarget::Parent, true)],
+            CompositeAudio::Copy,
+            Path::new("card.mp4"),
+            &config(),
+        );
+        assert!(!args.contains(&"-loop".to_string()), "{args:?}");
+        let filter = filter_of(&args);
+        assert!(
+            filter.starts_with("[0:v]format=yuv420p,loop=loop=-1:size=1,fps=30[bg];"),
+            "{filter}"
+        );
+    }
+
+    #[test]
+    fn copies_an_aac_track_and_encodes_any_other() {
+        let copied = build_composite_args(
+            Path::new("card.png"),
+            &short_layout(),
+            &[slot(CardVideoTarget::Parent, true)],
+            CompositeAudio::Copy,
+            Path::new("card.mp4"),
+            &config(),
+        );
+        let audio = copied.iter().position(|arg| arg == "-c:a").unwrap();
+        assert_eq!(copied[audio + 1], "copy");
+        assert!(!copied.contains(&"aac".to_string()), "{copied:?}");
+
+        let encoded = build_composite_args(
+            Path::new("card.png"),
+            &short_layout(),
+            &[slot(CardVideoTarget::Parent, true)],
+            CompositeAudio::Encode,
+            Path::new("card.mp4"),
+            &config(),
+        );
+        let audio = encoded.iter().position(|arg| arg == "-c:a").unwrap();
+        assert_eq!(
+            encoded[audio + 1..audio + 4],
+            ["aac", "-b:a", AUDIO_BITRATE]
+        );
+    }
+
+    /// A card taller than the maximum height is reduced before the overlay,
+    /// so the normalization can copy the video stream instead of encoding it
+    /// a second time.
+    #[test]
+    fn reduces_a_tall_card_to_the_maximum_height() {
+        let layout = CompositeLayout::new(1080, 1920, 1080);
+        assert_eq!((layout.width, layout.height), (608, 1080));
+        assert!(layout.resizes_card());
+        let reduced = layout.scale_slot(&card_slot(CardVideoTarget::Parent));
+        assert_eq!(
+            (
+                reduced.x,
+                reduced.y,
+                reduced.width,
+                reduced.height,
+                reduced.radius
+            ),
+            (27, 360, 304, 540, 8)
+        );
+
+        let args = build_composite_args(
+            Path::new("card.png"),
+            &layout,
+            &[CompositeSlot {
+                slot: reduced,
+                ..slot(CardVideoTarget::Parent, true)
+            }],
+            CompositeAudio::Copy,
+            Path::new("card.mp4"),
+            &config(),
+        );
+        let filter = filter_of(&args);
+        assert!(
+            filter.starts_with("[0:v]scale=608:1080,format=yuv420p,loop="),
+            "{filter}"
+        );
+        assert!(filter.contains("crop=304:540"), "{filter}");
+        assert!(filter.contains("overlay=27:360:shortest=1"), "{filter}");
+    }
+
+    #[test]
+    fn keeps_a_card_that_fits_and_evens_an_odd_one() {
+        let fits = CompositeLayout::new(1080, 1080, 1080);
+        assert_eq!((fits.width, fits.height), (1080, 1080));
+        assert!(!fits.resizes_card());
+        assert_eq!(
+            fits.scale_slot(&card_slot(CardVideoTarget::Parent)),
+            card_slot(CardVideoTarget::Parent)
+        );
+
+        let odd = CompositeLayout::new(1080, 801, 1080);
+        assert_eq!((odd.width, odd.height), (1080, 800));
+        assert!(odd.resizes_card());
+
+        let unbounded = CompositeLayout::new(1080, 3000, 0);
+        assert_eq!((unbounded.width, unbounded.height), (1080, 3000));
+    }
+
+    #[test]
+    fn reads_the_png_header() {
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&1080_u32.to_be_bytes());
+        png.extend_from_slice(&1900_u32.to_be_bytes());
+        assert_eq!(png_dimensions(&png), Some((1080, 1900)));
+        assert_eq!(png_dimensions(&png[..20]), None);
+        assert_eq!(png_dimensions(b"GIF89a-not-a-png-at-all!"), None);
+        let mut empty = png.clone();
+        empty[16..20].copy_from_slice(&0_u32.to_be_bytes());
+        assert_eq!(png_dimensions(&empty), None);
+        let mut flat = png.clone();
+        flat[20..24].copy_from_slice(&0_u32.to_be_bytes());
+        assert_eq!(png_dimensions(&flat), None);
+        // A PNG signature followed by another chunk than `IHDR` is refused.
+        let mut other_chunk = png.clone();
+        other_chunk[12..16].copy_from_slice(b"IDAT");
+        assert_eq!(png_dimensions(&other_chunk), None);
+    }
+
+    #[test]
+    fn copies_only_an_aac_track() {
+        assert_eq!(CompositeAudio::for_codec(Some("aac")), CompositeAudio::Copy);
+        assert_eq!(
+            CompositeAudio::for_codec(Some("opus")),
+            CompositeAudio::Encode
+        );
+        assert_eq!(
+            CompositeAudio::for_codec(Some("mp3")),
+            CompositeAudio::Encode
+        );
+        assert_eq!(CompositeAudio::for_codec(None), CompositeAudio::Encode);
     }
 
     #[test]
     fn lets_the_quoted_video_restore_the_card_background() {
         let args = build_composite_args(
             Path::new("card.png"),
+            &short_layout(),
             &[
                 slot(CardVideoTarget::Quoted, false),
                 slot(CardVideoTarget::Parent, true),
             ],
+            CompositeAudio::Encode,
             Path::new("card.mp4"),
             &config(),
         );
-        let filter = args
-            .iter()
-            .position(|arg| arg == "-filter_complex")
-            .map(|index| args[index + 1].clone())
-            .expect("filtre présent");
+        let filter = filter_of(&args);
         // Vidéo citée : fond rendu au bout, pas de coupe du fichier.
-        assert!(filter.contains("[0:v][o0]overlay=48:640:eof_action=pass[b1]"));
+        assert!(filter.contains("[bg][o0]overlay=48:640:eof_action=pass:format=yuv420[b1]"));
         // Vidéo parente : coupe le fichier.
-        assert!(filter.contains("[b1][o1]overlay=48:640:shortest=1[b2]"));
+        assert!(filter.contains("[b1][o1]overlay=48:640:shortest=1:format=yuv420[b2]"));
         // Entrées : fond, vidéo citée + masque, vidéo parente + masque.
         assert!(args.contains(&"3:a:0?".to_string()));
     }

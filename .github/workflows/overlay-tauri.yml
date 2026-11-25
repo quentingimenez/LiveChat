@@ -72,7 +72,7 @@ jobs:
 
   installer:
     name: installeur NSIS (windows)
-    runs-on: windows-latest
+    runs-on: [self-hosted, Windows, X64]
     timeout-minutes: 60
     outputs:
       installer-name: ${{ steps.collect.outputs.installer-name }}

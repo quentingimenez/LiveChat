@@ -12,7 +12,6 @@ use lc_protocol::{
 };
 
 use crate::config::PlaybackConfig;
-use crate::MIN_SHORT_VIDEO_DISPLAY_SEC;
 
 /// Durées d'un job au moment du dispatch (ou de la reprise).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,9 +25,6 @@ pub(crate) struct PlaybackTiming {
 }
 
 /// Calcule les durées d'un job au moment de son dispatch.
-///
-/// A video shorter than [`MIN_SHORT_VIDEO_DISPLAY_SEC`] gets at least that
-/// duration (before the guild cap).
 ///
 /// Base : `job.duration_sec` s'il est positif, sinon la durée du média, sinon
 /// la durée par défaut de la configuration. Le total est borné par
@@ -48,14 +44,6 @@ pub(crate) fn dispatch_timing(
     } else {
         media_duration.unwrap_or(config.default_duration_sec)
     };
-    // A very short video must be seen: its job lasts at least the minimum
-    // display time (the overlay extends the clip until the job ends). A
-    // resumed job keeps the duration fixed at its first dispatch.
-    let is_short_video = media.is_some_and(|asset| asset.kind == DomainMediaKind::Video)
-        && media_duration.is_some_and(|duration| duration < MIN_SHORT_VIDEO_DISPLAY_SEC);
-    if is_short_video && job.resume_offset_sec <= 0 {
-        total_duration_sec = total_duration_sec.max(MIN_SHORT_VIDEO_DISPLAY_SEC);
-    }
     if let Some(max_media_time) = guild
         .and_then(|guild| guild.max_media_time)
         .filter(|max| *max > 0)
@@ -264,20 +252,24 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_timing_stretches_only_videos_shorter_than_the_minimum() {
+    fn dispatch_timing_keeps_a_video_at_its_own_duration() {
         let config = PlaybackConfig::default();
+        // A one-second clip (an animated GIF converted to MP4) triggered from
+        // the board lasts exactly its own duration: no minimum display time is
+        // added on top of it.
         let job = playback_job(1, 0);
-        let short_video = media_asset(DomainMediaKind::Video, Some(2));
-        let boundary_video = media_asset(DomainMediaKind::Video, Some(MIN_SHORT_VIDEO_DISPLAY_SEC));
-
+        let short_video = media_asset(DomainMediaKind::Video, Some(1));
         assert_eq!(
             dispatch_timing(&job, Some(&short_video), None, &config),
-            playback_timing(MIN_SHORT_VIDEO_DISPLAY_SEC, 0, MIN_SHORT_VIDEO_DISPLAY_SEC)
+            playback_timing(1, 0, 1)
         );
+
+        // Without a job duration, the media duration is used as-is.
+        let unset_duration_job = playback_job(0, 0);
+        let two_second_video = media_asset(DomainMediaKind::Video, Some(2));
         assert_eq!(
-            dispatch_timing(&job, Some(&boundary_video), None, &config),
-            playback_timing(1, 0, 1),
-            "un média de la durée minimale n'est pas « court » (borne stricte)"
+            dispatch_timing(&unset_duration_job, Some(&two_second_video), None, &config),
+            playback_timing(2, 0, 2)
         );
     }
 

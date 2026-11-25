@@ -89,14 +89,6 @@ pub const PLAYBACK_STATE_MAX_AGE_MS: i64 = 15_000;
 /// Nombre maximal d'itérations de la boucle d'une guilde (parité legacy).
 pub const GUILD_RUN_MAX_ITERATIONS: usize = 25;
 
-/// Minimum on-screen time of a video shorter than this (seconds).
-///
-/// A clip of a second or less (an animated GIF converted to MP4, typically)
-/// would otherwise be gone before anyone sees it: its job lasts this long and
-/// the overlay replays the clip (or holds its last frame when it has sound)
-/// until the job ends.
-pub const MIN_SHORT_VIDEO_DISPLAY_SEC: i64 = 3;
-
 /// Durée de lecture par défaut d'un job sans durée ni média (secondes).
 pub const DEFAULT_PLAYBACK_DURATION_SEC: i64 = 30;
 

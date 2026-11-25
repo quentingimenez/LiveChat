@@ -36,8 +36,7 @@ media board, and per send from the browser extension or Discord.
 
 ## Non-goals
 
-- Durations for video and audio: they keep their real length (and the
-  existing short-video minimum).
+- Durations for video and audio: they keep their real length.
 - The admin web console (`apps/lc-admin-web`): no display or edit of the new
   field.
 - Fractional seconds.

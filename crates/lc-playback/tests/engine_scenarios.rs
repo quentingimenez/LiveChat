@@ -587,29 +587,21 @@ async fn dispatch_video(asset_duration_sec: i64, job_duration_sec: i64) -> (u64,
 }
 
 #[tokio::test]
-async fn a_very_short_video_stays_on_screen_for_the_minimum_display_time() {
-    let minimum = lc_playback::MIN_SHORT_VIDEO_DISPLAY_SEC;
-    // The play lasts the minimum while the media keeps its real duration:
-    // the overlay sees that the job outlasts the clip and extends it.
+async fn a_very_short_video_keeps_its_own_duration() {
+    // The play lasts exactly the clip's duration: no minimum display time is
+    // added, so the overlay stops the playback when the clip ends.
     let (play, media, stored) = dispatch_video(1, 1).await;
-    assert_eq!(play, u64::try_from(minimum).unwrap());
+    assert_eq!(play, 1);
     assert_eq!(media, Some(1));
-    assert_eq!(stored, minimum);
-    // Unset job duration: same floor.
-    assert_eq!(
-        dispatch_video(2, 0).await.0,
-        u64::try_from(minimum).unwrap()
-    );
+    assert_eq!(stored, 1);
+    // Unset job duration: the media duration applies as-is.
+    assert_eq!(dispatch_video(2, 0).await.0, 2);
 }
 
 #[tokio::test]
-async fn the_minimum_display_time_leaves_other_durations_alone() {
-    let minimum = lc_playback::MIN_SHORT_VIDEO_DISPLAY_SEC;
-    // A video at or above the minimum plays for its own duration.
-    assert_eq!(
-        dispatch_video(minimum, minimum).await.0,
-        u64::try_from(minimum).unwrap()
-    );
+async fn a_video_plays_for_the_duration_it_is_given() {
+    // A video plays for its own duration, without any floor.
+    assert_eq!(dispatch_video(3, 3).await.0, 3);
     assert_eq!(dispatch_video(12, 12).await.0, 12);
     // An explicit duration is kept: shorter on a long video, longer on a clip.
     assert_eq!(dispatch_video(12, 2).await.0, 2);
@@ -617,15 +609,15 @@ async fn the_minimum_display_time_leaves_other_durations_alone() {
 }
 
 #[tokio::test]
-async fn the_guild_cap_still_bounds_a_very_short_video() {
+async fn the_guild_cap_still_bounds_a_video() {
     let h = harness(1).await;
     let mut guild = sample_guild(h.guild_id.clone());
     guild.max_media_time = Some(2);
     h.db.guilds().upsert(&guild).await.unwrap();
     let mut asset = sample_media_asset(h.clock.now());
-    asset.duration_sec = Some(1);
+    asset.duration_sec = Some(5);
     h.db.media_assets().insert(&asset).await.unwrap();
-    let job = sample_media_job(h.guild_id.clone(), h.clock.now(), asset.id, 1);
+    let job = sample_media_job(h.guild_id.clone(), h.clock.now(), asset.id, 5);
     h.engine.enqueue(&job).await.unwrap();
     assert_eq!(h.sink.play_calls()[0].duration_sec, 2);
 }

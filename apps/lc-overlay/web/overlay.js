@@ -91,10 +91,7 @@
     resumeCountdown: playbackCountdownHandlers.resumeCountdown,
     pauseCountdown: playbackCountdownHandlers.pauseCountdown,
     setPlaybackState: playbackCountdownHandlers.setPlaybackState,
-    getRemainingCountdownMs: playbackCountdownHandlers.getRemainingCountdownMs,
-    setCountdownAutoClear: playbackCountdownHandlers.setCountdownAutoClear,
     isCountdownPaused: () => state.countdownState.paused === true,
-    playbackUtils: overlayLegacyPlaybackUtils,
     setTimeout: (callback, delayMs) => setTimeout(() => callback(), delayMs),
     reportError: window.livechatOverlay?.reportError || null,
     requestGuildPause: (paused) => {

@@ -448,8 +448,14 @@ function buildCard(entry) {
         });
         applyCardPointerAction(action, entry.item.id);
       },
-      onMouseenter: (event) => mediaDetail.hoverCard(event.currentTarget),
-      onMouseleave: (event) => mediaDetail.leaveCard(event.currentTarget),
+      onMouseenter: (event) => {
+        mediaDetail.prefetchCard(event.currentTarget);
+        mediaDetail.hoverCard(event.currentTarget);
+      },
+      onMouseleave: (event) => {
+        mediaDetail.cancelPrefetch(event.currentTarget);
+        mediaDetail.leaveCard(event.currentTarget);
+      },
     },
     h(
       'div',
@@ -1384,9 +1390,11 @@ function describeItem(id) {
   const shape = artwork || item.media;
   const width = Number(shape.width);
   const height = Number(shape.height);
+  const url = previewUrl(item);
   return {
     kind,
-    url: previewUrl(item),
+    url,
+    expiresAt: urlExpiresAt(url),
     poster,
     ratio: width > 0 && height > 0 ? width / height : null,
     volume: previewVolume(state.activeGuildId),

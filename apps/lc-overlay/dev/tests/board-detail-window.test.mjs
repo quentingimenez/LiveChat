@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
 const board = read('views/board.js');
+const baseCss = read('styles/base.css');
 const boardCss = read('styles/board.css');
 const detailCss = read('styles/media-detail.css');
 // The tests below match boundaries with plain newlines; a Windows checkout
@@ -180,18 +181,21 @@ test('the favorite toggle lives in the window top bar, filled by describe(id).to
   assert.match(ruleOf(detailCss, '.hp-page-tools'), /margin-left:\s*auto/);
 });
 
-test('the head is kicker, flush-left title, byline', () => {
+test('the head is kicker, a padded title with a visible frame, byline', () => {
   const detail = functionBody('detailBody');
   const kicker = detail.indexOf("class: 'hp-page-kicker'");
   const title = detail.indexOf("inlineField(item, 'title')");
   const byline = detail.indexOf("class: 'hp-page-byline'");
   assert.ok(kicker >= 0 && title > kicker && byline > title, 'head order: kicker, title, byline');
 
-  // The inline title control keeps its pencil and hover frame but no longer
-  // indents the heading: its text starts on the column, like the kicker.
+  // The title control outdents its frame by the column's clip room (8px), like
+  // the caption, so the hover frame's left border stays visible; 8px of
+  // padding keeps the heading text and the pencil off the frame's edges.
   const heading = ruleOf(detailCss, '.hp-page-head .inline-edit.is-title');
-  assert.match(heading, /padding-left:\s*0/);
-  assert.match(heading, /margin-left:\s*-1px/);
+  assert.match(heading, /width:\s*calc\(100% \+ 8px\)/);
+  assert.match(heading, /margin-left:\s*-8px/);
+  assert.match(heading, /padding-left:\s*8px/);
+  assert.match(heading, /padding-right:\s*8px/);
   const titleRule = ruleOf(detailCss, ".hp-page[data-layout='atelier'] .hp-page-title");
   assert.match(titleRule, /font-size:\s*28px/);
 });
@@ -303,6 +307,97 @@ test('the information column scrolls on its own while the stage stays in place',
   const info = ruleOf(detailCss, '.hp-page-info');
   assert.match(info, /overflow-y:\s*auto/);
   assert.match(info, /scrollbar-gutter:\s*stable/);
+});
+
+// The column reserves the left outdent of its inline fields inside its
+// scrollport, and pulls itself left by the same amount so the text stays put.
+function clipRoom(source) {
+  const info = ruleOf(source, '.hp-page-info');
+  return {
+    padding: Number(/padding-left:\s*(\d+)px/.exec(info)?.[1]),
+    margin: Number(/margin-left:\s*(-?\d+)px/.exec(info)?.[1]),
+  };
+}
+
+function atelierLeftPadding(source) {
+  const rule = ruleOf(source, ".hp-page[data-layout='atelier'] .hp-page-info");
+  const parts = /padding:\s*([^;]+);/.exec(rule)?.[1].trim().split(/\s+/);
+  return parts && parts.length === 4 ? Number.parseFloat(parts[3]) : Number.NaN;
+}
+
+test('the information column keeps the inline fields outdents inside its clip', () => {
+  // The title and caption frames hang 8px left of the column so the frame and
+  // its left border stay visible while the text keeps the column's gutter. The
+  // column is the scroll container and clips at its padding edge: with no room
+  // reserved inside it, the caption lost its whole left border and padding,
+  // and the title its border. The negative margin compensates the padding so
+  // the column's text does not move right by 8px.
+  const title = ruleOf(detailCss, '.hp-page-head .inline-edit.is-title');
+  const caption = ruleOf(detailCss, '.hp-page-legend-block .inline-edit');
+  const titleOutdent = Math.abs(Number(/margin-left:\s*(-?\d+)px/.exec(title)?.[1]));
+  const captionOutdent = Math.abs(Number(/margin:\s*0 0 0 (-?\d+)px/.exec(caption)?.[1]));
+  const outdent = Math.max(titleOutdent, captionOutdent);
+  assert.ok(outdent >= 8, 'the widest inline frame hangs 8px outside the column');
+
+  const room = clipRoom(detailCss);
+  assert.ok(room.padding >= outdent, `the scrollport reserves ${room.padding}px for a ${outdent}px outdent`);
+  assert.equal(room.margin, -room.padding, 'the clip room is compensated, so the text does not move');
+
+  // Atelier and the stacked layout keep the room; a padding shorthand that
+  // zeroes its left side would shift the whole column.
+  assert.ok(atelierLeftPadding(detailCss) >= outdent, 'the atelier layout keeps the clip room');
+  const stacked = detailCss.slice(
+    detailCss.indexOf('@media (max-width: 960px)'),
+    detailCss.indexOf('@media (max-width: 620px)'),
+  );
+  assert.ok(atelierLeftPadding(stacked) >= outdent, 'the stacked layout keeps the clip room');
+});
+
+test('the title pencil centres on the heading line, not on the box top', () => {
+  // The base 2px icon offset is tuned for the caption's 14px text. The title is
+  // a 26–28px heading with a 1.22 line box, so its 14px pencil used to sit
+  // about 8px above the first line's centre.
+  const title = ruleOf(detailCss, '.hp-page-title');
+  const lineHeight = Number(/line-height:\s*([\d.]+)/.exec(title)?.[1]);
+  const icon = ruleOf(boardCss, '.inline-edit .icon');
+  const size = Number(/width:\s*(\d+)px/.exec(icon)?.[1]);
+  const pencil = ruleOf(detailCss, '.hp-page-head .inline-edit.is-title .icon');
+  const offset = /margin-top:\s*calc\(\(([\d.]+)em\s*-\s*(\d+)px\)\s*\/\s*2\)/.exec(pencil);
+
+  assert.ok(offset, 'the title pencil gets a top offset from the heading line');
+  assert.equal(Number(offset[1]), lineHeight, 'the line box is the title line-height');
+  assert.equal(Number(offset[2]), size, 'the offset subtracts the icon height');
+  assert.match(ruleOf(boardCss, '.inline-edit'), /align-items:\s*flex-start/, 'a wrapped title keeps the pencil on line one');
+});
+
+test('the inline fields at the column edge keep their focus ring visible', () => {
+  // The title and caption frames start on the scrollport's left clip edge. The
+  // default focus ring (base.css) is 2px wide and sits 2px outside the frame,
+  // so it disappears on that side. Either the column reserves those 4px, or
+  // the ring is moved inside by its outline-offset.
+  const ring = ruleOf(baseCss, ':focus-visible');
+  const width = Number(/outline:\s*(\d+)px/.exec(ring)?.[1]);
+  const defaultOffset = Number(/outline-offset:\s*(-?\d+)px/.exec(ring)?.[1]);
+  const room = clipRoom(detailCss);
+  const title = ruleOf(detailCss, '.hp-page-head .inline-edit.is-title');
+  const caption = ruleOf(detailCss, '.hp-page-legend-block .inline-edit');
+  const titleOutdent = Math.abs(Number(/margin-left:\s*(-?\d+)px/.exec(title)?.[1]));
+  const captionOutdent = Math.abs(Number(/margin:\s*0 0 0 (-?\d+)px/.exec(caption)?.[1]));
+  const spare = room.padding - Math.max(titleOutdent, captionOutdent);
+  const selectors = [
+    '.hp-page-head .inline-edit.is-title:focus-visible',
+    '.hp-page-head .inline-input.is-title:focus-visible',
+    '.hp-page-legend-block .inline-edit:focus-visible',
+    '.hp-page-legend-block .inline-input:focus-visible',
+  ];
+
+  for (const selector of selectors) {
+    const focus = ruleOf(detailCss, selector);
+    const ownOffset = /outline-offset:\s*(-?\d+)px/.exec(focus)?.[1];
+    const offset = ownOffset === undefined ? defaultOffset : Number(ownOffset);
+    const outward = Math.max(0, width + offset);
+    assert.ok(spare >= outward, `${selector} keeps its ${outward}px ring inside (${spare}px spare, ${offset}px offset)`);
+  }
 });
 
 test('the window covers the view, not the whole window', () => {

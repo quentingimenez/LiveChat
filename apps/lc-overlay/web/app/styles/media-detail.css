@@ -721,6 +721,13 @@
   gap: 16px;
   overflow-y: auto;
   overscroll-behavior: contain;
+  /* The title hangs 1px and the caption 8px left of the column, so their text
+     stays flush with the labels while the hover frame sits outside it. A
+     scrolling column clips at its padding edge: reserve the widest outdent
+     inside the scrollport, and pull the column left by the same 8px, so the
+     text does not move. */
+  margin-left: -8px;
+  padding-left: 8px;
   scrollbar-gutter: stable;
 }
 
@@ -756,14 +763,32 @@
   font-weight: 600;
 }
 
-/* The title is a button (edited in place), but it must read flush left with
-   the column: its frame keeps the pencil and the hover state without adding
-   the inline control's usual gutter. The 1px border sits outside the text. */
+/* The title is a button (edited in place): its frame outdents like the
+   caption's, while its text keeps the column's gutter and its pencil keeps a
+   gutter on the right. The 8px padding is measured from the frame's border,
+   so the text stays on the column and the pencil is no longer glued to the
+   right edge. */
 .hp-page-head .inline-edit.is-title,
 .hp-page-head .inline-input.is-title {
-  margin-left: -1px;
-  padding-right: 0;
-  padding-left: 0;
+  width: calc(100% + 8px);
+  margin-left: -8px;
+  padding-right: 8px;
+  padding-left: 8px;
+}
+
+/* The title frame starts on the scrollport's left clip edge, so its focus ring
+   is drawn inside, like the caption's. */
+.hp-page-head .inline-edit.is-title:focus-visible,
+.hp-page-head .inline-input.is-title:focus-visible {
+  outline-offset: -2px;
+}
+
+/* The pencil rides the first line of the heading. The base 2px offset is tuned
+   for the caption's 14px text; the title's line box is 1.22em tall, so centre
+   the 14px icon in it instead. flex-start keeps it on the first line when the
+   title wraps. */
+.hp-page-head .inline-edit.is-title .icon {
+  margin-top: calc((1.22em - 14px) / 2);
 }
 
 .hp-page-facts {
@@ -860,6 +885,14 @@
   width: calc(100% + 8px);
   margin: 0 0 0 -8px;
   padding: 4px 8px;
+}
+
+/* The caption's frame starts on the scrollport's left clip edge, so the default
+   outward focus ring is cut there. Draw it inside the frame, like the card
+   thumb does. */
+.hp-page-legend-block .inline-edit:focus-visible,
+.hp-page-legend-block .inline-input:focus-visible {
+  outline-offset: -2px;
 }
 
 .hp-page-actionzone {
@@ -1006,7 +1039,9 @@
 
 .hp-page[data-layout='atelier'] .hp-page-info {
   gap: 14px;
-  padding: 2px 2px 0 0;
+  /* Keep the 8px clip room of the base rule; only the top and right insets are
+     atelier-specific. */
+  padding: 2px 2px 0 8px;
 }
 
 /* --- transition layers -------------------------------------------------- */
@@ -1101,7 +1136,9 @@
   }
 
   .hp-page[data-layout='atelier'] .hp-page-info {
-    padding: 0;
+    /* The page scrolls instead of the column, but the column still owns the
+       left outdent: zeroing the left padding here would shift its text. */
+    padding: 0 0 0 8px;
   }
 }
 

@@ -106,11 +106,6 @@ async function renderPicture(layerWidth, layerHeight) {
     pauseCountdown: () => {},
     setPlaybackState: () => {},
     clearOverlay: () => {},
-    videoExtensionSec: () => 0,
-    resolveVideoEndAction: () => 'clear',
-    videoHasAudioTrack: () => false,
-    getRemainingCountdownMs: () => 1000,
-    setCountdownAutoClear: () => {},
     logAutoplayError: () => {},
   });
   return { mediaLayer, image, relayout, headerLayouts: () => headerLayouts };
@@ -157,11 +152,6 @@ test('a picture without a display scale has nothing to re-fit', async () => {
     pauseCountdown: () => {},
     setPlaybackState: () => {},
     clearOverlay: () => {},
-    videoExtensionSec: () => 0,
-    resolveVideoEndAction: () => 'clear',
-    videoHasAudioTrack: () => false,
-    getRemainingCountdownMs: () => 1000,
-    setCountdownAutoClear: () => {},
     logAutoplayError: () => {},
   });
   assert.equal(relayout, null);
@@ -195,7 +185,6 @@ test('the render handlers replay the re-fit of the media being played', async ()
     mediaDomUtils: { applyMediaVolume: () => {} },
     mediaOffsetUtils: { applyMediaStartOffset: () => {} },
     diagnosticsUtils: { attachMediaDiagnostics: () => {} },
-    playbackUtils: { videoExtensionSec: () => 0, resolveVideoEndAction: () => 'clear' },
     inlineVideoUtils: { videoHasAudioTrack: () => false },
     // The rendered media hands back its re-fit closure.
     mediaRenderUtils: {

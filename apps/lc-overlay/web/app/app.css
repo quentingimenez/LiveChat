@@ -8,9 +8,11 @@
  * own file here.
  */
 @import url('./styles/base.css');
+@import url('./styles/motion.css');
 @import url('./styles/rail.css');
 @import url('./styles/header.css');
 @import url('./styles/board.css');
+@import url('./styles/media-detail.css');
 @import url('./styles/queue.css');
 @import url('./styles/admin.css');
 @import url('./styles/loading.css');

@@ -191,32 +191,77 @@
   height: 32px;
 }
 
-/* Masonry, like Discord's GIF picker: cards keep one width whatever the
-   window and the detail panel (stretched columns made every thumbnail grow,
-   shrink and slide while resizing) and take the height of their media. Rows
-   are 2px high and each card spans its own height plus the gap below it
-   (`--span`, from core/masonry.js, which mirrors these sizes). */
+/* Regular grid, like the validated V1: one card shape whatever the media's own
+   shape. The columns follow the window (five at 1440, four at 1024) and every
+   card of a row keeps the same width and height. A portrait thumbnail is
+   cropped to 16 / 10 at its centre; the whole frame stays in the detail
+   window. */
 .grid {
-  --card: 196px;
   display: grid;
-  grid-template-columns: repeat(auto-fill, var(--card));
-  grid-auto-rows: 2px;
-  justify-content: start;
-  column-gap: 14px;
+  grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+  gap: 22px 18px;
+  align-items: stretch;
 }
 
+/* The card is one framed surface: the thumbnail sits flush at the top, the
+   body below, and the card owns the border, the corners and the hover. */
 .card {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+  background: var(--slate-800);
+  overflow: hidden;
   cursor: pointer;
+  transition:
+    border-color var(--motion-card-lift) ease,
+    box-shadow var(--motion-card-lift) ease,
+    transform var(--motion-card-lift) ease;
 }
 
-.grid > .card {
-  grid-row-end: span var(--span, 82);
-  align-self: start;
+/* --- Card hover ----------------------------------------------------------
+   The board has two distinct hover behaviours, never both at once:
+   - « Ouvrir l'aperçu au survol » on (`.grid.is-hover-preview`): the preview
+     (views/media-detail.js, styles/media-detail.css) is the hover, and the
+     card itself stays still;
+   - setting off, or selection mode (no preview there): the card's own hover,
+     the only rules below, lifts the card, zooms its picture and shows its
+     favourite and play buttons.
+   The grid selector reads « not (preview on and not selecting) ». Keyboard
+   focus shows the buttons in both cases (see .fav and .play). Every
+   `.card:hover` rule of the board lives in this section. */
+.grid:not(.is-hover-preview:not(.is-selecting)) .card:hover {
+  border-color: var(--slate-600);
+  box-shadow: var(--shadow-menu);
+  transform: translateY(-1px);
 }
 
+.grid:not(.is-hover-preview:not(.is-selecting)) .card:hover .thumb img {
+  transform: scale(1.02);
+}
+
+.grid:not(.is-hover-preview:not(.is-selecting)) .card:hover .fav {
+  opacity: 1;
+}
+
+.grid:not(.is-hover-preview:not(.is-selecting)) .card:hover .play {
+  opacity: 1;
+  transform: none;
+}
+/* --- End of card hover --------------------------------------------------- */
+
+/* The hover preview stands for the card while it is open: the card itself is
+   invisible, not gone. Opacity (not visibility) keeps the card's pointer
+   events, so leaving it still closes the preview. */
+.card.is-previewing {
+  opacity: 0;
+}
+
+/* Positioning context of the play, favorite and playback-badge controls. */
 .card-frame {
   position: relative;
+  flex: none;
 }
 
 /* Playback badge: amber is reserved for the media actually on screen. */
@@ -379,10 +424,10 @@
   position: relative;
   display: block;
   width: 100%;
-  aspect-ratio: var(--ratio, 16 / 10);
+  aspect-ratio: 16 / 10;
   padding: 0;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-m);
+  border: 0;
+  border-radius: 0;
   background: var(--slate-900);
   overflow: hidden;
   cursor: pointer;
@@ -403,6 +448,18 @@
   -webkit-user-drag: none;
 }
 
+/* A slight zoom of the picture, not the video: the video's frame is already
+   moving, and scaling it would blur a screenshot of it. */
+.card .thumb img {
+  transition: transform var(--motion-card-zoom) ease;
+}
+
+/* The card clips its content: draw the thumbnail's focus ring inside it, or
+   the outline would be cut by the card's own edge. */
+.thumb:focus-visible {
+  outline-offset: -2px;
+}
+
 .thumb .glyph {
   position: absolute;
   inset: 0;
@@ -414,11 +471,6 @@
 .thumb .glyph svg {
   width: 28px;
   height: 28px;
-}
-
-.card.is-selected .thumb {
-  border-color: var(--text);
-  box-shadow: 0 0 0 1px var(--text);
 }
 
 .duration {
@@ -448,7 +500,7 @@
   place-items: center;
   cursor: pointer;
   opacity: 0;
-  transition: opacity 100ms ease;
+  transition: opacity var(--motion-reveal) ease;
 }
 
 /* An even icon lands on whole pixels: a 16px star centred in this 32px circle
@@ -458,22 +510,21 @@
   height: 16px;
 }
 
-.card:hover .fav,
 .card:focus-within .fav,
 .fav.is-on {
   opacity: 1;
 }
 
 /* editor.css loads after this file and styles every `.btn.is-on` in blue.
-   Scoped to the drawer and outranking the quiet-button hover, the star keeps
-   its amber — including while hovered. */
+   Scoped to the favourite toggle (and outranking the quiet-button hover), the
+   star keeps its amber — including while hovered. */
 .fav.is-on,
-.detail .btn.fav-toggle.is-on,
-.detail .btn.fav-toggle.is-on:hover {
+.btn.fav-toggle.is-on,
+.btn.fav-toggle.is-on:hover {
   color: var(--amber-text);
 }
 
-.detail .btn.fav-toggle.is-on {
+.btn.fav-toggle.is-on {
   border-color: transparent;
 }
 
@@ -526,7 +577,7 @@
   cursor: pointer;
   opacity: 0;
   transform: scale(0.9);
-  transition: opacity 100ms ease, transform 100ms ease;
+  transition: opacity var(--motion-reveal) ease, transform var(--motion-reveal) ease;
 }
 
 .play svg {
@@ -534,131 +585,75 @@
   height: 17px;
 }
 
-.card:hover .play,
 .card:focus-within .play {
   opacity: 1;
   transform: none;
 }
 
+/* Body under the thumbnail: the title (two lines max, the same reserved
+   height on every card so the grid never jitters) and one meta line. */
+.card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px 12px;
+}
+
 .card-title {
-  margin: 6px 2px 0;
-  font-size: 13px;
-  line-height: 1.3;
+  margin: 0;
   min-height: 2.6em;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   overflow-wrap: anywhere;
 }
 
-/* ------------------------------------------------------------------- détail */
-/* Floating drawer on the right: it covers the grid instead of resizing it, so
-   the cards never move. `top`/`bottom` follow the view (board.js). */
-.detail {
-  position: fixed;
-  top: 96px;
-  right: 22px;
-  bottom: 16px;
-  z-index: 6;
+/* Kind icon and label, author, relative date: one no-wrap line, the author
+   gives way first (ellipsis) when the card is narrow. */
+.card-meta {
   display: flex;
-  flex-direction: column;
-  width: min(360px, calc(100vw - var(--rail) - 48px));
-  overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-m);
-  background: var(--slate-700);
-  box-shadow: var(--shadow-detail);
-  animation: detail-in 120ms ease-out;
-}
-
-.detail-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  /* Reserve the scrollbar width so the facts column keeps the same width
-     whether the body scrolls or not: the shortcut capture hint must fit on
-     one line in both states. */
-  scrollbar-gutter: stable;
-  padding: var(--space-4);
-  /* A discrete shadow marks the edge that still has hidden content: the two
-     `local` gradients scroll with the content and cover the `scroll` shadows
-     once the top or the bottom is reached. Nothing moves when the body does
-     not overflow. The fixed foot stays outside this box. */
-  background:
-    linear-gradient(var(--slate-700) 35%, transparent) center top,
-    linear-gradient(transparent, var(--slate-700) 65%) center bottom,
-    radial-gradient(farthest-side at 50% 0, rgb(0 0 0 / 0.28), transparent) center top,
-    radial-gradient(farthest-side at 50% 100%, rgb(0 0 0 / 0.28), transparent) center bottom;
-  background-repeat: no-repeat;
-  background-size: 100% 40px, 100% 40px, 100% 14px, 100% 14px;
-  background-attachment: local, local, scroll, scroll;
-}
-
-/* The play action and the media actions stay visible: the body scrolls, never
-   the buttons. */
-.detail-foot {
-  flex: none;
-  display: grid;
-  gap: var(--space-2);
-  padding: var(--space-3) var(--space-4) var(--space-4);
-  border-top: 1px solid var(--line);
-  background: var(--slate-700);
-}
-
-.detail-actions {
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
-}
-
-.detail-actions .is-danger {
-  margin-left: auto;
-}
-
-.detail.is-refresh {
-  animation: none;
-}
-
-.detail.is-peek {
-  border-style: dashed;
-}
-
-@keyframes detail-in {
-  from {
-    opacity: 0;
-    transform: translateX(12px);
-  }
-}
-
-.detail-head {
-  /* The title, the favorite star and the close button stay reachable while
-     the body scrolls: the head sticks to the top and masks the content with
-     the drawer's own background. The negative margins make it full-bleed. */
-  position: sticky;
-  top: calc(-1 * var(--space-4));
-  z-index: 2;
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: calc(-1 * var(--space-4)) calc(-1 * var(--space-4)) var(--space-3);
-  padding: var(--space-4) var(--space-4) var(--space-2);
-  background: var(--slate-700);
-}
-
-.detail-head h2,
-.detail-head .inline-text.is-title {
-  flex: 1;
+  gap: 4px;
   margin: 0;
-  font-family: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
-  font-size: 15px;
-  font-weight: 600;
-  overflow-wrap: anywhere;
+  min-height: 15px;
+  color: var(--text-soft);
+  font-size: 11.5px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-/* Title and message edited in place: plain text with a pencil that appears on
-   hover or keyboard focus; the field that replaces it keeps a framed box. */
+.card-meta svg {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+
+.card-meta-kind,
+.card-meta-date,
+.card-meta-dot {
+  flex: none;
+}
+
+.card-meta-author {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.card-meta-dot {
+  color: var(--text-faint);
+}
+
+/* Title and message edited in place (inside the detail window's information
+   column): plain text with a pencil that appears on hover or keyboard focus;
+   the field that replaces it keeps a framed box. */
 .inline-edit {
   display: flex;
   align-items: flex-start;
@@ -710,212 +705,20 @@
   font-weight: 400;
 }
 
-.detail-head .inline-edit,
-.detail-head .inline-input {
-  flex: 1;
-}
-
+/* The window's title keeps the page heading's size while it is edited; the
+   caption keeps the legend line's. */
 .inline-input.is-title {
   height: auto;
   padding: 5px 8px;
-  font-size: 15px;
   font-weight: 600;
 }
 
 .inline-edit.is-message,
-.inline-input.is-message,
-.detail-message {
-  margin: 12px 0 0;
-  font-size: 13px;
-}
-
-.detail-message {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-/* The box takes the media's own ratio (`--ratio`, set from its size). A tall
-   media is capped in height and narrowed to keep that ratio, never cropped. */
-.detail .preview {
-  --preview-max: min(52vh, 420px);
-  position: relative;
-  width: min(100%, calc(var(--preview-max) * var(--ratio, 16 / 9)));
-  aspect-ratio: var(--ratio, 16 / 9);
-  max-height: var(--preview-max);
-  margin: 0 auto 12px;
-  border-radius: var(--radius-s);
-  background: var(--slate-900);
-  overflow: hidden;
-  display: grid;
-  place-items: center;
-}
-
-.detail .preview img,
-.detail .preview video,
-.detail .preview .preview-still {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  display: block;
-}
-
-/* Frame copied from the card, shown until the video draws its own. */
-.detail .preview .preview-still {
-  pointer-events: none;
-}
-
-.detail .preview.is-audio {
-  width: 100%;
-  aspect-ratio: auto;
-  max-height: none;
-  gap: 12px;
-  padding: 18px 12px 14px;
-}
-
-/* An audio without a picture: an audio mark above the player. */
-.detail .preview .preview-glyph {
-  display: grid;
-  place-items: center;
-  width: 56px;
-  height: 56px;
-  border-radius: 50%;
-  background: var(--slate-700);
-  color: var(--text-soft);
-}
-
-.detail .preview .preview-glyph svg {
-  width: 26px;
-  height: 26px;
-}
-
-.detail .preview audio {
-  width: 100%;
-}
-
-.detail .preview.has-artwork {
-  display: grid;
-  gap: 10px;
-  padding: 0 0 12px;
-}
-
-.detail .preview .preview-artwork {
-  position: static;
-  width: 100%;
-  max-height: 260px;
-  object-fit: contain;
-  background: var(--slate-900);
-}
-
-.detail .preview.has-artwork audio {
-  width: calc(100% - 24px);
-  margin: 0 12px;
-}
-
-/* -------------------------------------------------------- edit: picture */
-/* Picture zone: also the target of a dropped image or link. */
-.artwork-drop {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 10px;
-  border: 1px dashed var(--line);
-  border-radius: var(--radius-s);
-}
-
-.artwork-drop.is-over {
-  border-color: var(--blue);
-  background: var(--slate-700);
-}
-
-.artwork-preview.is-empty {
-  display: grid;
-  place-items: center;
-  color: var(--text-faint);
-}
-
-.artwork-preview.is-empty svg {
-  width: 24px;
-  height: 24px;
-}
-
-.dialog .artwork-hint {
+.inline-input.is-message {
   margin: 0;
-  color: var(--text-faint);
-  font-size: 12px;
-}
-
-.artwork-link {
-  display: flex;
-  gap: 8px;
-}
-
-.artwork-preview {
-  flex: none;
-  width: 72px;
-  height: 72px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-s);
-  object-fit: cover;
-  background: var(--slate-900);
-}
-
-.field-label {
-  color: var(--text-soft);
-  font-size: 13px;
-}
-
-.facts {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 6px 10px;
-  margin: 14px 0;
-  font-size: 13px;
-}
-
-.facts dt {
-  color: var(--text-soft);
-}
-
-.facts dd {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* Origin link: the whole address on its value column, with its copy button.
-   The button is one text line tall so its icon centers on the first line, and
-   a long address wraps under it instead of pushing the icon down. */
-.facts .source-cell {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.facts .source-cell .icon-btn {
-  width: 20px;
-  height: 20px;
-}
-
-.facts .source-url {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-/* The caption edited in place sits on the value column, like the shortcut.
-   Its frame starts 8px before the column so the text stays aligned with the
-   other values instead of being glued to the field's border. */
-.facts .inline-edit {
-  width: calc(100% + 8px);
-  margin: 0 0 0 -8px;
-  padding: 4px 8px;
 }
 
 /* Shortcut row: the value is the button that records a new one. */
-.facts dt:has(+ .shortcut-cell) {
-  align-self: center;
-}
-
 .shortcut-cell {
   display: flex;
   align-items: center;
@@ -956,12 +759,6 @@
 .shortcut-cell .shortcut-clear.btn {
   position: static;
   flex: none;
-}
-
-.shortcut-hint {
-  margin: -6px 0 14px;
-  color: var(--text-faint);
-  font-size: 12px;
 }
 
 .shortcut-key {
@@ -1081,7 +878,7 @@
   opacity: 1;
 }
 
-.grid.is-selecting .card.is-picked .thumb {
+.grid.is-selecting .card.is-picked {
   border-color: var(--amber);
   box-shadow: 0 0 0 1px var(--amber);
 }
@@ -1138,14 +935,7 @@
   margin-left: auto;
 }
 
-/* Below 1200 px the drawer keeps its place but narrows; the toolbar and the
-   selection bar wrap rather than overflow. */
-@media (max-width: 1200px) {
-  .detail {
-    width: min(320px, calc(100vw - var(--rail) - 48px));
-  }
-}
-
+/* Below 1200 px the toolbar and the selection bar wrap rather than overflow. */
 @media (max-width: 1024px) {
   .board-search {
     max-width: 260px;

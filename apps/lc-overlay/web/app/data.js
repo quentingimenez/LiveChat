@@ -3,7 +3,6 @@
 
 import { apiForGuild } from './core/api.js';
 import { readGuildCache, writeGuildCache, invalidateGuildCache, pruneGuildCache } from './core/guild-cache.js';
-import { readLayoutCache, writeLayoutCache, pruneLayoutCache } from './core/layout-cache.js';
 import { settingsControlActive, settingsFormDirty } from './core/dom.js';
 import { pruneSelection } from './core/selection.js';
 import { mediaRefreshDelay } from './core/format.js';
@@ -12,6 +11,7 @@ import { dedupe, isLatest, requestToken } from './core/query.js';
 import { activeGuild, can, canAdmin, state } from './core/state.js';
 import { tabAfterGuildSwitch } from './core/tabs.js';
 import { notify } from './core/toast.js';
+import { closeDetail } from './views/board.js';
 import { renderHeader } from './views/header.js';
 import { renderOnAir } from './views/queue.js';
 import { renderRail } from './views/rail.js';
@@ -142,7 +142,6 @@ export function applyGuilds(payload) {
   state.activeGuildId = payload.activeGuildId || null;
   state.profile = payload.profile || state.profile;
   pruneGuildCache(state.guilds.map((guild) => guild && guild.membership && guild.membership.guildId).filter(Boolean));
-  pruneLayoutCache(state.guilds.map((guild) => guild && guild.membership && guild.membership.guildId).filter(Boolean));
   if (state.pendingGuildId && state.pendingGuildId === state.activeGuildId) {
     state.pendingGuildId = null;
   }
@@ -217,8 +216,9 @@ function resetGuildData() {
   state.items = [];
   state.itemsLoaded = false;
   state.itemsError = null;
-  state.boardLayout = null;
-  state.selectedId = null;
+  // The detail window belongs to the guild being left: close it through the
+  // board (data.js <-> board.js is the cycle view.js already creates).
+  closeDetail();
   state.queue = { playing: null, pending: [], at: 0 };
   state.queueStale = false;
   state.queueLoaded = false;
@@ -261,13 +261,7 @@ function adoptGuild(guildId) {
     state.items = items.value || [];
     state.itemsLoaded = true;
     state.itemsError = null;
-    state.boardLayout = null;
     state.selection = pruneSelection(state.selection, state.items.map((item) => item.id));
-  } else {
-    // No cached board for this session, but the last visit may have left its
-    // shapes on disk: the skeleton can then reuse the real media dimensions.
-    const layout = readLayoutCache(guildId);
-    state.boardLayout = layout ? layout.items : null;
   }
   const queue = readGuildCache(guildId, 'queue');
   if (queue) {
@@ -447,12 +441,8 @@ async function loadItemsForGuild(guildId, quiet) {
     state.items = body.items || [];
     state.itemsLoaded = true;
     state.itemsError = null;
-    state.boardLayout = null;
     state.selection = pruneSelection(state.selection, state.items.map((item) => item.id));
     writeGuildCache(guildId, 'items', state.items);
-    // Keep the shapes of this visit for the next first paint, after a restart
-    // or once the in-memory snapshot is gone.
-    writeLayoutCache(guildId, state.items);
     scheduleItemsRefresh();
   } catch (error) {
     if (!isLatest(token) || guildId !== state.activeGuildId) {
@@ -462,7 +452,6 @@ async function loadItemsForGuild(guildId, quiet) {
     if (error.code === 'forbidden') {
       state.items = [];
       state.itemsError = null;
-      state.boardLayout = null;
       writeGuildCache(guildId, 'items', []);
     } else {
       // A transient failure (rate limit, server restarting) keeps the cards

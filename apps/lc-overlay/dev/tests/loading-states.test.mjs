@@ -38,27 +38,26 @@ test('the board paints a skeleton before its first answer', () => {
   assert.ok(skeleton >= 0 && empty > skeleton, 'skeleton before the empty state');
 });
 
-test('board skeletons keep the real card anatomy and masonry spans', () => {
-  // A placeholder card has the media frame (same ratio and span as a real
-  // card) and two title lines, instead of a fixed-height rectangle.
-  assert.match(board, /const SKELETON_RATIOS =/);
-  assert.match(board, /style: cardStyle\(ratio\)/);
+test('board skeletons keep the regular card anatomy', () => {
+  // A placeholder card has the same framed surface, 16 / 10 frame, body and
+  // two title lines as a real card, instead of a fixed-height rectangle.
+  assert.match(board, /const SKELETON_CARDS = \d+/);
+  assert.match(board, /class: 'card is-skeleton'/);
   assert.match(board, /class: 'card-frame'/);
+  assert.match(board, /class: 'card-body'/);
   assert.match(board, /class: 'card-title-skeleton'/);
   assert.match(css, /\.card\.is-skeleton \.card-frame/);
-  assert.match(css, /aspect-ratio: var\(--ratio/);
+  assert.match(css, /aspect-ratio:\s*16 \/ 10/);
   assert.match(css, /\.card-title-skeleton \{/);
 });
 
-test('board skeletons reuse the persistent last-visit layout', () => {
-  // The in-memory snapshot is gone after a restart, but the shapes of the last
-  // visit are persisted: the skeleton uses them before the first answer.
-  assert.match(stateSource, /boardLayout: null/);
-  assert.match(data, /readLayoutCache\(guildId\)/);
-  assert.match(data, /writeLayoutCache\(guildId, state\.items\)/);
-  assert.match(data, /pruneLayoutCache\(/);
-  assert.match(board, /state\.boardLayout/);
-  assert.match(board, /cardRatio\(media\)/);
+test('the regular skeleton no longer follows a cached masonry layout', () => {
+  // Every skeleton card has the same shape now: the persisted per-media shapes
+  // (and the masonry spans they fed) have nothing left to describe.
+  assert.doesNotMatch(board, /SKELETON_RATIOS|cardRatio|cardStyle|core\/masonry\.js/);
+  assert.doesNotMatch(board, /state\.boardLayout/);
+  assert.doesNotMatch(data, /boardLayout|layout-cache|LayoutCache/);
+  assert.doesNotMatch(stateSource, /boardLayout/);
 });
 
 test('a board read failure is an error with a retry, not an empty board', () => {

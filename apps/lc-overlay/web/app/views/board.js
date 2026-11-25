@@ -1,10 +1,10 @@
-// Media board: grid, cards, detail panel, play, shortcuts, edit and delete.
+// Media board: grid, cards, detail window, play, shortcuts, edit and delete.
 
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
 import { findAction } from '../core/find-shortcut.js';
-import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
+import { acceleratorFromEvent, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import {
   activeFilterCount,
@@ -18,31 +18,22 @@ import {
 } from '../core/board-filters.js';
 import {
   artworkOf,
-  cardClicked,
   cardPicture,
   cardPreviewAt,
-  cardHovered,
-  CLOSED_VIEW,
-  drawerUsed,
   mediaPath,
   pictureKey,
-  pointerLeft,
-  previewKey,
-  pruneView,
   realignPreviewAt,
-  sameView,
-  shownId,
   thumbnailOf,
   withVersion,
 } from '../core/detail-drawer.js';
+import { detailActionIds, previewAllowed, previewMeta } from '../core/detail-actions.js';
 import { h, icon, registerIcons } from '../core/dom.js';
-import { formatBoardUsage, formatDuration, formatBytes, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration } from '../core/format.js';
-import { cardRatio, cardStyle } from '../core/masonry.js';
+import { formatBoardUsage, formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration, relativeDateLabel } from '../core/format.js';
 import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
 import { pastedMediaFiles } from '../core/media-files.js';
 import { badgeForItem } from '../core/queue-badges.js';
 import {
-  cardClickAction,
+  cardPointerAction,
   copiedLinksSummary,
   deletableIds,
   deleteDialogText,
@@ -64,10 +55,11 @@ import { invoke, listen } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
 import { previewVolume } from '../core/sound.js';
 import { notify } from '../core/toast.js';
-import { confirmDialog, copyText, openDialog } from '../core/ui.js';
+import { confirmDialog, copyText } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
 import { addDialogOpen, dropOnAddDialog, highlightAddDialog, openAddDialog } from './add-media.js';
 import { openImportDialog } from './import-media.js';
+import { createMediaDetail } from './media-detail.js';
 import { openSayDialog } from './say.js';
 import { canOpenEditor, openMediaEditor } from './editor/index.js';
 import { openUploadMenu, renderUploadCard, startFileUpload, startLinkRefresh, uploadsForGuild } from './uploads.js';
@@ -99,19 +91,20 @@ function openCardMenu(event, item) {
     { heading: itemTitle(item) },
     can('play') ? { label: 'Jouer sur les overlays', icon: 'play', onSelect: () => playItem(item) } : null,
     {
-      label: state.selectedId === item.id && state.detailPinned ? 'Masquer' : 'Détails',
+      label: 'Détails',
       onSelect: () => selectItem(item.id),
     },
     canFavorite()
       ? { label: item.favorite ? 'Retirer' : 'Favori', icon: 'star', onSelect: () => toggleFavorite(item) }
       : null,
     canOpenEditor(item) ? { label: 'Modifier', icon: 'edit', onSelect: () => openMediaEditor(item, itemTitle(item)) } : null,
-    { label: 'Infos…', onSelect: () => openInfoDialog(item) },
     can('play')
       ? {
           label: shortcutFor(item.id) ? 'Changer le raccourci' : 'Définir un raccourci',
           onSelect: () => {
-            applyView({ selectedId: item.id, pinned: true, peekId: null });
+            // The capture lives in the window's information column: open it
+            // first, then start listening.
+            selectItem(item.id);
             state.capturing = false;
             startCapture(item);
           },
@@ -158,8 +151,9 @@ function paintFavorite(id, favorite) {
   applyFavorite(id, favorite);
   if (state.filters.favorites) {
     refreshGrid(false);
+  } else {
+    syncDetail();
   }
-  syncDetail();
 }
 
 export async function toggleFavorite(item, control) {
@@ -212,28 +206,6 @@ function syncFavorite(card, favorite) {
 // grid flash. `entry.item` always points at the latest copy of the item, so
 // the card's handlers never act on stale data.
 const cards = new Map(); // itemId -> { node, key, item, loadedUrl }
-// The previews of the pinned media and of the one being peeked, kept across
-// renders of the view: rebuilding one reloaded its video and showed the
-// loading spinner again. Coming back from a peek finds the pinned video where
-// it was.
-const previews = new Map(); // itemId -> { key, node }
-
-function pausePreview(entry) {
-  const media = entry.node.querySelector('audio, video');
-  if (media && !media.paused) {
-    media.pause();
-  }
-}
-
-// Keeps only the previews the drawer can still show without a new hover.
-function prunePreviews() {
-  for (const [id, entry] of previews) {
-    if (id !== state.selectedId && id !== peekId) {
-      pausePreview(entry);
-      previews.delete(id);
-    }
-  }
-}
 
 // Expiry of a signed URL (`exp`, Unix seconds), in milliseconds.
 function urlExpiresAt(url) {
@@ -250,8 +222,6 @@ function cardKey(item) {
     itemTitle(item),
     item.media.kind,
     shownDuration(item),
-    item.media.width ?? null,
-    item.media.height ?? null,
     mediaPath(item.mediaUrl),
     mediaPath(item.artwork && item.artwork.url),
     // The picture keeps its URL when the editor replaces it: its version is
@@ -389,6 +359,37 @@ function refreshUploadCards() {
   grid.prepend(...nodes);
 }
 
+// One meta line under the title: the kind (icon and label), the author and the
+// relative date, separated by dots. Everything is one no-wrap line; the author
+// is the part that gives way when the card is narrow.
+function cardMeta(item) {
+  const kind = item.media.kind;
+  const author = authorName(item);
+  const date = relativeDateLabel(item.createdAt);
+  return h(
+    'p',
+    { class: 'card-meta' },
+    icon(kind),
+    h('span', { class: 'card-meta-kind' }, KIND_LABELS[kind] || kind),
+    h('span', { class: 'card-meta-dot' }, '·'),
+    h('span', { class: 'card-meta-author', title: author }, author),
+    date ? h('span', { class: 'card-meta-dot' }, '·') : null,
+    date ? h('span', { class: 'card-meta-date' }, date) : null,
+  );
+}
+
+// Runs what cardPointerAction decided for a card: opening the window and the
+// selection gestures are the only things a click on a card can do.
+function applyCardPointerAction(action, id) {
+  if (action === 'details') {
+    selectItem(id);
+  } else if (action === 'pick') {
+    pickCard(id);
+  } else if (action === 'toggle' || action === 'range') {
+    pickItem(id, action === 'range');
+  }
+}
+
 function buildCard(entry) {
   const item = entry.item;
   const kind = item.media.kind;
@@ -406,26 +407,14 @@ function buildCard(entry) {
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
       onClick: (event) => {
-        const action = cardClickAction({
+        const action = cardPointerAction({
           selecting: state.selecting,
+          clickCount: event.detail,
           shiftKey: event.shiftKey,
           ctrlKey: event.ctrlKey,
           metaKey: event.metaKey,
         });
-        if (action === 'details') {
-          selectItem(entry.item.id, event.detail);
-        } else if (action === 'pick') {
-          pickCard(entry.item.id);
-        } else {
-          pickItem(entry.item.id, action === 'range');
-        }
-      },
-      // A double click plays the media, like the Play button. It leaves the
-      // drawer as it was (see selectItem).
-      onDblclick: (event) => {
-        if (can('play') && !state.selecting) {
-          playItem(entry.item, event.currentTarget);
-        }
+        applyCardPointerAction(action, entry.item.id);
       },
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
@@ -436,42 +425,31 @@ function buildCard(entry) {
   if (picture.url) {
     thumbObserver.observe(thumb);
   }
-  const ratio = artwork ? { width: artwork.width || 1, height: artwork.height || 1 } : item.media;
   const node = h(
     'div',
     {
       class: 'card',
       'data-item-id': item.id,
-      // Height of the media's own shape (masonry, see core/masonry.js).
-      style: cardStyle(cardRatio(ratio)),
       onContextmenu: (event) => openCardMenu(event, entry.item),
-      // The thumbnail and the card's own buttons handle their click; the
-      // title and the card's background open the drawer too (or pick the
-      // media in the selection mode).
+      // The thumbnail owns its own clicks; the card's background opens the
+      // window on a double click (or picks the media in the selection mode).
       onClick: (event) => {
-        if (event.target.closest('button')) {
+        if (event.target.closest('.thumb')) {
           return;
         }
-        const action = cardClickAction({
+        const action = cardPointerAction({
           selecting: state.selecting,
+          clickCount: event.detail,
           shiftKey: event.shiftKey,
           ctrlKey: event.ctrlKey,
           metaKey: event.metaKey,
+          // The card's buttons (play, favorite) keep their own click.
+          onControl: Boolean(event.target.closest('button, input, a, select')),
         });
-        if (action === 'details') {
-          selectItem(entry.item.id, event.detail);
-        } else if (action === 'pick') {
-          pickCard(entry.item.id);
-        } else {
-          pickItem(entry.item.id, action === 'range');
-        }
+        applyCardPointerAction(action, entry.item.id);
       },
-      onMouseenter: () => {
-        if (!state.selecting && hoverDetails) {
-          hoverDetail(entry.item.id);
-        }
-      },
-      onMouseleave: leaveCard,
+      onMouseenter: (event) => mediaDetail.hoverCard(event.currentTarget),
+      onMouseleave: (event) => mediaDetail.leaveCard(event.currentTarget),
     },
     h(
       'div',
@@ -508,7 +486,12 @@ function buildCard(entry) {
           )
         : null,
     ),
-    h('p', { class: 'card-title', title: itemTitle(item) }, itemTitle(item)),
+    h(
+      'div',
+      { class: 'card-body' },
+      h('p', { class: 'card-title', title: itemTitle(item) }, itemTitle(item)),
+      cardMeta(item),
+    ),
   );
   syncFavorite(node, Boolean(item.favorite));
   return node;
@@ -539,7 +522,6 @@ function renderCard(item) {
       thumb.dataset.previewAt = previewAt === null ? '' : String(previewAt);
     }
   }
-  entry.node.classList.toggle('is-selected', state.selectedId === item.id);
   entry.node.classList.toggle('is-picked', state.selection.has(item.id));
   syncFavorite(entry.node, Boolean(item.favorite));
   syncBadge(entry.node, triggerBadgeFor(item.id));
@@ -577,60 +559,30 @@ function syncBadge(card, badge) {
   node.textContent = badge.label;
 }
 
-// Common shapes of a board (portrait phone, landscape, square, audio wide).
-// The skeleton reuses the same masonry spans and the same thumbnail + title
-// anatomy as a real card: it is a placeholder, not a different kind of tile.
-const SKELETON_RATIOS = [
-  16 / 9,
-  1,
-  2,
-  9 / 16,
-  3 / 2,
-  9 / 16,
-  2,
-  1,
-  9 / 16,
-  2,
-  16 / 10,
-  3 / 4,
-];
-
-// A last-visit layout can describe up to 60 media; only the first screenful is
-// painted, so the shimmer never animates dozens of off-screen gradients.
-const MAX_SKELETON_CARDS = 24;
-
-// The shapes of the guild's last visit when the persistent layout cache has
-// them, else the generic distribution above.
-function skeletonRatios(count) {
-  const layout = Array.isArray(state.boardLayout) ? state.boardLayout : null;
-  if (layout && layout.length > 0) {
-    return layout
-      .slice(0, MAX_SKELETON_CARDS)
-      .map((media) => cardRatio(media));
-  }
-  return Array.from(
-    { length: count },
-    (_, index) => SKELETON_RATIOS[index % SKELETON_RATIOS.length],
-  );
-}
+// Every card of the regular grid has the same shape: a fixed run of
+// placeholders is enough to paint the first screenful, whatever the media the
+// guild holds. Only the first screenful is painted, so the shimmer never
+// animates dozens of off-screen gradients.
+const SKELETON_CARDS = 12;
 
 // First load: the grid's shape is painted immediately, so the board no longer
 // looks like an empty guild while the first request is in flight.
-function boardSkeletonCards(count = SKELETON_RATIOS.length) {
-  return skeletonRatios(count).map((ratio) => {
+function boardSkeletonCards(count = SKELETON_CARDS) {
+  return Array.from({ length: count }, () => {
     return h(
       'div',
-      {
-        class: 'card is-skeleton',
-        style: cardStyle(ratio),
-        'aria-hidden': 'true',
-      },
+      { class: 'card is-skeleton', 'aria-hidden': 'true' },
       h('div', { class: 'card-frame' }, h('span', { class: 'skeleton-block' })),
       h(
         'div',
-        { class: 'card-title-skeleton' },
-        h('span', { class: 'skeleton-block' }),
-        h('span', { class: 'skeleton-block is-short' }),
+        { class: 'card-body' },
+        h(
+          'div',
+          { class: 'card-title-skeleton' },
+          h('span', { class: 'skeleton-block' }),
+          h('span', { class: 'skeleton-block is-short' }),
+        ),
+        h('div', { class: 'card-meta-skeleton' }, h('span', { class: 'skeleton-block' })),
       ),
     );
   });
@@ -648,14 +600,12 @@ function retryItems() {
 
 export function renderBoard() {
   if (state.info && !can('viewBoard')) {
+    closeDetail();
     return h('div', { class: 'empty' }, h('h2', null, 'Board réservé aux membres'), h('p', null, "Cette guilde ne montre pas son board aux invités. Tu reçois quand même les médias diffusés."));
   }
   pruneCards();
   const items = visibleItems();
   const uploads = activeUploads();
-  const selected = shownItem();
-  // A preview no longer shown must not keep its video alive.
-  prunePreviews();
   const filterCount = activeFilterCount(state.filters);
   // Occupation du board (`GET /overlay/guild`): hidden while unknown, e.g. for
   // a role without the `viewBoard` right.
@@ -748,7 +698,7 @@ export function renderBoard() {
       { class: 'grid board-skeleton', role: 'status', 'aria-busy': 'true' },
       h('span', { class: 'sr-only' }, 'Chargement du board…'),
       uploads.map(uploadCard),
-      boardSkeletonCards(uploads.length > 0 ? 8 : 12),
+      boardSkeletonCards(uploads.length > 0 ? 8 : SKELETON_CARDS),
     );
   } else if (state.itemsError && state.items.length === 0 && uploads.length === 0) {
     content = h(
@@ -775,7 +725,12 @@ export function renderBoard() {
     );
   } else {
     // Provisional cards always come first, whatever the search and filter.
-    content = h('div', { class: `grid${state.selecting ? ' is-selecting' : ''}`, id: 'grid' }, uploads.map(uploadCard), items.map(renderCard));
+    content = h(
+      'div',
+      { class: `grid${state.selecting ? ' is-selecting' : ''}${hoverPreview ? ' is-hover-preview' : ''}`, id: 'grid' },
+      uploads.map(uploadCard),
+      items.map(renderCard),
+    );
   }
   // A refresh that failed keeps the last known board: say it is stale instead
   // of replacing the cards or pretending they are up to date.
@@ -788,12 +743,15 @@ export function renderBoard() {
           h('button', { class: 'btn is-quiet', onClick: retryItems }, 'Réessayer'),
         )
       : null;
+  // The detail window lives outside the view: a board refresh only rebuilds
+  // its information column, and closes it when its media left the board.
+  syncDetail();
   return h(
     'div',
     null,
     head,
     stale,
-    h('div', { class: 'board' }, content, selected ? renderDetail(selected) : null),
+    h('div', { class: 'board' }, content),
     state.selecting ? renderSelectionBar() : null,
   );
 }
@@ -907,18 +865,16 @@ function deleteSelection(items) {
     }
     const summary = deleteSummary(deleted, failed);
     notify(summary.message, summary.isError);
-    applyView(CLOSED_VIEW);
+    closeDetail();
     leaveSelection();
     loadItems();
   });
 }
 
 export function enterSelection() {
-  clearDrawerTimers();
-  // A pending single click must not open the drawer after the mode started.
-  clearTimeout(clickTimer);
-  clickTimer = null;
-  applyView(CLOSED_VIEW);
+  // The selection takes over the board: the window and the preview go.
+  closeDetail();
+  mediaDetail.closePreview();
   state.capturing = false;
   state.selecting = true;
   state.selection = new Set();
@@ -926,7 +882,6 @@ export function enterSelection() {
   // Paints the mode in place: the grid is not rebuilt, so the scroll position
   // the viewer was reading cannot move. Rebuilding the whole view here is what
   // sent the board back to the top when the mode started.
-  syncDetail();
   syncSelection();
   syncSelectionToggle();
   document.getElementById('grid')?.classList.add('is-selecting');
@@ -971,8 +926,6 @@ function pickItem(id, range) {
 // Ctrl+click (or Cmd+click) picks a card's media even outside the selection
 // mode: the first one enters the mode, the next ones toggle the media.
 function pickCard(id) {
-  clearTimeout(clickTimer);
-  clickTimer = null;
   if (!state.selecting) {
     enterSelection();
   }
@@ -1173,6 +1126,9 @@ function refreshGrid(fromSearch) {
     return;
   }
   grid.replaceChildren(...uploads.map(uploadCard), ...items.map(renderCard));
+  // A filter can hide the media the window shows: it then closes instead of
+  // staying over a card that is no longer on the board.
+  syncDetail();
 }
 
 function setKind(kind) {
@@ -1183,224 +1139,90 @@ function setKind(kind) {
   refreshGrid(false);
 }
 
-// --- drawer: pinned by a click, following the pointer otherwise ---
-// `state.selectedId` and `state.detailPinned` hold the selected media;
-// `peekId` is another media looked at by hovering while one is pinned (see
-// core/detail-drawer.js).
-const HOVER_DELAY_MS = 450;
-const LEAVE_DELAY_MS = 300;
-let hoverTimer = null;
-let leaveTimer = null;
-let peekId = null;
+// --- detail window ---------------------------------------------------------
+// « Ouvrir l'aperçu au survol » is a device setting (Paramètres › Affichage).
+// Read once, then kept current by `overlay://device-settings`, like
+// core/sound.js does for the sound settings. On by default: the shell may turn
+// it off, and the value stays on until it says otherwise.
+let hoverPreview = true;
 
-// « Afficher les détails au survol » is a device setting (Paramètres ›
-// Affichage). Read once, then kept current by `overlay://device-settings`,
-// like core/sound.js does for the sound settings. Off by default: a hover
-// only opens the drawer when that setting is explicitly on.
-let hoverDetails = false;
+// One controller for the board, created once: the hover preview, the modal
+// detail window and their transitions live in views/media-detail.js.
+const mediaDetail = createMediaDetail({
+  grid: () => document.getElementById('grid'),
+  view: () => document.getElementById('view'),
+  hoverEnabled: () => previewAllowed({
+    hoverPreview,
+    selecting: state.selecting,
+    capturing: state.capturing,
+    dialogOpen: Boolean(document.getElementById('dialog-root')?.firstElementChild),
+  }),
+  describe: (id) => describeItem(id),
+  onOpen: (id) => {
+    state.detailId = id;
+  },
+  onClose: () => {
+    // A newer window may already be open while the old one fades out: its id
+    // and its capture must survive this late close.
+    if (mediaDetail.openId()) {
+      return;
+    }
+    // A shortcut capture lives in the window's control: closing the window
+    // (backdrop, back button, Escape) stops listening for a key.
+    state.capturing = false;
+    state.detailId = null;
+  },
+});
 
-// Turning the setting off closes a drawer opened by a hover and drops a peek;
-// a drawer pinned by a click stays. Turning it back on needs nothing.
-function applyHoverDetails(view) {
+// Turning the setting off closes the preview at once. Turning it back on
+// needs nothing; a window already open is not a hover and stays.
+function applyHoverPreview(view) {
   if (!view || typeof view !== 'object') {
     return;
   }
-  hoverDetails = view.hoverDetails === true;
-  if (hoverDetails) {
+  hoverPreview = view.hoverPreview !== false;
+  // The card's own hover (lift, zoom, buttons) only plays without the preview.
+  document.getElementById('grid')?.classList.toggle('is-hover-preview', hoverPreview);
+  if (!hoverPreview) {
+    mediaDetail.closePreview();
+  }
+}
+
+// The shell keeps the device settings: read them once (the board's preview is
+// on until the shell says otherwise) and follow every change without a restart.
+invoke('settings_get').then(applyHoverPreview).catch(() => {});
+listen('overlay://device-settings', applyHoverPreview);
+
+// Opens the detail window at once. Its callers only ask on a double click, a
+// keyboard click, the context menu or the shortcut capture: a single mouse
+// click on a card does nothing (see cardPointerAction).
+export function selectItem(id) {
+  if (!cards.has(id)) {
     return;
   }
-  clearDrawerTimers();
-  const next = pointerLeft(currentView());
-  if (!sameView(next, currentView())) {
-    applyView(next);
-    syncDetail();
-  }
+  mediaDetail.openDetail(cards.get(id).node);
 }
 
-function currentView() {
-  return { selectedId: state.selectedId, pinned: state.detailPinned, peekId };
-}
-
-function applyView(view) {
-  state.selectedId = view.selectedId;
-  state.detailPinned = view.pinned;
-  peekId = view.peekId;
-}
-
-// The media the drawer shows: the peeked one, else the selected one.
-function shownItem() {
-  applyView(pruneView(currentView(), (id) => state.items.some((item) => item.id === id)));
-  const id = shownId(currentView());
-  return (id && state.items.find((item) => item.id === id)) || null;
-}
-
-function clearDrawerTimers() {
-  clearTimeout(hoverTimer);
-  clearTimeout(leaveTimer);
-  hoverTimer = null;
-  leaveTimer = null;
-}
-
-// A mouse click waits this long before toggling the drawer, so that a double
-// click (which plays the media) neither opens nor closes it.
-const DOUBLE_CLICK_MS = 250;
-let clickTimer = null;
-
-// A click pins the drawer on a media (a second click on it closes it).
-// `clickCount` is the `detail` of the click event, when there is one.
-export function selectItem(id, clickCount) {
-  clearTimeout(clickTimer);
-  clickTimer = null;
-  if (clickCount === 1) {
-    clickTimer = setTimeout(() => {
-      clickTimer = null;
-      toggleDetail(id, 1);
-    }, DOUBLE_CLICK_MS);
+// The window survives a board render (it lives outside the view): a refresh
+// rebuilds only its information column. A media deleted or filtered out of the
+// visible board closes it (the module then fades out instead of flying back).
+function syncDetail() {
+  const id = mediaDetail.openId();
+  if (!id) {
     return;
   }
-  toggleDetail(id, clickCount);
-}
-
-function toggleDetail(id, clickCount) {
-  clearDrawerTimers();
-  applyView(cardClicked(currentView(), id, clickCount));
-  state.capturing = false;
-  syncDetail();
+  if (!visibleItems().some((item) => item.id === id)) {
+    closeDetail();
+    return;
+  }
+  mediaDetail.refreshDetail();
 }
 
 export function closeDetail() {
-  clearDrawerTimers();
-  // A single card click waits to see whether it starts a double click: an
-  // explicit close cancels its pending opening.
-  clearTimeout(clickTimer);
-  clickTimer = null;
-  applyView(CLOSED_VIEW);
+  // Closing the window while it was recording a shortcut cancels the capture:
+  // the control that listens for it is gone.
   state.capturing = false;
-  syncDetail();
-}
-
-// Hovering a card shows its details after a short delay, also while another
-// media is pinned: the drawer then peeks at the hovered one. With the device
-// setting off, a hover does nothing.
-function hoverDetail(id) {
-  if (!hoverDetails) {
-    return;
-  }
-  clearDrawerTimers();
-  hoverTimer = setTimeout(() => {
-    hoverTimer = null;
-    if (!hoverDetails) {
-      return;
-    }
-    const next = cardHovered(currentView(), id, hoverDetails);
-    if (state.capturing || sameView(next, currentView())) {
-      return;
-    }
-    applyView(next);
-    syncDetail();
-  }, HOVER_DELAY_MS);
-}
-
-function leaveCard() {
-  clearTimeout(hoverTimer);
-  hoverTimer = null;
-  scheduleHoverClose();
-}
-
-// Once the pointer has left the cards and the drawer, an unpinned drawer
-// closes and a peek gives the drawer back to the pinned media.
-function scheduleHoverClose() {
-  clearTimeout(leaveTimer);
-  leaveTimer = null;
-  if (sameView(pointerLeft(currentView()), currentView())) {
-    return;
-  }
-  leaveTimer = setTimeout(() => {
-    leaveTimer = null;
-    const next = pointerLeft(currentView());
-    if (state.capturing || sameView(next, currentView())) {
-      return;
-    }
-    applyView(next);
-    syncDetail();
-  }, LEAVE_DELAY_MS);
-}
-
-// Updates the drawer in place: the grid never moves and the preview (and its
-// video) is reused while the same media stays shown.
-function syncDetail() {
-  const board = document.querySelector('.view .board');
-  if (!board) {
-    renderView();
-    return;
-  }
-  const selected = shownItem();
-  prunePreviews();
-  const current = board.querySelector(':scope > .detail');
-  const next = selected ? renderDetail(selected) : null;
-  if (current && next) {
-    // A refresh of the same media (a playback badge, a favorite) must not
-    // replay the drawer's entry animation.
-    if (current.dataset.itemId === next.dataset.itemId) {
-      next.classList.add('is-refresh');
-    }
-    current.replaceWith(next);
-  } else if (current) {
-    current.remove();
-  } else if (next) {
-    board.append(next);
-  }
-  syncSelectedCards();
-}
-
-// The highlighted card is the selected media, not the one being peeked.
-function syncSelectedCards() {
-  for (const [id, entry] of cards) {
-    entry.node.classList.toggle('is-selected', id === state.selectedId);
-  }
-}
-
-// The shell keeps the device settings: read them once (the board may start
-// with details on hover off) and follow every change without a restart.
-invoke('settings_get').then(applyHoverDetails).catch(() => {});
-listen('overlay://device-settings', applyHoverDetails);
-
-// The drawer floats over the view, between the header and the footer. The
-// toolbar and the open filters panel stick to the top of the view
-// (`.board-head`): the drawer starts under them wherever the grid is scrolled,
-// so their buttons stay reachable.
-function placeDrawer(node) {
-  const view = document.getElementById('view');
-  if (!view || !node.isConnected) {
-    return;
-  }
-  const box = view.getBoundingClientRect();
-  const board = node.closest('.board');
-  const boardTop = board ? board.getBoundingClientRect().top : box.top;
-  // Once scrolled, the grid's top goes above the sticky head: the drawer then
-  // follows the head's bottom instead of climbing over it.
-  const head = view.querySelector('.board-head');
-  const headBottom = head ? head.getBoundingClientRect().bottom : box.top;
-  node.style.top = `${Math.round(Math.max(box.top + 12, boardTop, headBottom))}px`;
-  node.style.bottom = `${Math.round(Math.max(12, window.innerHeight - box.bottom + 12))}px`;
-}
-
-// The view shrinks when the on-air bar shows up (a playback started after the
-// drawer opened): follow its box, not only the window's.
-function replaceDrawer() {
-  const node = document.querySelector('.view .detail');
-  if (node) {
-    placeDrawer(node);
-  }
-}
-
-window.addEventListener('resize', replaceDrawer);
-const viewNode = document.getElementById('view');
-if (viewNode) {
-  viewNode.addEventListener('scroll', replaceDrawer, { passive: true });
-}
-if (viewNode && typeof ResizeObserver === 'function') {
-  new ResizeObserver(replaceDrawer).observe(viewNode);
+  mediaDetail.closeDetail();
 }
 
 document.addEventListener('keydown', (event) => {
@@ -1410,7 +1232,7 @@ document.addEventListener('keydown', (event) => {
     handled: event.defaultPrevented,
     capturing: state.capturing,
     dialogOpen: Boolean(document.getElementById('dialog-root').firstElementChild),
-    drawerOpen: Boolean(state.selectedId),
+    detailOpen: Boolean(mediaDetail.openId()),
     selecting: state.selecting,
   });
   if (action === 'closeDetail') {
@@ -1472,27 +1294,6 @@ document.addEventListener('keydown', (event) => {
   }
 });
 
-// A click outside the drawer and outside a card closes it. The drawer's own
-// controls, a card (which opens or picks), an open dialog and a context menu
-// keep it: the drawer may stay behind the dialog it opened, and « Afficher les
-// détails » must not close the drawer it just opened. Capture phase: a control
-// inside the drawer may re-render it on click, and a later check would then see
-// a drawer that no longer contains the clicked element.
-document.addEventListener(
-  'click',
-  (event) => {
-    const drawer = document.querySelector('.view .detail');
-    if (!drawer || !(event.target instanceof Element)) {
-      return;
-    }
-    if (drawer.contains(event.target) || event.target.closest('.card, #dialog-root, .ctx-menu')) {
-      return;
-    }
-    closeDetail();
-  },
-  true,
-);
-
 // Sends one media to the overlays and records its queue badge. Returns the
 // command's response, a refusal `{ ok: false, message }` when the command
 // itself failed, or `null` when it answered nothing.
@@ -1553,12 +1354,11 @@ export function shortcutFor(itemId) {
   return entry ? entry[0] : null;
 }
 
-// --- detail preview ---
+// --- detail window content -------------------------------------------------
 // A loaded thumbnail URL is reused while it stays valid long enough to watch
 // the media: the browser already has its first bytes.
 const PREVIEW_URL_MARGIN_MS = 10 * 60 * 1000;
-// Widest still copied from a thumbnail.
-const STILL_MAX_WIDTH = 640;
+
 function previewUrl(item) {
   const card = cards.get(item.id);
   const loaded = card && card.loadedUrl;
@@ -1568,119 +1368,612 @@ function previewUrl(item) {
   return item.mediaUrl || null;
 }
 
-function ratioOf(width, height) {
-  return Number(width) > 0 && Number(height) > 0 ? `${Number(width)} / ${Number(height)}` : null;
-}
-
-// Copy of the frame the card already shows, laid over the detail video until
-// the video can draw its own first frame.
-function cardStill(itemId) {
-  const card = cards.get(itemId);
-  const video = card && card.node.querySelector('.thumb video');
-  if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+// Everything views/media-detail.js needs to know about one media. The module
+// only handles ids: the board state and the cards stay here.
+function describeItem(id) {
+  const item = state.items.find((entry) => entry.id === id);
+  if (!item) {
     return null;
   }
-  const scale = Math.min(1, STILL_MAX_WIDTH / video.videoWidth);
-  const canvas = h('canvas', {
-    class: 'preview-still',
-    width: String(Math.round(video.videoWidth * scale)),
-    height: String(Math.round(video.videoHeight * scale)),
-    'aria-hidden': 'true',
-  });
-  try {
-    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-  } catch {
-    return null;
-  }
-  return canvas;
-}
-
-function buildPreview(item) {
   const kind = item.media.kind;
-  const url = previewUrl(item);
-  const node = h('div', { class: `preview${kind === 'audio' ? ' is-audio' : ''}` });
-  // The box takes the media's own shape (portrait, square…) instead of 16:10.
-  const ratio = ratioOf(item.media.width, item.media.height);
-  if (ratio) {
-    node.style.setProperty('--ratio', ratio);
-  }
-  const adoptRatio = (width, height) => {
-    if (!ratio && ratioOf(width, height)) {
-      node.style.setProperty('--ratio', ratioOf(width, height));
-    }
+  const artwork = kind === 'audio' ? artworkOf(item) : null;
+  const thumbnail = thumbnailOf(item);
+  const picture = artwork || thumbnail;
+  const poster = picture ? withVersion(picture.url, picture.version) : '';
+  // The preview box takes the media's own shape; an audio takes its picture's.
+  const shape = artwork || item.media;
+  const width = Number(shape.width);
+  const height = Number(shape.height);
+  return {
+    kind,
+    url: previewUrl(item),
+    poster,
+    ratio: width > 0 && height > 0 ? width / height : null,
+    volume: previewVolume(state.activeGuildId),
+    label: itemTitle(item),
+    previewBody: () => previewBody(item),
+    detailBody: () => detailBody(item),
+    // The top bar's tools: the favorite toggle, at the right of the window's
+    // top bar (see describe(id).tools() in media-detail.js).
+    tools: () => (canFavorite() ? favoriteTool(item) : null),
   };
-  if (!url) {
-    node.append(h('span', { class: 'meta' }, 'Média indisponible.'));
-    return node;
-  }
-  if (kind === 'audio') {
-    // An audio shows its picture; without one (or when it cannot be loaded)
-    // it shows an audio mark above the player, never an empty image.
-    const glyph = h('span', { class: 'preview-glyph', 'aria-hidden': 'true' }, icon('audio'));
-    const artwork = artworkOf(item);
-    if (artwork) {
-      node.classList.add('has-artwork');
-      const picture = h('img', { class: 'preview-artwork', src: artwork.url, alt: '' });
-      picture.addEventListener('error', () => {
-        node.classList.remove('has-artwork');
-        picture.replaceWith(glyph);
-      });
-      node.append(picture);
-    } else {
-      node.append(glyph);
-    }
-    const audio = h('audio', { src: url, controls: true, preload: 'metadata' });
-    audio.volume = previewVolume(state.activeGuildId);
-    node.append(audio);
-    return node;
-  }
-  if (kind === 'video') {
-    // The native controls only appear once the first frame is there: shown
-    // earlier, they play their loading spinner for the few milliseconds the
-    // video takes to load.
-    // The thumbnail stands in for the video until its first frame.
-    const thumbnail = thumbnailOf(item);
-    const poster = thumbnail ? withVersion(thumbnail.url, thumbnail.version) : null;
-    const video = h('video', { src: url, preload: 'auto', playsinline: true, poster });
-    video.volume = previewVolume(state.activeGuildId);
-    video.addEventListener('loadedmetadata', () => adoptRatio(video.videoWidth, video.videoHeight));
-    node.append(video);
-    const still = cardStill(item.id);
-    if (still) {
-      node.append(still);
-    }
-    const reveal = () => {
-      video.controls = true;
-      still?.remove();
-    };
-    video.addEventListener('loadeddata', reveal, { once: true });
-    video.addEventListener('error', reveal, { once: true });
-    return node;
-  }
-  const image = h('img', { src: url, alt: '' });
-  image.addEventListener('load', () => adoptRatio(image.naturalWidth, image.naturalHeight));
-  node.append(image);
-  return node;
 }
 
-function detailPreview(item) {
-  const key = previewKey(item);
-  let entry = previews.get(item.id);
-  if (!entry || entry.key !== key) {
-    if (entry) {
-      pausePreview(entry);
-    }
-    entry = { key, node: buildPreview(item) };
-    previews.set(item.id, entry);
+// The favorite toggle that sits in the window's top bar. It is rebuilt with
+// the rest of the window on every board refresh, so it always shows the
+// item's current state.
+function favoriteTool(item) {
+  const favorite = Boolean(item.favorite);
+  return h(
+    'button',
+    {
+      type: 'button',
+      class: `btn is-quiet fav-toggle hp-fav${favorite ? ' is-on' : ''}`,
+      'aria-pressed': String(favorite),
+      title: favorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
+      onClick: (event) => toggleFavorite(item, event.currentTarget),
+    },
+    h('span', { class: 'hp-fav-glyph' }, icon('star')),
+    h('span', { class: 'hp-fav-label' }, favorite ? 'Retirer des favoris' : 'Ajouter aux favoris'),
+  );
+}
+
+// The body under the hover preview: the title, one meta line and the play
+// action. The board opens the window from here too (the module handles the
+// double click); a single click on a control keeps its own meaning.
+function previewBody(item) {
+  const title = itemTitle(item);
+  const meta = previewMeta({
+    kindLabel: KIND_LABELS[item.media.kind] || item.media.kind,
+    duration: formatDuration(shownDuration(item)) || '',
+    author: item.createdByName || '',
+  });
+  return [
+    h('p', { class: 'hp-title', title }, title),
+    h('p', { class: 'hp-facts' }, meta),
+    can('play')
+      ? h(
+          'button',
+          {
+            type: 'button',
+            class: 'btn is-air is-wide hp-send',
+            'aria-label': `Jouer « ${title} » sur les overlays`,
+            title: 'Jouer le média sur les overlays',
+            onClick: (event) => {
+              event.stopPropagation();
+              playItem(item, event.currentTarget);
+            },
+          },
+          h('span', { class: 'hp-send-glyph' }, icon('play')),
+          h('span', { class: 'hp-send-label' }, 'Jouer sur les overlays'),
+        )
+      : null,
+  ];
+}
+
+function addedDateLabel(item) {
+  const date = new Date(item.createdAt);
+  return Number.isNaN(date.getTime())
+    ? null
+    : date.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' });
+}
+
+function authorName(item) {
+  return item.createdByName || 'Inconnu';
+}
+
+// One action of the information column. Which ones exist, and their order, is
+// detailActionIds()'s decision; each node only wires the real handler.
+function detailActionNode(item, action) {
+  switch (action) {
+    case 'play':
+      return h(
+        'button',
+        { type: 'button', class: 'btn is-air is-wide hp-page-send', onClick: (event) => playItem(item, event.currentTarget) },
+        icon('play'),
+        'Jouer sur les overlays',
+      );
+    case 'edit':
+      return h(
+        'button',
+        { type: 'button', class: 'btn is-quiet', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) },
+        icon('edit'),
+        'Modifier',
+      );
+    case 'refresh':
+      return h(
+        'button',
+        { type: 'button', class: 'btn is-quiet', title: 'Rafraîchir le média depuis sa source', onClick: () => refreshSource(item) },
+        icon('refresh'),
+        'Rafraîchir depuis la source',
+      );
+    case 'import':
+      return h(
+        'button',
+        { type: 'button', class: 'btn is-quiet', onClick: () => openImportDialog(menuItemIds(item), leaveSelection) },
+        'Ajouter à une autre guilde…',
+      );
+    case 'delete':
+      return h(
+        'button',
+        { type: 'button', class: 'btn is-quiet is-danger', onClick: () => openDeleteDialog(item) },
+        icon('remove'),
+        'Supprimer…',
+      );
+    default:
+      return null;
   }
-  // A preview out of the drawer (the pinned one during a peek) goes silent
-  // and keeps its position.
-  for (const [id, other] of previews) {
-    if (id !== item.id) {
-      pausePreview(other);
-    }
+}
+
+// The « Durée d’affichage » field being edited survives a board refresh, like
+// the inline title and caption: a refresh rebuilds the column through
+// detailBody and removes the field from the page.
+let displayDurationDraft = null;
+
+// The information column of the detail window: the media's own facts, its
+// inline title and caption, its shortcut, the display time and picture of what
+// the user can edit, and the actions the context menu offered. Every change
+// applies at once, like the inline fields. A board refresh rebuilds only this
+// node.
+function detailBody(item) {
+  if (inlineEdit && inlineEdit.itemId !== item.id) {
+    inlineEdit = null;
   }
-  return entry.node;
+  if (displayDurationDraft && displayDurationDraft.itemId !== item.id) {
+    displayDurationDraft = null;
+  }
+  const kindLabel = KIND_LABELS[item.media.kind] || item.media.kind;
+  const duration = formatDuration(shownDuration(item));
+  const link = sourceLink(item);
+  const canPlay = can('play');
+  const isImage = item.media.kind === 'image';
+  const isAudio = item.media.kind === 'audio';
+  const size = item.media.sizeBytes ? `${(item.media.sizeBytes / 1048576).toFixed(1).replace('.', ',')} Mo` : null;
+  const width = Number(item.media.width);
+  const height = Number(item.media.height);
+  const dimensions = width > 0 && height > 0 ? `${width} × ${height}` : '—';
+  const scale = item.displayScalePercent ? `${item.displayScalePercent} %` : null;
+  const actions = detailActionIds({
+    canPlay,
+    canOpenEditor: canOpenEditor(item),
+    canRefresh: Boolean(link && can('addMedia') && item.media.edited !== true),
+    canImport: importTargets(state.guilds, state.activeGuildId).length > 0,
+    canDelete: Boolean(item.canEdit),
+  });
+  const added = addedDateLabel(item);
+
+  // Display time of an image: a fact row edited in place. Enter or leaving the
+  // field saves it, Escape puts the stored value back and keeps the window
+  // open, an invalid value keeps the field focused with its text. The draft
+  // outlives a rebuild so a refresh while typing loses neither the text nor
+  // the focus.
+  function displayDurationField() {
+    const draft = displayDurationDraft && displayDurationDraft.itemId === item.id ? displayDurationDraft : null;
+    const input = h('input', {
+      class: 'field display-duration',
+      type: 'number',
+      min: '1',
+      max: String(MAX_DISPLAY_DURATION_SEC),
+      step: '1',
+      inputmode: 'numeric',
+      value: draft ? draft.value : item.displayDurationSec ?? '',
+      placeholder: defaultDurationHint(),
+      'aria-label': 'Durée d’affichage (s)',
+    });
+    let settled = false;
+    // Focus and typing record the draft: a refresh rebuilds this field and puts
+    // the value and the caret back where the user left them.
+    const remember = () => {
+      displayDurationDraft = {
+        itemId: item.id,
+        value: input.value,
+        selectionStart: input.selectionStart,
+        selectionEnd: input.selectionEnd,
+      };
+    };
+    const forget = () => {
+      if (displayDurationDraft && displayDurationDraft.itemId === item.id) {
+        displayDurationDraft = null;
+      }
+    };
+    const save = async () => {
+      if (settled) {
+        return;
+      }
+      const parsed = parseDisplayDuration(input.value);
+      if (!parsed.ok) {
+        notify(INVALID_DURATION_MESSAGE, true);
+        input.focus();
+        return;
+      }
+      if (parsed.value === (item.displayDurationSec ?? null)) {
+        settled = true;
+        forget();
+        return;
+      }
+      settled = true;
+      input.disabled = true;
+      const body = await run(() =>
+        api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, { displayDurationSec: parsed.value }),
+      );
+      if (!body) {
+        input.disabled = false;
+        settled = false;
+        return;
+      }
+      item.displayDurationSec = body.item && 'displayDurationSec' in body.item ? body.item.displayDurationSec : parsed.value;
+      forget();
+      notify('Média modifié.');
+      loadItems({ quiet: true });
+    };
+    input.addEventListener('input', remember);
+    input.addEventListener('focus', remember);
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        // Back to the stored value; the window stays open.
+        event.preventDefault();
+        forget();
+        input.value = item.displayDurationSec ?? '';
+        settled = false;
+      } else if (event.key === 'Enter' && !event.isComposing) {
+        event.preventDefault();
+        save();
+      }
+    });
+    // A re-render removes the field without the user leaving it: only a real
+    // blur (the field still in the page) saves, like inlineInput.
+    input.addEventListener('blur', () => {
+      setTimeout(() => {
+        if (input.isConnected) {
+          forget();
+          save();
+        }
+      });
+    });
+    if (draft) {
+      queueMicrotask(() => {
+        input.focus({ preventScroll: true });
+        // A number field exposes no text selection: put the caret back only
+        // when the browser offers one.
+        if (draft.selectionStart !== null && draft.selectionEnd !== null) {
+          try {
+            input.setSelectionRange(draft.selectionStart, draft.selectionEnd);
+          } catch {
+            // The field's type refused the selection: focus alone is enough.
+          }
+        }
+      });
+    }
+    return input;
+  }
+
+  // Picture of an audio: preview or audio mark, the chosen picture is uploaded
+  // at once, « Retirer » deletes it at once and the switch PATCHes its flag.
+  // A drop or a paste on the block belongs to the picture and stops there.
+  function artworkSection() {
+    const current = artworkOf(item);
+    let busy = false;
+    const preview = h('img', {
+      class: 'artwork-preview',
+      alt: '',
+      draggable: 'false',
+      hidden: !current,
+      src: current ? current.url : null,
+    });
+    // Without a picture the zone shows an audio mark, never an empty image.
+    const empty = h('span', { class: 'artwork-preview is-empty', 'aria-hidden': 'true', hidden: Boolean(current) }, icon('audio'));
+    const name = h('span', { class: 'meta' }, current ? 'Image actuelle' : 'Aucune image');
+    const fileInput = h('input', {
+      type: 'file',
+      accept: 'image/*',
+      hidden: true,
+      onChange: () => {
+        chooseFrom(fileInput.files);
+        fileInput.value = '';
+      },
+    });
+    const chooseButton = h('button', { class: 'btn', type: 'button', onClick: () => fileInput.click() }, 'Choisir une image');
+    const removeButton = h('button', { class: 'btn is-quiet', type: 'button', hidden: !current, onClick: () => removePicture() }, 'Retirer');
+    const linkField = h('input', {
+      class: 'field',
+      type: 'url',
+      placeholder: 'https://…',
+      'aria-label': 'Lien d’une image',
+      onKeydown: (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          importLink(linkField.value);
+        }
+      },
+    });
+    const importButton = h('button', { class: 'btn', type: 'button', onClick: () => importLink(linkField.value) }, 'Importer');
+    const onOverlay = h('input', {
+      type: 'checkbox',
+      checked: Boolean(item.artworkOnOverlay),
+      onChange: () => saveOverlay(),
+    });
+    const zone = h(
+      'div',
+      { class: 'artwork-drop' },
+      preview,
+      empty,
+      h(
+        'div',
+        { class: 'artwork-drop-body' },
+        name,
+        h('div', { class: 'row' }, chooseButton, removeButton),
+      ),
+      fileInput,
+    );
+    const controls = [chooseButton, removeButton, importButton, linkField, onOverlay];
+    const setBusy = (value) => {
+      busy = value;
+      for (const control of controls) {
+        control.disabled = value;
+      }
+      zone.classList.toggle('is-busy', value);
+    };
+    const changed = () => {
+      notify('Média modifié.');
+      loadItems({ quiet: true });
+    };
+    const upload = async (file) => {
+      if (busy) {
+        return;
+      }
+      setBusy(true);
+      const uploaded = await uploadArtwork(item, file);
+      setBusy(false);
+      if (uploaded) {
+        changed();
+      }
+    };
+    // Chosen, dropped or pasted files: true when one of them was handled.
+    const chooseFrom = (files) => {
+      const picked = pickArtworkFile(files);
+      if (!picked) {
+        return false;
+      }
+      if (picked.error) {
+        notify(picked.error, true);
+      } else {
+        upload(picked.file);
+      }
+      return true;
+    };
+    // A link is downloaded here, in the WebView, then sent like a file; the
+    // shell downloads it when the site refuses a cross-origin fetch.
+    const importLink = async (link) => {
+      if (busy) {
+        return;
+      }
+      setBusy(true);
+      const label = name.textContent;
+      name.textContent = 'Téléchargement de l’image…';
+      const result = await fetchArtwork(link, globalThis.fetch, downloadArtworkLink);
+      if (result.error) {
+        name.textContent = label;
+        setBusy(false);
+        notify(result.error, true);
+        return;
+      }
+      const uploaded = await uploadArtwork(item, result.file);
+      setBusy(false);
+      if (!uploaded) {
+        name.textContent = label;
+        return;
+      }
+      linkField.value = '';
+      changed();
+    };
+    const removePicture = async () => {
+      if (busy || !current) {
+        return;
+      }
+      setBusy(true);
+      const removed = await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}/artwork`));
+      setBusy(false);
+      if (!removed) {
+        return;
+      }
+      item.artwork = null;
+      changed();
+    };
+    const saveOverlay = async () => {
+      if (busy) {
+        return;
+      }
+      const checked = onOverlay.checked;
+      if (checked === Boolean(item.artworkOnOverlay)) {
+        return;
+      }
+      setBusy(true);
+      const body = await run(() =>
+        api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, { artworkOnOverlay: checked }),
+      );
+      setBusy(false);
+      if (!body) {
+        onOverlay.checked = Boolean(item.artworkOnOverlay);
+        return;
+      }
+      item.artworkOnOverlay = checked;
+      changed();
+    };
+    const carriesPicture = (event) => {
+      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || []);
+      return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html') || types.includes('text/plain');
+    };
+    const onDrag = (event) => {
+      if (!carriesPicture(event)) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      if (!busy) {
+        event.dataTransfer.dropEffect = 'copy';
+        zone.classList.add('is-over');
+      }
+    };
+    const section = h(
+      'div',
+      {
+        class: 'hp-page-artwork',
+        onDragenter: onDrag,
+        onDragover: onDrag,
+        onDragleave: (event) => {
+          if (!(event.relatedTarget instanceof Node) || !section.contains(event.relatedTarget)) {
+            zone.classList.remove('is-over');
+          }
+        },
+        onDrop: (event) => {
+          if (!carriesPicture(event)) {
+            return;
+          }
+          // The picture owns this drop: it never reaches the board's own
+          // handlers, which would import a new media.
+          event.preventDefault();
+          event.stopPropagation();
+          zone.classList.remove('is-over');
+          if (busy) {
+            return;
+          }
+          const transfer = event.dataTransfer;
+          if (chooseFrom(transfer.files)) {
+            return;
+          }
+          const dropped = droppedArtworkLink({
+            html: transfer.getData('text/html'),
+            uriList: transfer.getData('text/uri-list'),
+            text: transfer.getData('text/plain'),
+          });
+          if (dropped) {
+            importLink(dropped);
+          } else {
+            notify(ARTWORK_MESSAGES.nothingDropped, true);
+          }
+        },
+        onPaste: (event) => {
+          const data = event.clipboardData;
+          if (!data) {
+            return;
+          }
+          if (busy) {
+            event.preventDefault();
+            return;
+          }
+          // A copied image is used as it is; a copied link is imported.
+          if (chooseFrom(data.files)) {
+            event.preventDefault();
+            return;
+          }
+          const pasted = droppedArtworkLink({ text: data.getData('text/plain') });
+          if (pasted) {
+            event.preventDefault();
+            linkField.value = pasted;
+            importLink(pasted);
+          }
+        },
+      },
+      h('p', { class: 'hp-page-label' }, 'Image'),
+      zone,
+      h('p', { class: 'artwork-hint' }, 'Dépose une image ou un lien ici, ou colle le lien d’une image :'),
+      h('div', { class: 'artwork-link' }, linkField, importButton),
+      h('label', { class: 'switch' }, onOverlay, 'Afficher l’image sur les overlays pendant la lecture'),
+    );
+    return section;
+  }
+
+  // The facts, in the validated order. A missing value keeps its row so the
+  // two columns stay aligned; a scale only exists when one was chosen.
+  const facts = [];
+  const fact = (label, value) => {
+    facts.push(h('dt', null, label), h('dd', null, value));
+  };
+  fact('Format', [kindLabel, duration].filter(Boolean).join(' · '));
+  fact('Taille', size || '—');
+  fact('Dimensions', dimensions);
+  if (scale) {
+    fact('Échelle', scale);
+  }
+  if (link) {
+    facts.push(
+      h('dt', null, 'Source'),
+      h(
+        'dd',
+        { class: 'source-cell' },
+        h('span', { class: 'source-url', title: link }, link),
+        h(
+          'button',
+          {
+            class: 'btn is-quiet icon-btn',
+            type: 'button',
+            title: 'Copier le lien d’origine',
+            'aria-label': 'Copier le lien d’origine',
+            onClick: () => copyText(link, 'Lien copié.'),
+          },
+          icon('copy'),
+        ),
+      ),
+    );
+  }
+  if (canPlay) {
+    facts.push(
+      h('dt', null, 'Raccourci'),
+      h(
+        'dd',
+        { class: 'shortcut-cell' },
+        shortcutControl(item, shortcutFor(item.id)),
+      ),
+    );
+  }
+  if (isImage && item.canEdit) {
+    fact('Durée d’affichage', displayDurationField());
+  }
+
+  // The caption shown on the overlays, in its own block under the facts: the
+  // inline field when it can be edited, plain text otherwise.
+  const legendText = inlineField(item, 'message')
+    || h('p', { class: 'hp-page-legend is-empty' }, 'Aucune légende');
+
+  // The play button keeps its own block, full width; the other actions are
+  // quiet buttons in a two-column grid under a thin separator.
+  const secondaryActions = actions.filter((action) => action !== 'play');
+
+  return h(
+    'div',
+    null,
+    h(
+      'div',
+      { class: 'hp-page-head' },
+      h('p', { class: 'hp-page-kicker' }, [kindLabel, duration].filter(Boolean).join(' · ')),
+      inlineField(item, 'title'),
+      h('p', { class: 'hp-page-byline' }, 'Ajouté par ', h('strong', null, authorName(item)), added ? ` · ${added}` : null),
+    ),
+    h('dl', { class: 'hp-page-facts' }, facts),
+    h(
+      'section',
+      { class: 'hp-page-legend-block' },
+      h('p', { class: 'hp-page-label' }, 'Légende'),
+      legendText,
+    ),
+    actions.length
+      ? h(
+          'div',
+          { class: 'hp-page-actionzone' },
+          actions.includes('play')
+            ? h('div', { class: 'hp-page-actions' }, detailActionNode(item, 'play'))
+            : null,
+          secondaryActions.length
+            ? h(
+                'div',
+                { class: 'hp-page-secondary' },
+                ...secondaryActions.map((action) => detailActionNode(item, action)),
+              )
+            : null,
+        )
+      : null,
+    isAudio && item.canEdit ? artworkSection() : null,
+  );
 }
 
 // --- title and message edited in place ---
@@ -1712,7 +2005,7 @@ function inlineInput(item, field) {
   const spec = INLINE_FIELDS[field];
   const isTitle = field === 'title';
   const input = h(isTitle ? 'input' : 'textarea', {
-    class: `field inline-input is-${field}`,
+    class: `field inline-input is-${field} ${isTitle ? 'hp-page-title' : 'hp-page-legend'}`,
     maxlength: spec.max,
     rows: isTitle ? null : '3',
     'aria-label': `Modifier ${spec.label}`,
@@ -1736,7 +2029,7 @@ function inlineInput(item, field) {
   });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
-      // Handled here: the drawer stays open.
+      // Handled here: the window stays open.
       event.preventDefault();
       settle(false);
     } else if (event.key === 'Enter' && (isTitle || event.ctrlKey) && !event.isComposing) {
@@ -1764,11 +2057,14 @@ function inlineField(item, field) {
   const spec = INLINE_FIELDS[field];
   const isTitle = field === 'title';
   const text = isTitle ? itemTitle(item) : item.message || '';
+  // The window's text classes: the title keeps the page heading, the caption
+  // the legend line. The inline-edit control adds its own classes on top.
+  const textClass = isTitle ? 'hp-page-title' : 'hp-page-legend';
   if (!item.canEdit) {
     if (isTitle) {
-      return h('h2', { class: 'detail-title' }, text);
+      return h('h2', { class: textClass }, text);
     }
-    return text ? h('p', { class: 'detail-message' }, text) : null;
+    return text ? h('p', { class: textClass }, text) : null;
   }
   if (inlineEdit && inlineEdit.itemId === item.id && inlineEdit.field === field) {
     return inlineInput(item, field);
@@ -1776,7 +2072,7 @@ function inlineField(item, field) {
   return h(
     'button',
     {
-      class: `inline-edit is-${field}${text ? '' : ' is-empty'}`,
+      class: `inline-edit is-${field} ${textClass}${text ? '' : ' is-empty'}`,
       type: 'button',
       title: `Modifier ${spec.label}`,
       onClick: () => {
@@ -1789,96 +2085,10 @@ function inlineField(item, field) {
   );
 }
 
-function renderDetail(item) {
-  const preview = detailPreview(item);
-  if (inlineEdit && inlineEdit.itemId !== item.id) {
-    inlineEdit = null;
-  }
-  const shortcut = shortcutFor(item.id);
-  const drawer = h(
-    'aside',
-    {
-      class: `detail${state.detailPinned && state.selectedId === item.id ? ' is-pinned' : ' is-peek'}`,
-      'data-item-id': item.id,
-      'aria-label': 'Détails du média',
-      onMouseenter: () => clearTimeout(leaveTimer),
-      onMouseleave: scheduleHoverClose,
-      // Using the drawer pins the media it shows. Only classes change: the
-      // drawer must stay in place for the click that follows.
-      onPointerdown: () => {
-        const next = drawerUsed(currentView());
-        if (!sameView(next, currentView())) {
-          clearDrawerTimers();
-          applyView(next);
-          drawer.classList.replace('is-peek', 'is-pinned');
-          syncSelectedCards();
-          prunePreviews();
-        }
-      },
-    },
-    h(
-      'div',
-      { class: 'detail-body' },
-      h(
-        'div',
-        { class: 'detail-head' },
-        inlineField(item, 'title'),
-        canFavorite()
-          ? h(
-              'button',
-              {
-                class: `btn is-quiet fav-toggle${item.favorite ? ' is-on' : ''}`,
-                'aria-pressed': String(Boolean(item.favorite)),
-                title: item.favorite ? 'Retirer des favoris' : 'Ajouter aux favoris',
-                onClick: (event) => toggleFavorite(item, event.currentTarget),
-              },
-              icon('star'),
-            )
-          : null,
-        h('button', { class: 'btn is-quiet icon-btn', 'aria-label': 'Fermer les détails', onClick: closeDetail }, icon('close')),
-      ),
-      preview,
-      h(
-        'dl',
-        { class: 'facts' },
-        // The caption shown on the overlays, then the shortcut that plays it.
-        item.canEdit || item.message
-          ? [h('dt', null, 'Légende'), h('dd', null, inlineField(item, 'message'))]
-          : null,
-        can('play')
-          ? [
-              h('dt', null, 'Raccourci'),
-              h('dd', { class: 'shortcut-cell' }, shortcutControl(item, shortcut)),
-            ]
-          : null,
-      ),
-      can('play') ? h('p', { class: 'shortcut-hint' }, ALTGR_HINT) : null,
-    ),
-    h(
-      'div',
-      { class: 'detail-foot' },
-      can('play') ? h('button', { class: 'btn is-air is-wide', onClick: (event) => playItem(item, event.currentTarget) }, icon('play'), 'Jouer sur les overlays') : null,
-      h(
-        'div',
-        { class: 'detail-actions' },
-        canOpenEditor(item) ? h('button', { class: 'btn is-quiet', title: 'Découper, recadrer, dessiner…', onClick: () => openMediaEditor(item, itemTitle(item)) }, icon('edit'), 'Modifier') : null,
-        h('button', { class: 'btn is-quiet', onClick: () => openInfoDialog(item) }, 'Informations'),
-        item.canEdit ? h('button', { class: 'btn is-quiet is-danger', onClick: () => openDeleteDialog(item) }, 'Supprimer…') : null,
-      ),
-    ),
-  );
-  queueMicrotask(() => placeDrawer(drawer));
-  return drawer;
-}
-
-// The preview follows the volume sliders while it plays.
+// The window's player follows the device's preview volume, like the board's
+// other media players did.
 document.addEventListener('livechat:sound', () => {
-  for (const entry of previews.values()) {
-    const media = entry.node.querySelector('audio, video');
-    if (media) {
-      media.volume = previewVolume(state.activeGuildId);
-    }
-  }
+  mediaDetail.setVolume(previewVolume(state.activeGuildId));
 });
 
 // --- keyboard shortcuts (active guild) ---
@@ -2044,311 +2254,10 @@ function defaultDurationHint() {
   return Number.isFinite(seconds) && seconds > 0 ? `Par défaut (${seconds} s)` : 'Par défaut';
 }
 
-function infoFacts(item) {
-  const link = sourceLink(item);
-  const size = item.media.sizeBytes ? `${(item.media.sizeBytes / 1048576).toFixed(1).replace('.', ',')} Mo` : null;
-  const added = new Date(item.createdAt);
-  return h(
-    'dl',
-    { class: 'facts' },
-    [h('dt', null, 'Ajouté par'), h('dd', null, item.createdByName || 'Inconnu')],
-    [h('dt', null, 'Le'), h('dd', null, Number.isNaN(added.getTime()) ? '—' : added.toLocaleDateString('fr-FR', { day: 'numeric', month: 'long', year: 'numeric' }))],
-    link
-      ? [
-          h('dt', null, 'Source'),
-          h(
-            'dd',
-            { class: 'source-cell' },
-            h('span', { class: 'source-url' }, link),
-            h(
-              'button',
-              {
-                class: 'btn is-quiet icon-btn',
-                type: 'button',
-                title: 'Copier le lien d’origine',
-                'aria-label': 'Copier le lien d’origine',
-                onClick: () => copyText(link, 'Lien copié.'),
-              },
-              icon('copy'),
-            ),
-          ),
-        ]
-      : null,
-    [h('dt', null, 'Format'), h('dd', null, [KIND_LABELS[item.media.kind] || item.media.kind, formatDuration(shownDuration(item)), size, item.displayScalePercent ? `affiché à ${item.displayScalePercent} %` : null].filter(Boolean).join(', '))],
-  );
-}
-
-// The media's secondary facts. A media the user can edit also gets here what
-// is not edited in the drawer: an audio's picture, an image's display time.
-export function openInfoDialog(item) {
-  const isAudio = item.media.kind === 'audio';
-  const isImage = item.media.kind === 'image';
-  if (!item.canEdit || !(isAudio || isImage)) {
-    openDialog((close) => [
-      h('h2', null, itemTitle(item)),
-      infoFacts(item),
-      h('div', { class: 'actions' }, h('button', { class: 'btn', type: 'button', onClick: close }, 'Fermer')),
-    ]);
-    return;
-  }
-  openDialog((close) => {
-    const displayDuration = isImage
-      ? h('input', {
-          class: 'field',
-          type: 'number',
-          min: '1',
-          max: String(MAX_DISPLAY_DURATION_SEC),
-          step: '1',
-          inputmode: 'numeric',
-          value: item.displayDurationSec ?? '',
-          placeholder: defaultDurationHint(),
-          style: 'max-width:160px',
-        })
-      : null;
-    let chosen = null;
-    let removeArtwork = false;
-    let previewUrl = null;
-    let importing = false;
-    const current = artworkOf(item);
-    const artworkPreview = h('img', { class: 'artwork-preview', alt: '', draggable: 'false', hidden: !current, src: current ? current.url : null });
-    // Without a picture the zone shows an audio mark, never an empty image.
-    const artworkEmpty = h('span', { class: 'artwork-preview is-empty', 'aria-hidden': 'true', hidden: Boolean(current) }, icon('audio'));
-    const artworkName = h('span', { class: 'meta' }, current ? 'Image actuelle' : 'Aucune image');
-    const submit = h('button', { class: 'btn', type: 'submit' }, 'Enregistrer');
-    const showPicture = (shown) => {
-      artworkPreview.hidden = !shown;
-      artworkEmpty.hidden = shown;
-      removeButton.hidden = !shown;
-    };
-    // The picture that will be sent on « Enregistrer ».
-    const choose = (file, label) => {
-      chosen = file;
-      removeArtwork = false;
-      if (previewUrl) {
-        URL.revokeObjectURL(previewUrl);
-      }
-      previewUrl = URL.createObjectURL(file);
-      artworkPreview.src = previewUrl;
-      artworkName.textContent = label || file.name;
-      showPicture(true);
-    };
-    // Chosen, dropped or pasted files: true when one of them was handled.
-    const chooseFrom = (files) => {
-      const picked = pickArtworkFile(files);
-      if (!picked) {
-        return false;
-      }
-      if (picked.error) {
-        notify(picked.error, true);
-      } else {
-        choose(picked.file);
-      }
-      return true;
-    };
-    // A link is downloaded here, in the WebView, then sent like a file; the
-    // shell downloads it when the site refuses a cross-origin fetch.
-    const importLink = async (link) => {
-      if (importing) {
-        return;
-      }
-      importing = true;
-      const label = artworkName.textContent;
-      artworkName.textContent = 'Téléchargement de l’image…';
-      importButton.disabled = true;
-      submit.disabled = true;
-      const result = await fetchArtwork(link, globalThis.fetch, downloadArtworkLink);
-      importing = false;
-      importButton.disabled = false;
-      submit.disabled = false;
-      if (result.error) {
-        artworkName.textContent = label;
-        notify(result.error, true);
-        return;
-      }
-      linkField.value = '';
-      choose(result.file);
-    };
-    const artworkInput = h('input', {
-      type: 'file',
-      accept: 'image/*',
-      hidden: true,
-      onChange: () => {
-        chooseFrom(artworkInput.files);
-        artworkInput.value = '';
-      },
-    });
-    const removeButton = h(
-      'button',
-      {
-        class: 'btn is-quiet',
-        type: 'button',
-        hidden: !current,
-        onClick: () => {
-          chosen = null;
-          removeArtwork = true;
-          artworkName.textContent = 'Aucune image';
-          showPicture(false);
-        },
-      },
-      'Retirer',
-    );
-    const linkField = h('input', {
-      class: 'field',
-      type: 'url',
-      placeholder: 'https://…',
-      'aria-label': 'Lien d’une image',
-      onKeydown: (event) => {
-        // Enter imports the link instead of saving the dialog.
-        if (event.key === 'Enter') {
-          event.preventDefault();
-          importLink(linkField.value);
-        }
-      },
-    });
-    const importButton = h('button', { class: 'btn', type: 'button', onClick: () => importLink(linkField.value) }, 'Importer');
-    const artworkZone = h(
-      'div',
-      { class: 'artwork-drop' },
-      artworkPreview,
-      artworkEmpty,
-      h(
-        'div',
-        { class: 'stack' },
-        artworkName,
-        h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onClick: () => artworkInput.click() }, 'Choisir une image'), removeButton),
-      ),
-      artworkInput,
-    );
-    const onOverlay = h('input', { type: 'checkbox', checked: Boolean(item.artworkOnOverlay) });
-    const carriesPicture = (event) => {
-      const types = Array.from((event.dataTransfer && event.dataTransfer.types) || []);
-      return types.includes('Files') || types.includes('text/uri-list') || types.includes('text/html') || types.includes('text/plain');
-    };
-    // A drop on the picture block belongs to the picture: it stops here and
-    // never reaches the board's own drop handlers (which import new media).
-    const onDrag = (event) => {
-      if (!carriesPicture(event)) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      event.dataTransfer.dropEffect = 'copy';
-      artworkZone.classList.add('is-over');
-    };
-    const artworkFields = isAudio
-      ? h(
-          'div',
-          {
-            class: 'stack artwork-fields',
-            onDragenter: onDrag,
-            onDragover: onDrag,
-            onDragleave: (event) => {
-              if (!(event.relatedTarget instanceof Node) || !artworkFields.contains(event.relatedTarget)) {
-                artworkZone.classList.remove('is-over');
-              }
-            },
-            onDrop: (event) => {
-              if (!carriesPicture(event)) {
-                return;
-              }
-              event.preventDefault();
-              event.stopPropagation();
-              artworkZone.classList.remove('is-over');
-              const transfer = event.dataTransfer;
-              if (chooseFrom(transfer.files)) {
-                return;
-              }
-              const link = droppedArtworkLink({
-                html: transfer.getData('text/html'),
-                uriList: transfer.getData('text/uri-list'),
-                text: transfer.getData('text/plain'),
-              });
-              if (link) {
-                importLink(link);
-              } else {
-                notify(ARTWORK_MESSAGES.nothingDropped, true);
-              }
-            },
-            onPaste: (event) => {
-              const data = event.clipboardData;
-              if (!data) {
-                return;
-              }
-              // A copied image is used as it is; a copied link is imported.
-              if (chooseFrom(data.files)) {
-                event.preventDefault();
-                return;
-              }
-              const link = droppedArtworkLink({ text: data.getData('text/plain') });
-              if (link) {
-                event.preventDefault();
-                linkField.value = link;
-                importLink(link);
-              }
-            },
-          },
-          h('span', { class: 'field-label' }, 'Image'),
-          artworkZone,
-          h('p', { class: 'artwork-hint' }, 'Dépose une image ou un lien ici, ou colle le lien d’une image :'),
-          h('div', { class: 'artwork-link' }, linkField, importButton),
-          h('label', { class: 'switch' }, onOverlay, 'Afficher l’image sur les overlays pendant la lecture'),
-        )
-      : null;
-    const form = h(
-      'form',
-      {
-        class: 'stack',
-        onSubmit: async (event) => {
-          event.preventDefault();
-          if (importing) {
-            return;
-          }
-          const patch = {};
-          if (isAudio && onOverlay.checked !== Boolean(item.artworkOnOverlay)) {
-            patch.artworkOnOverlay = onOverlay.checked;
-          }
-          if (isImage) {
-            const parsed = parseDisplayDuration(displayDuration.value);
-            if (!parsed.ok) {
-              notify(INVALID_DURATION_MESSAGE, true);
-              return;
-            }
-            if (parsed.value !== (item.displayDurationSec ?? null)) {
-              patch.displayDurationSec = parsed.value;
-            }
-          }
-          if (Object.keys(patch).length > 0) {
-            const body = await run(() => api('PATCH', `/overlay/media-board/items/${encodeURIComponent(item.id)}`, patch));
-            if (!body) {
-              return;
-            }
-          }
-          if (chosen && !(await uploadArtwork(item, chosen))) {
-            return;
-          }
-          if (removeArtwork && current) {
-            const removed = await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}/artwork`));
-            if (!removed) {
-              return;
-            }
-          }
-          notify('Média modifié.');
-          close();
-          loadItems();
-        },
-      },
-      displayDuration ? h('label', null, 'Durée d’affichage (s)', displayDuration) : null,
-      artworkFields,
-      h('div', { class: 'actions' }, h('button', { class: 'btn is-quiet', type: 'button', onClick: close }, 'Annuler'), submit),
-    );
-    return [h('h2', null, itemTitle(item)), infoFacts(item), form];
-  });
-}
-
 export function openDeleteDialog(item) {
   confirmDialog('Supprimer ce média ?', `« ${itemTitle(item)} » sera retiré du board de la guilde.`, 'Supprimer', async () => {
     await run(() => api('DELETE', `/overlay/media-board/items/${encodeURIComponent(item.id)}`), 'Média supprimé.');
-    applyView(CLOSED_VIEW);
+    closeDetail();
     loadItems();
   });
 }

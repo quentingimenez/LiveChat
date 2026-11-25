@@ -22,19 +22,15 @@ export const state = {
   items: [],
   itemsLoaded: false,
   itemsError: null,
-  // Shape only (kind + width/height) of the last board visit, restored from
-  // the persistent layout cache while the real items are unknown.
-  boardLayout: null,
 
   search: '',
   kind: 'all',
   // Board filters and sort (see core/board-filters.js).
   filters: { favorites: false, shortcut: false, author: '', source: '', duration: '', sort: 'newest' },
   filtersOpen: false,
-  selectedId: null,
-  // `true` once the detail drawer was opened by a click (it stays open);
-  // `false` while it only follows the pointer.
-  detailPinned: false,
+  // Id of the media shown in the board's detail window, or null (see
+  // views/board.js; the window itself lives outside the view).
+  detailId: null,
   queue: { playing: null, pending: [], at: 0 },
   queueStale: false,
   queueLoaded: false,

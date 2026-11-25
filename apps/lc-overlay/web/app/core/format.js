@@ -161,6 +161,35 @@ export function relativeTime(iso) {
   return `Il y a ${Math.round(minutes / 1440)} j`;
 }
 
+// Short date under a board card's title: « aujourd'hui », « hier », then
+// « il y a N j » up to six days, then the day and short month ("3 janv.").
+// `now` is a Date or a timestamp, so the helper stays pure and testable. An
+// unreadable or future date is shown as today rather than as a negative age.
+const SHORT_MONTHS = ['janv.', 'févr.', 'mars', 'avr.', 'mai', 'juin', 'juil.', 'août', 'sept.', 'oct.', 'nov.', 'déc.'];
+
+export function relativeDateLabel(iso, now = Date.now()) {
+  if (!iso) {
+    return null;
+  }
+  const date = new Date(iso);
+  const reference = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(date.getTime()) || Number.isNaN(reference.getTime())) {
+    return null;
+  }
+  const startOfDay = (value) => new Date(value.getFullYear(), value.getMonth(), value.getDate()).getTime();
+  const days = Math.round((startOfDay(reference) - startOfDay(date)) / 86_400_000);
+  if (days <= 0) {
+    return "aujourd'hui";
+  }
+  if (days === 1) {
+    return 'hier';
+  }
+  if (days <= 6) {
+    return `il y a ${days} j`;
+  }
+  return `${date.getDate()} ${SHORT_MONTHS[date.getMonth()]}`;
+}
+
 export function formatCode(code) {
   return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
 }

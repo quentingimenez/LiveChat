@@ -11,6 +11,7 @@ import {
   initials,
   mediaRefreshDelay,
   parseDisplayDuration,
+  relativeDateLabel,
   removalMessage,
 } from '../../web/app/core/format.js';
 
@@ -104,6 +105,30 @@ test('mediaRefreshDelay reloads five minutes before the earliest signed URL expi
   assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 60 * minute }, { mediaUrlExpiresAt: now + 6 * minute }], now), minute);
   assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 2 * minute }], now), 0);
   assert.equal(mediaRefreshDelay([{ mediaUrlExpiresAt: now + 30 * minute }, { mediaUrlExpiresAt: 0 }], now), 25 * minute);
+});
+
+test('relativeDateLabel names the last week, then the short date', () => {
+  const now = new Date(2026, 6, 14, 18, 0, 0);
+  const at = (year, month, day, hour = 12) => new Date(year, month - 1, day, hour).toISOString();
+  assert.equal(relativeDateLabel(at(2026, 7, 14), now), "aujourd'hui");
+  // A future date (clock skew) never says « il y a -1 j ».
+  assert.equal(relativeDateLabel(at(2026, 7, 15), now), "aujourd'hui");
+  assert.equal(relativeDateLabel(at(2026, 7, 13), now), 'hier');
+  assert.equal(relativeDateLabel(at(2026, 7, 12), now), 'il y a 2 j');
+  assert.equal(relativeDateLabel(at(2026, 7, 8), now), 'il y a 6 j');
+  assert.equal(relativeDateLabel(at(2026, 7, 7), now), '7 juil.');
+  assert.equal(relativeDateLabel(at(2026, 1, 3), now), '3 janv.');
+  assert.equal(relativeDateLabel('', now), null);
+  assert.equal(relativeDateLabel('not a date', now), null);
+  // No date at all: nothing to show, not the Unix epoch.
+  assert.equal(relativeDateLabel(null, now), null);
+  assert.equal(relativeDateLabel(undefined, now), null);
+});
+
+test('relativeDateLabel names every month in short French', () => {
+  const now = new Date(2027, 0, 31, 12);
+  const labels = Array.from({ length: 12 }, (_, month) => relativeDateLabel(new Date(2026, month, 2, 12).toISOString(), now));
+  assert.deepEqual(labels, ['2 janv.', '2 févr.', '2 mars', '2 avr.', '2 mai', '2 juin', '2 juil.', '2 août', '2 sept.', '2 oct.', '2 nov.', '2 déc.']);
 });
 
 test('removalMessage names the guild for every removal reason', () => {

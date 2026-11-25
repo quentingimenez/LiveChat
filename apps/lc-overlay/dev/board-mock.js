@@ -140,7 +140,7 @@
     generalMute: false,
     mediaMuted: false,
     showText: true,
-    hoverDetails: false,
+    hoverPreview: true,
     autoStart: false,
     shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null, openBoard: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
@@ -154,7 +154,7 @@
   let pendingView = new URLSearchParams(location.search).has('settings') ? 'settings' : null;
 
   // Media sizes (width, height): portrait, square and wide shapes for the
-  // masonry grid and the detail panel. Others are 1280 × 720.
+  // regular grid and the detail panel. Others are 1280 × 720.
   const SIZES = { 1: [1080, 1080], 3: [1080, 1920], 4: [1200, 800], 5: [720, 1280], 6: [2400, 1000], 8: [1080, 1920] };
   const sizeOf = (index) => SIZES[index] || [1280, 720];
   // `?media` : every card serves a real fixture from dev/fixtures (frames cut
@@ -420,7 +420,7 @@
         }
       }
     }
-    for (const key of ['generalMute', 'mediaMuted', 'showText', 'hoverDetails', 'autoStart']) {
+    for (const key of ['generalMute', 'mediaMuted', 'showText', 'hoverPreview', 'autoStart']) {
       if (!(key in input)) {
         continue;
       }

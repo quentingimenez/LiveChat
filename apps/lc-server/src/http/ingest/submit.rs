@@ -10,10 +10,13 @@
 //! 3. `guildId` demandé différent de celui du client → 403 `guild_mismatch` ;
 //! 4. `authorName`/`authorImage` → 400 (valeurs liées au token) ;
 //! 5. corps vide / `saveToBoard` sans source → 400 `invalid_payload` ;
-//! 6. ingestion média éventuelle (cache par `source_hash` sauf `forceRefresh`) ;
-//! 7. `saveToBoard` → 201 avec l'élément de board média ;
-//!    sinon création d'un `PlaybackJob` puis notification du hook temps réel
-//!    (Phase 4b) → 201.
+//! 6. une source média → `202 {accepted, ingestionId, guildId}` : le
+//!    téléchargement (cache par `source_hash` sauf `forceRefresh`), puis
+//!    l'élément de board (`saveToBoard`) ou le `PlaybackJob` et la
+//!    notification du hook temps réel, sont faits en tâche de fond
+//!    ([`super::task`]) ; le client lit le résultat sur
+//!    `GET /ingest/ingestions/{id}` ;
+//! 7. un texte seul crée son `PlaybackJob` tout de suite → `201 {jobId}`.
 //!
 //! L'auteur du job (`author_name`/`author_image`) est le profil **live** du
 //! membre propriétaire du client, relu à chaque envoi : un client d'ingestion ne
@@ -47,6 +50,7 @@ use crate::media::MediaService;
 
 use super::auth;
 use super::body::NormalizedIngest;
+use super::task::{self, IngestSource, IngestTask};
 use super::{invalid_payload, media_service_error, simple_error, DEFAULT_INGEST_AUTHOR_NAME};
 
 /// Author prefix of an ingest client paired from the overlay (`member:<id>`).
@@ -228,47 +232,71 @@ pub async fn submit(
     let job_show_text = request.show_text.unwrap_or(request.text.is_some());
     let (job_author_name, job_author_image) = resolved_author(&client, &member);
 
-    // 7. Ingestion média (si une source est fournie).
-    let mut service: Option<MediaService> = None;
-    let mut asset: Option<MediaAsset> = None;
+    // 7. Un média est traité en tâche de fond : la réponse `202` part avant le
+    //    téléchargement, qu'une connexion fermée ne peut donc plus annuler.
     if has_source {
         let media_service = match MediaService::for_state(&state) {
             Ok(service) => service,
             Err(error) => return media_service_error(error),
         };
-        match media_service
-            .ingest(
-                request.url.as_deref(),
-                request.media.as_deref(),
-                request.force_refresh,
-            )
-            .await
-        {
-            Ok(ingested) => asset = Some(ingested),
-            Err(error) => return media_service_error(error),
-        }
-        service = Some(media_service);
+        let task = IngestTask {
+            client,
+            source: IngestSource::Link {
+                url: request.url,
+                media: request.media,
+                force_refresh: request.force_refresh,
+            },
+            job_text,
+            title: None,
+            show_text: job_show_text,
+            author_name: job_author_name,
+            author_image: job_author_image,
+            duration_sec: request.duration_sec,
+            save_to_board: request.save_to_board,
+        };
+        return task::accept(&state, media_service, task);
     }
 
-    if asset.is_none() && job_text.is_none() {
+    // 8. Texte seul : le job est créé tout de suite (`201`).
+    if job_text.is_none() {
         return invalid_payload(None);
     }
-
     let outcome = IngestOutcome {
-        asset: asset.as_ref(),
-        service: service.as_ref(),
+        asset: None,
+        service: None,
         job_text: job_text.as_deref(),
         title: None,
         show_text: job_show_text,
         author_name: job_author_name.as_str(),
         author_image: job_author_image.as_deref(),
         duration_sec: request.duration_sec,
-        save_to_board: request.save_to_board,
+        save_to_board: false,
     };
-    finish_ingest(&state, db, &client, outcome, now).await
+    match complete_ingest(&state, db, &client, outcome, now).await {
+        Ok(Completed::Job {
+            job_id,
+            has_media,
+            has_text,
+        }) => {
+            let payload = json!({
+                "accepted": true,
+                "jobId": job_id,
+                "guildId": client.guild_id.as_str(),
+                "hasMedia": has_media,
+                "hasText": has_text,
+            });
+            (StatusCode::CREATED, Json(payload)).into_response()
+        }
+        Ok(Completed::Board { .. }) => {
+            tracing::error!("un texte seul a produit un élément de board");
+            super::internal_error()
+        }
+        Err(error) => media_service_error(error),
+    }
 }
 
-/// Validated ingest result, shared by the JSON and raw-file routes.
+/// Validated ingest result, shared by the text-only path and the background
+/// task of the media submissions.
 pub(super) struct IngestOutcome<'a> {
     /// Ingested media, if the request carried one.
     pub(super) asset: Option<&'a MediaAsset>,
@@ -290,31 +318,50 @@ pub(super) struct IngestOutcome<'a> {
     pub(super) save_to_board: bool,
 }
 
-/// Persists the board item or the playback job and builds the 201 response.
-pub(super) async fn finish_ingest(
+/// What a finished ingestion produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Completed {
+    /// The media is on the board (`created` is `false` when the guild already
+    /// had it).
+    Board {
+        /// A new board item was created.
+        created: bool,
+        /// Board item holding the media.
+        item_id: String,
+    },
+    /// A playback job was created.
+    Job {
+        /// Created playback job.
+        job_id: String,
+        /// The job plays a media.
+        has_media: bool,
+        /// The job carries a text.
+        has_text: bool,
+    },
+}
+
+/// Persists the board item or the playback job.
+pub(super) async fn complete_ingest(
     state: &AppState,
     db: &lc_db::Db,
     client: &IngestClient,
     outcome: IngestOutcome<'_>,
     now: UtcDateTime,
-) -> Response {
+) -> Result<Completed, MediaServiceError> {
     let guild_id = client.guild_id.clone();
 
-    // 8. Enregistrement sur le board média (pas de job, parité legacy).
+    // Enregistrement sur le board média (pas de job, parité legacy).
     if outcome.save_to_board {
-        let Some(asset) = outcome.asset else {
-            return invalid_payload(Some("Enregistrer sur le board exige un média."));
-        };
-        let Some(media_service) = outcome.service else {
-            return media_service_error(MediaServiceError::unavailable(
-                "service média indisponible pour saveToBoard",
+        let (Some(asset), Some(media_service)) = (outcome.asset, outcome.service) else {
+            return Err(MediaServiceError::unavailable(
+                "saveToBoard sans média ingéré",
             ));
         };
 
         // The item keeps the media's own title (falling back to the asset's
         // source title): the text sent with the media belongs to that play
         // only and is never stored on the board.
-        let added = board::add_to_board(
+        let result = board::add_to_board(
             db,
             media_service.config(),
             &guild_id,
@@ -325,36 +372,25 @@ pub(super) async fn finish_ingest(
             outcome.duration_sec,
             now,
         )
-        .await;
-
-        return match added {
-            Ok(result) => {
-                if result.created {
-                    state.admin_hub.broadcast_to_guild(
-                        &guild_id,
-                        ServerMessage::BoardChanged(BoardChangedPayload {
-                            change: BoardChange::Added,
-                            item_id: result.item.id.to_canonical(),
-                        }),
-                    );
-                }
-                let payload = json!({
-                    "accepted": true,
-                    "savedToBoard": true,
-                    "created": result.created,
-                    "guildId": guild_id.as_str(),
-                    "mediaBoardItemId": result.item.id.to_canonical(),
-                    "mediaAssetId": asset.id.to_canonical(),
-                });
-                (StatusCode::CREATED, Json(payload)).into_response()
-            }
-            Err(error) => media_service_error(error),
-        };
+        .await?;
+        if result.created {
+            state.admin_hub.broadcast_to_guild(
+                &guild_id,
+                ServerMessage::BoardChanged(BoardChangedPayload {
+                    change: BoardChange::Added,
+                    item_id: result.item.id.to_canonical(),
+                }),
+            );
+        }
+        return Ok(Completed::Board {
+            created: result.created,
+            item_id: result.item.id.to_canonical(),
+        });
     }
 
-    // 9. Création du job de lecture puis notification du hook temps réel.
+    // Création du job de lecture puis notification du hook temps réel.
     let spec = JobSpec {
-        guild_id: guild_id.clone(),
+        guild_id,
         media: outcome.asset,
         text: outcome.job_text,
         show_text: outcome.show_text,
@@ -364,21 +400,13 @@ pub(super) async fn finish_ingest(
         source: JobSource::Ingest,
         source_label: Some(client.label.as_str()),
     };
-
-    match jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await {
-        Ok(job) => {
-            hook::notify_ingested(&job).await;
-            let payload = json!({
-                "accepted": true,
-                "jobId": job.id.to_canonical(),
-                "guildId": guild_id.as_str(),
-                "hasMedia": outcome.asset.is_some(),
-                "hasText": outcome.job_text.is_some(),
-            });
-            (StatusCode::CREATED, Json(payload)).into_response()
-        }
-        Err(error) => media_service_error(error),
-    }
+    let job = jobs::create_for_ingest(db, state.runtime().default_duration(), spec, now).await?;
+    hook::notify_ingested(&job).await;
+    Ok(Completed::Job {
+        job_id: job.id.to_canonical(),
+        has_media: outcome.asset.is_some(),
+        has_text: outcome.job_text.is_some(),
+    })
 }
 
 #[cfg(test)]
@@ -406,6 +434,7 @@ mod tests {
     use crate::shutdown::Shutdown;
 
     use super::super::router;
+    use super::super::test_support::{get_ingestion, wait_ingestion};
 
     const GUILD: &str = "123456789012345678";
     const TOKEN: &str = "token-de-test-ingestion";
@@ -694,7 +723,10 @@ mod tests {
             json!({ "url": url, "saveToBoard": true, "durationSec": 12 }),
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
+        assert_eq!(done["created"], true, "{done}");
         let guild = GuildId::parse(GUILD).unwrap();
         let items = fixture
             .db
@@ -718,8 +750,10 @@ mod tests {
             json!({ "url": url, "text": "bonjour", "saveToBoard": true }),
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["savedToBoard"], true);
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
+        assert!(done["itemId"].is_string(), "{done}");
 
         let guild = GuildId::parse(GUILD).unwrap();
         let items = fixture
@@ -747,11 +781,11 @@ mod tests {
             json!({ "url": url, "text": "bonjour", "showText": true }),
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["hasMedia"], true);
-        assert_eq!(body["hasText"], true);
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
 
-        let job_id = body["jobId"].as_str().expect("jobId");
+        let job_id = done["jobId"].as_str().expect("jobId");
         let job = fixture
             .db
             .playback_jobs()
@@ -961,5 +995,72 @@ mod tests {
         let (status, body) = post(fixture.app.clone(), Some(TOKEN), json!({ "text": "x" })).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
         assert_eq!(body["error"], "ingest_api_disabled");
+    }
+
+    /// A media source is never processed inside the request: the client gets
+    /// `202` with an ingestion id right away, so a slow download or render
+    /// (a TikTok comment card takes about a minute) cannot hit the client's
+    /// own timeout and get cancelled with the connection.
+    #[tokio::test]
+    async fn media_submission_is_accepted_before_processing() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let url = "https://93.184.215.14/cached.png";
+        insert_cached_image(&fixture, url).await;
+
+        let (status, body) = post(fixture.app.clone(), Some(TOKEN), json!({ "url": url })).await;
+
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_eq!(body["accepted"], true);
+        assert_eq!(body["guildId"], GUILD);
+        assert!(body["ingestionId"].is_string(), "{body}");
+        assert!(body.get("jobId").is_none(), "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
+        assert_eq!(done["ingestionId"], body["ingestionId"]);
+        let job = read_job(&fixture, &done).await;
+        assert_eq!(job.source, JobSource::Ingest);
+        assert!(job.media_asset_id.is_some());
+        assert_eq!(job.author_name.as_deref(), Some("Alice"));
+    }
+
+    /// An ingestion is only visible to the token that submitted it.
+    #[tokio::test]
+    async fn ingestion_status_is_private_to_its_client() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let other = IngestClient {
+            id: IngestClientId::new_v4(),
+            guild_id: GuildId::parse(GUILD).unwrap(),
+            label: "Autre".into(),
+            token_hash: hash_ingest_token("autre-token"),
+            default_author_name: "LiveChat Extension".into(),
+            default_author_image: None,
+            created_by_discord_user_id: "42".into(),
+            last_seen_at: None,
+            created_at: UtcDateTime::now(),
+            revoked_at: None,
+        };
+        fixture.db.ingest_clients().create(&other).await.unwrap();
+        let url = "https://93.184.215.14/cached.png";
+        insert_cached_image(&fixture, url).await;
+        let (status, body) = post(fixture.app.clone(), Some(TOKEN), json!({ "url": url })).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let id = body["ingestionId"].as_str().unwrap();
+
+        let (status, answer) = get_ingestion(&fixture.app, "autre-token", id).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{answer}");
+        assert_eq!(answer["error"], "ingestion_not_found");
+        let (status, answer) = get_ingestion(&fixture.app, "mauvais-token", id).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{answer}");
+    }
+
+    #[tokio::test]
+    async fn unknown_ingestion_is_not_found() {
+        let fixture = fixture().await;
+        insert_client(&fixture.db).await;
+        let (status, body) = get_ingestion(&fixture.app, TOKEN, "inconnue").await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+        assert_eq!(body["error"], "ingestion_not_found");
     }
 }

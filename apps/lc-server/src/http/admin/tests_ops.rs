@@ -125,6 +125,7 @@ async fn health_warns_after_more_than_three_ingestion_failures() {
             crate::ingestions::IngestionErrorInfo {
                 code: "media_ingestion_failed".to_owned(),
                 message: None,
+                media_code: None,
             },
             now,
         );
@@ -171,6 +172,7 @@ async fn ingestions_history_keeps_the_source_of_play_once_and_failed_rows() {
                 crate::ingestions::IngestionErrorInfo {
                     code: "media_ingestion_failed".to_owned(),
                     message: Some("download failed".to_owned()),
+                    media_code: None,
                 },
                 finished,
             );

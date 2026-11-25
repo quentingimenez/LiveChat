@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseIngestErrorBody, mapHttpFailure, mapNetworkFailure } from './errors';
+import { parseIngestErrorBody, mapHttpFailure, mapIngestionFailure, mapNetworkFailure } from './errors';
 
 const RAW_YTDLP =
   'ERROR: [youtube] 6GvU1WyGMok: Sign in to confirm your age. This video may be ' +
@@ -180,5 +180,45 @@ describe('mapNetworkFailure', () => {
   it('handles null/undefined', () => {
     const result = mapNetworkFailure(null);
     expect(result.code).toBe('NETWORK_ERROR');
+  });
+});
+
+describe('mapIngestionFailure', () => {
+  it('picks the local sentence of the media code, never the server message', () => {
+    const result = mapIngestionFailure({
+      code: 'media_ingestion_failed',
+      message: RAW_YTDLP,
+      mediaCode: 'DOWNLOAD_TIMEOUT'
+    });
+    expect(result).toEqual({
+      code: 'MEDIA_INGESTION_FAILED',
+      message: 'Le téléchargement a pris trop de temps.',
+      details: 'DOWNLOAD_TIMEOUT'
+    });
+  });
+
+  it('falls back to the generic media sentence without a media code', () => {
+    expect(mapIngestionFailure({ code: 'media_ingestion_failed' })).toEqual({
+      code: 'MEDIA_INGESTION_FAILED',
+      message: 'Le média n’a pas pu être ingéré par le serveur.',
+      details: undefined
+    });
+  });
+
+  it('maps an unavailable service to a temporary SERVER_ERROR', () => {
+    expect(mapIngestionFailure({ code: 'ingest_unavailable' })).toEqual({
+      code: 'SERVER_ERROR',
+      message: 'Le service d’ingestion est momentanément indisponible. Réessayez dans un instant.'
+    });
+  });
+
+  it('maps an internal or unreadable failure to a generic SERVER_ERROR', () => {
+    const expected = {
+      code: 'SERVER_ERROR',
+      message: 'Le serveur LiveChat n’a pas pu traiter ce média.'
+    };
+    expect(mapIngestionFailure({ code: 'internal_error' })).toEqual(expected);
+    expect(mapIngestionFailure(null)).toEqual(expected);
+    expect(mapIngestionFailure({ mediaCode: 'DOWNLOAD_TIMEOUT' })).toEqual(expected);
   });
 });

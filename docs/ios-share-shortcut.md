@@ -107,11 +107,13 @@ Dans l'app **Raccourcis** :
    insère la réponse dans `text=`. Applique **Encoder l'URL** au nom, à la
    légende et au titre avant de les insérer : les espaces, accents et `&` cassent
    sinon la query.
-7. Termine par **Afficher le résultat** (facultatif) pour voir le `jobId` et
-   les champs `hasMedia` / `hasText` renvoyés par le serveur.
+7. Termine par **Afficher le résultat** (facultatif) pour voir l'`ingestionId`
+   renvoyé par le serveur.
 
-Le média part immédiatement dans la file de lecture. Le nom du fichier sert de
-titre au média ; la légende est affichée avec lui.
+Le serveur répond `202` dès le fichier reçu, puis le convertit en tâche de
+fond : le média rejoint la file de lecture quand il est prêt, même si le
+Raccourci s'est déjà fermé. Le nom du fichier sert de titre au média ; la
+légende est affichée avec lui.
 
 ## 4. Ajouter à la board plutôt que jouer
 
@@ -156,12 +158,19 @@ envoyé » alors que rien n'est arrivé. Ajoute donc après l'envoi :
 
 1. **Obtenir les détails des URL** sur la sortie de la requête, puis **Code de
    statut** ;
-2. **Si** le code de statut **n'est pas** `200`, **Afficher une alerte** avec le
+2. **Si** le code de statut **n'est pas** `202`, **Afficher une alerte** avec le
    corps de la réponse (`{"error":"unauthorized"}`…) ;
 3. sinon seulement, **Afficher une notification** « Lien envoyé à LiveChat ».
 
-Sans cette vérification, une erreur d'authentification, de droits (`403`) ou de
-budget (`504 ingest_timeout`) est totalement silencieuse côté téléphone.
+Sans cette vérification, une erreur d'authentification ou de droits (`403`)
+est totalement silencieuse côté téléphone.
+
+Le `202` signifie « accepté » : le téléchargement et la conversion se font
+ensuite sur le serveur, sans faire attendre le Raccourci. Un lien que le
+serveur ne parvient pas à récupérer (vidéo privée, supprimée) échoue donc après
+la notification : l'échec apparaît dans la console d'administration
+(**Ingestions**) et sur `GET /ingest/ingestions/{ingestionId}` avec le même
+jeton.
 
 ## Tester sans Raccourci
 
@@ -253,30 +262,29 @@ compteur à zéro. Voir [`extension/README.md`](../extension/README.md) et
 [`ios/README.md`](../ios/README.md) pour le détail du stockage et de la durée
 de vie. Ne le partage pas, ne le commit pas.
 
-Réponse d'un envoi joué :
+Réponse d'un envoi (`202`, à jouer ou pour la board) :
 
 ```json
 {
   "accepted": true,
-  "jobId": "…",
-  "guildId": "…",
-  "hasMedia": true,
-  "hasText": true
+  "ingestionId": "…",
+  "guildId": "…"
 }
 ```
 
-Réponse d'un ajout à la board :
+Le résultat se lit ensuite avec le même jeton :
+
+```bash
+curl -sS "https://livechat.example.com/ingest/ingestions/<ingestionId>"   -H "Authorization: Bearer $TOKEN"
+```
 
 ```json
-{
-  "accepted": true,
-  "savedToBoard": true,
-  "created": true,
-  "guildId": "…",
-  "mediaBoardItemId": "…",
-  "mediaAssetId": "…"
-}
+{ "ingestionId": "…", "status": "ready", "created": false, "jobId": "…" }
 ```
+
+`status` vaut `processing` pendant la conversion, `ready` à la fin (`jobId`
+pour une lecture, `itemId` pour un ajout à la board) ou `failed` avec
+`error.mediaCode` (`PRIVATE_OR_AUTH_REQUIRED`, `MEDIA_NOT_FOUND`…).
 
 ## Limites et dépannage
 
@@ -285,11 +293,12 @@ Réponse d'un ajout à la board :
 | `401 unauthorized` | Jeton absent, faux ou révoqué | Reconfigure le raccourci depuis **Mon profil → Raccourci iOS** et recolle le nouveau jeton |
 | `403 forbidden_role` | Le membre n'a pas le droit d'envoyer un média | Demande à un admin de vérifier le rôle |
 | `413 payload_too_large` | Fichier au-dessus de la limite serveur | Regarde `maxBytes` ; compresse la vidéo ou passe par la board du PC |
-| `422 media_ingestion_failed` | Format non reconnu ou fichier corrompu | Convertis en JPEG/MP4, réessaie |
+| `422 media_ingestion_failed` | Lien refusé par le serveur (adresse privée, schéma non HTTP) | Partage le lien public du média |
+| `202` mais rien n'est joué | La conversion a échoué après la réponse (format non reconnu, vidéo privée ou supprimée) | Regarde l'ingestion dans la console d'administration ou sur `GET /ingest/ingestions/{id}` ; convertis en JPEG/MP4 ou réessaie |
 | `503 ingest_api_disabled` | Ingestion désactivée sur le serveur | Active l'ingestion côté serveur |
 | `400 invalid_payload` | `filename` invalide, corps vide, `durationSec` hors 1–600 | Corrige la query ou le fichier |
-| `504 ingest_timeout` | Le média n'a pas été ingéré dans le budget du serveur (300 s par défaut : source muette, lien protégé, réseau très lent) | Réessaie avec un lien direct ou un fichier plus léger ; vérifie le lien dans un navigateur |
-| Le Raccourci affiche « Lien envoyé » mais rien n'arrive | Le Raccourci n'inspecte pas le code de statut : un `401`/`403`/`504` passe inaperçu | Vérifie le jeton avec `GET /ingest/whoami` (§ Tester sans Raccourci), puis ajoute le contrôle de statut (§5) |
+| `504 ingest_timeout` | Le fichier n'a pas fini d'arriver dans le budget du serveur (300 s par défaut, réseau très lent) | Réessaie avec un fichier plus léger ou sur un réseau stable |
+| Le Raccourci affiche « Lien envoyé » mais rien n'arrive | Le Raccourci n'inspecte pas le code de statut : un `401`/`403` passe inaperçu ; ou la conversion a échoué après le `202` | Vérifie le jeton avec `GET /ingest/whoami` (§ Tester sans Raccourci), puis ajoute le contrôle de statut (§5) ; regarde l'ingestion dans la console d'administration |
 | Le Raccourci reste bloqué | Envoi d'un gros fichier sur un réseau lent | Réduis la vidéo (1080p), réessaie sur un réseau stable ; le serveur abandonne de son côté au bout du budget `/ingest` (`504 ingest_timeout`) |
 
 La limite effective est la plus basse entre :

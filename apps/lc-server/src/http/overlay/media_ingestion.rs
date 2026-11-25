@@ -441,6 +441,7 @@ fn finish_failure(
         crate::ingestions::IngestionErrorInfo {
             code: failure.code.to_owned(),
             message: failure.message.clone(),
+            media_code: None,
         },
         state.clock.now(),
     );

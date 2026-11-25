@@ -16,6 +16,7 @@ import {
   SORT_LABELS,
   SOURCE_LABELS,
 } from '../core/board-filters.js';
+import { syncKindChips } from '../core/kind-chips.js';
 import {
   artworkOf,
   cardPicture,
@@ -1139,9 +1140,7 @@ function refreshGrid(fromSearch) {
 
 function setKind(kind) {
   state.kind = kind;
-  for (const chip of document.querySelectorAll('.board-toolbar .chip')) {
-    chip.classList.toggle('is-active', chip.dataset.kind === kind);
-  }
+  syncKindChips(document.querySelectorAll('.board-toolbar .chip'), kind);
   refreshGrid(false);
 }
 

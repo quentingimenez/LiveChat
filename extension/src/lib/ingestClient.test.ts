@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildIngestPayload, sendToIngest } from './ingestClient';
 import type { ExtensionSettings } from './settings';
 
@@ -9,8 +9,16 @@ const settings: ExtensionSettings = {
 };
 
 describe('ingest client', () => {
+  const getPlatformInfo = vi.fn(async () => ({ os: 'win', arch: 'x86-64' }));
+
+  beforeEach(() => {
+    getPlatformInfo.mockClear();
+    vi.stubGlobal('browser', { runtime: { getPlatformInfo } });
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('construit le payload quick', () => {
@@ -327,6 +335,34 @@ describe('ingest client', () => {
     if (!result.ok) {
       expect(result.error.code).toBe('UNAUTHORIZED');
       expect(result.error.status).toBe(401);
+    }
+  });
+
+  it('signale une activité d’extension avant chaque attente du suivi', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce(jsonResponse(202, { accepted: true, ingestionId: 'ing-9' }))
+        .mockImplementation(async () => jsonResponse(200, { ingestionId: 'ing-9', status: 'processing' }));
+      vi.stubGlobal('fetch', fetchMock);
+
+      const pending = sendToIngest(quick, settings, 3000, 1000);
+      // Chrome stops an idle service worker after 30 s: a fetch alone does not
+      // count as activity, an extension API call does.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(getPlatformInfo).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(getPlatformInfo).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(2000);
+
+      expect((await pending).ok).toBe(true);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+      expect(getPlatformInfo).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
     }
   });
 

@@ -141,6 +141,18 @@ const sleep = (ms: number): Promise<void> =>
   });
 
 /**
+ * Calls a trivial extension API so the browser counts the wait as activity.
+ *
+ * Chrome stops an idle MV3 service worker 30 s after its last extension event
+ * or API call, and a `fetch` does not count. When no sender holds the message
+ * open (context menu, popup closed during the send) the follow-up died there
+ * and the final toast was lost, while the server kept processing the media.
+ */
+const keepBackgroundAlive = async (): Promise<void> => {
+  await browser.runtime.getPlatformInfo();
+};
+
+/**
  * Lit l'état d'une ingestion acceptée jusqu'à sa fin ou jusqu'au délai.
  *
  * Au délai, le média est encore en préparation côté serveur : il sera joué
@@ -155,6 +167,7 @@ const waitIngestion = async (
   const url = `${settings.apiUrl}/ingest/ingestions/${encodeURIComponent(ingestionId)}`;
 
   while (Date.now() < deadline) {
+    await keepBackgroundAlive();
     await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
 
     const response = await fetch(url, {

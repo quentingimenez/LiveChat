@@ -36,7 +36,7 @@
 ## 3. Nightly ([`verification-nightly.yml`](../../.github/workflows/verification-nightly.yml))
 
 - **`fuzz`** : matrix des 3 cibles (`protocol_frame`, `media_url`, `html_parsers`), corpus semé depuis les fixtures, `-max_total_time=45` par cible, seeds+golden (jamais un merge gate) ; artefacts uploadés si échec.
-- **`mutants`** : une jambe de matrix par scope, six scopes **mesurés** — `lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`, et les trois ajoutés par Q-T4 (`lc-playback --file payload.rs`, `lc-db --file db.rs`, `lc-media --file storage.rs`), d'abord mesurés sur `ubuntu-latest` avec la commande ci-dessous (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11 : 57, 81 et 79), puis remesurés localement sur Windows le 24/11 après le round kill-or-justify (97, 100 et 100, valeurs de la baseline courante, à confirmer par le prochain nightly sur `ubuntu-latest`). Score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`. Chaque jambe garde `timeout-minutes: 60` et `fail-fast: false` ; une matrix par scope évite de dépasser le budget de 55 min de `ci-gate` sur une PR.
+- **`mutants`** : une jambe de matrix par scope, six scopes **mesurés** — `lc-protocol`, `lc-media --file guard.rs`, `lc-db --file playback_jobs.rs`, et les trois ajoutés par Q-T4 (`lc-playback --file payload.rs`, `lc-db --file db.rs`, `lc-media --file storage.rs`), d'abord mesurés sur `ubuntu-latest` avec la commande ci-dessous (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272), 23/11 : 57, 81 et 79), puis remesurés localement sur Windows le 24/11 après le round kill-or-justify (97, 100 et 100), puis confirmés par le run `ubuntu-latest` [45720067094](https://github.com/quentingimenez/LiveChat/actions/runs/45720067094) qui a recalibré le payload à 96 après `332fe35`. Score `floor(100·caught/(caught+missed+timeout))` comparé à la baseline ; garde d'entiers jq, échec sur toute outcome `Failure`, rc admis 0/2, `rm -rf target/mutants` (rust-cache peut restaurer de vieux outcomes), outils épinglés `cargo-mutants@27.1.0` / `nextest@0.9.151`. Chaque jambe garde `timeout-minutes: 60` et `fail-fast: false` ; une matrix par scope évite de dépasser le budget de 55 min de `ci-gate` sur une PR.
 - Aucun scope n'est provisoire aujourd'hui : les six `caught_pct` sont numériques et comparés à la baseline. Le garde-fou provisoire reste dans le workflow et dans la baseline pour un scope ajouté avant sa première mesure (`caught_pct: null`, `status: "provisional"`) : sa jambe est sautée sur `pull_request` (`if: github.event_name != 'pull_request' || matrix.provisional != true`) pour ne pas rendre `ci-gate` rouge sans mesure ; le nightly planifié l'exécute, uploade `outcomes.json` (artefact `mutants-report-<scope>`), puis échoue explicitement en indiquant le score observé et les deux champs à passer à `measured` / `provisional: false`. Le garde [`MutantsNightly.Tests.ps1`](../../scripts/release/tests/MutantsNightly.Tests.ps1) vérifie cette cohérence.
 - **`load`** : ubuntu-latest, build release (`LC_ADMIN_WEB_BUILD=0`), 50 clients / 60 s,
   budgets §4.1 explicites (`--board-items 200 --max-board-p95-ms 250
@@ -225,24 +225,30 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
   - Q-T4, remesurés après kill-or-justify le 24/11 en local (Windows
     `x86_64-pc-windows-msvc`, cargo-mutants 27.1.0, nextest 0.9.151, commande du
     nightly) :
-    `lc-playback-payload {caught_pct: 97, min_mutants: 44}`
-    (`crates/lc-playback/src/payload.rs`, 39 caught / 1 manqué justifié / 3
-    unviable), `lc-db-core {caught_pct: 100, min_mutants: 77}`
+    `lc-playback-payload {caught_pct: 97, min_mutants: 44}` puis recalibré à
+    `{caught_pct: 96, min_mutants: 37}` (`crates/lc-playback/src/payload.rs`,
+    32 caught / 1 manqué justifié / 3 unviable sur 36 mutants) : `332fe35` a
+    supprimé 7 mutants viables (39 caught / 1 / 3 sur 43 auparavant), donc le
+    survivant équivalent pèse un point de plus ; mesure du run `ubuntu-latest`
+    [45720067094](https://github.com/quentingimenez/LiveChat/actions/runs/45720067094).
+    `lc-db-core {caught_pct: 100, min_mutants: 77}`
     (`crates/lc-db/src/db.rs`, 16 / 0 / 60), `lc-media-storage {caught_pct: 100,
     min_mutants: 125}` (`crates/lc-media/src/storage.rs`, 49 / 0 / 75). Les 30
     survivants du run
     [45274080193](https://github.com/quentingimenez/LiveChat/actions/runs/45274080193)
     sont tués par les tests du même changement, sauf l'équivalent ci-dessous. Les
     scores restent enregistrés **bruts**
-    (`floor(100·caught/(caught+missed+timeout))` = 39/40, 16/16 et 49/49), pas en
+    (`floor(100·caught/(caught+missed+timeout))` = 32/33, 16/16 et 49/49), pas en
     mesure − 1 : le dénominateur viable est petit et un seul mutant reclassé vaut
     2 à 6 points. `min_mutants` = total `--list` + 1 outcome de baseline :
-    43 + 1, 76 + 1 et 124 + 1 (les 7 mutants de la fonction extraite
+    36 + 1, 76 + 1 et 124 + 1 (les 7 mutants de la fonction extraite
     `classify_removal`, tous unviable, expliquent le passage de 117 à 124).
 - Les `min_mutants` Q-T4 viennent de `cargo mutants --list -p <crate> --file <fichier> --test-tool nextest -j 2` au commit de base
   (`32686b6`) : 43, 76 et 117 mutants, **+ 1** pour l'outcome `Success` de la baseline, comme les scopes existants (85 → 86,
   91 → 92) ; après l'extraction de `classify_removal`, `lc-media-storage` liste 124 mutants et les runs de mesure ont confirmé
-  les totaux 44/77/125. Ce sont des **planchers** : un total observé inférieur échoue ; un total supérieur reste accepté.
+  les totaux 44/77/125 au 24/11. Depuis, `332fe35` ramène `payload.rs` à 36 mutants (37 outcomes, confirmé par le run
+  `ubuntu-latest` 45720067094), d'où le recalage à `min_mutants: 37`. Ce sont des **planchers** : un total observé inférieur
+  échoue ; un total supérieur reste accepté.
 - Le provisoire reste un **garde-fou inutilisé** pour un futur scope ajouté avant sa première mesure (`caught_pct: null`,
   `status: "provisional"`). Pour lever ce provisoire :
   1. lire `outcomes.json` de l'artefact `mutants-report-<scope>` et calculer
@@ -277,22 +283,24 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
     `PermissionDenied` au lieu d'être justifiée comme race-only ; `349:39` par
     `list_variants_ignores_directories` ; `443:5` (trois, devenus `452:5`) par
     `now_ms_is_a_current_epoch_timestamp` (fenêtre autour de `SystemTime::now`).
-- Le seul survivant restant est **équivalent** : `payload.rs:141:9`
+- Le seul survivant restant est **équivalent** : `payload.rs:129:9`
   (`tweet_card: None` supprimé de `build_play_payload`). `PlayPayload::default()`
   affecte déjà `tweet_card: None` (`crates/lc-protocol/src/lib.rs:953-972`, ligne
   967) et le littéral finit par `..Default::default()` : la suppression ne change
   pas la valeur construite, aucun test ne peut distinguer le mutant. Le champ
   explicite est conservé et `build_play_payload_pins_the_protocol_fields` y épingle
   `tweet_card.is_none()`.
-- Limites de mesure Q-T4 : la remesure ci-dessus est locale sur Windows, pas sur
-  `ubuntu-latest` ; le prochain nightly (ou un run manuel) doit confirmer les trois
-  scores. Un premier run local de `lc-playback-payload` a marqué `116:70`
-  (`>`→`<`) unviable sur un `LNK1104` transitoire du linker Windows ; relancé, il
-  donne 39/1/3, cohérent avec les 3 unviable du CI. Le total `lc-media-storage`
+- Limites de mesure Q-T4 : la remesure du 24/11 était locale sur Windows, pas sur
+  `ubuntu-latest`. Le run `ubuntu-latest` 45720067094 l'a depuis confirmée sur la
+  tête de la PR #223 (`2599e93`, basée sur `692bf18`) : 96 pour
+  `lc-playback-payload` (32 caught / 1 manqué justifié / 3 unviable sur 36 mutants), 100 pour
+  `lc-db-core` et `lc-media-storage`. Le premier run local de `lc-playback-payload` avait marqué
+  `116:70` (`>`→`<`) unviable sur un `LNK1104` transitoire du linker Windows ; relancé, il donnait
+  39/1/3 sur 43 mutants au 24/11, cohérent avec les 3 unviable du CI. Le total `lc-media-storage`
   passe de 117 à 124 à cause de `classify_removal` (7 mutants de remplacement de
   fonction, tous unviable), d'où `min_mutants: 125`.
 - Mutants manqués connus : `crates/lc-db/src/repos/playback_jobs.rs:211` et
-  `crates/lc-playback/src/payload.rs:141:9` sont les deux manqués **justifiés**
+  `crates/lc-playback/src/payload.rs:129:9` sont les deux manqués **justifiés**
   (le premier race-only, bras unique-violation, sqlite mémoire mono-connexion,
   justification aussi en doc du test
   `raw_db_errors_are_not_silenced_nor_mistranslated` ; le second équivalent,
@@ -304,7 +312,8 @@ stage local est vert (`59 mutants tested in 8m: 52 caught, 7 unviable`,
   2 scopes du plan initial, ajoutés dans `db74f49` (correctifs Review A) sur
   directive utilisateur du 19/11.
 - Addendum Q-T4 : les trois scopes ajoutent les fichiers critiques de `lc-playback`, `lc-db` et `lc-media` au-delà de `guard.rs` ; chaque
-  jambe est un runner séparé pour rester sous 60 min. Ils sont remesurés après kill-or-justify le 24/11 en local (97/100/100) ; le run
+  jambe est un runner séparé pour rester sous 60 min. Ils sont remesurés après kill-or-justify le 24/11 en local (97/100/100) puis
+  confirmés par le run `ubuntu-latest` 45720067094 (96/100/100, le payload ayant perdu 7 mutants caught avec `332fe35`) ; le run
   45274080193 (PR #187) reste la référence des survivants. Le garde `MutantsNightly.Tests.ps1` fait échouer toute incohérence
   matrix/baseline et conserve le scénario provisoire comme garde-fou.
 
@@ -386,9 +395,10 @@ critiques ajoutés (`lc-playback/src/payload.rs`, `lc-db/src/db.rs`,
 commande du workflow (run [45234358272](https://github.com/quentingimenez/LiveChat/actions/runs/45234358272),
 23/11) : **57, 81 et 79** de `caught_pct`, `min_mutants` 44/77/118. Cette mesure est
 **historique** : après le round kill-or-justify Q-T4b du 24/11, les valeurs
-courantes sont **97, 100 et 100**, `min_mutants` 44/77/125, remesurées localement
-sur Windows et enregistrées dans la baseline ; le prochain nightly doit les
-confirmer sur `ubuntu-latest`. Les six scopes sont `status: "measured"` et
+courantes sont **96, 100 et 100**, `min_mutants` 37/77/125 : remesurées localement
+sur Windows, puis confirmées sur `ubuntu-latest` par le run 45720067094 (le payload
+passe de 97 à 96 parce que `332fe35` a supprimé 7 mutants caught). Les six scopes
+sont `status: "measured"` et
 `provisional: false` ; les six jambes tournent sur `pull_request` comme sur le
 nightly. Le garde
 [`MutantsNightly.Tests.ps1`](../../scripts/release/tests/MutantsNightly.Tests.ps1)

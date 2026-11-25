@@ -14,7 +14,12 @@
 
 /* The view's top padding scrolls with the cards: once the head is stuck, a card
    would show through the 20 px strip above it. Paint that strip the view's
-   colour — it is empty before scrolling, so nothing changes then. */
+   colour — it is empty before scrolling, so nothing changes then.
+   The strip is a painted box, so it must stay below the head's controls: the
+   search field sits on the head's top edge and its focus ring rises 4 px above
+   it, under the strip. Left at its natural level, the positioned strip paints
+   over the ring and hides its top side. The negative level keeps it masking
+   the cards without covering the toolbar. */
 .board-head::before {
   content: '';
   position: absolute;
@@ -23,6 +28,7 @@
   left: 0;
   height: 20px;
   background: var(--slate-800);
+  z-index: -1;
 }
 
 /* One row: search, type chips, filters, then the actions pushed to the right.

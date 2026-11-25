@@ -309,8 +309,8 @@
                   },
                   {
                       "file":  "crates/lc-media/tests/tweet_card_ffmpeg.rs",
-                      "function":  "composes_a_vertical_tweet_video_without_cropping",
-                      "filter":  "composes_a_vertical_tweet_video_without_cropping",
+                      "function":  "composes_a_tall_card_ready_for_a_stream_copy",
+                      "filter":  "composes_a_tall_card_ready_for_a_stream_copy",
                       "category":  "local"
                   },
                   {

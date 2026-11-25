@@ -1,9 +1,14 @@
-import { mapHttpFailure, mapNetworkFailure, type IngestFailure } from './errors';
+import { mapHttpFailure, mapIngestionFailure, mapNetworkFailure, type IngestFailure } from './errors';
 import { redactSecrets } from './redact';
 import { getSettings, isSettingsComplete, type ExtensionSettings } from './settings';
 import { resolveIngestTargetUrl } from './url';
+import { isRecord } from './utils';
 
+/** Budget total d'un envoi : soumission puis suivi de l'ingestion. */
 const DEFAULT_TIMEOUT_MS = 300000;
+
+/** Intervalle entre deux lectures de `GET /ingest/ingestions/{id}`. */
+const DEFAULT_POLL_INTERVAL_MS = 1500;
 
 export interface QuickIngestRequest {
   mode: 'quick';
@@ -113,10 +118,103 @@ export const buildIngestPayload = (request: IngestRequest, settings: ExtensionSe
   return payload;
 };
 
+/** Succès d'un envoi terminé : job de lecture ou élément de board. */
+const readySuccess = (status: number, body: unknown): IngestSuccessResult => {
+  const jobId = isRecord(body) ? toNonEmptyString(body.jobId) : null;
+  const itemId = isRecord(body) ? toNonEmptyString(body.itemId) : null;
+
+  if (jobId) {
+    return { ok: true, status, jobId, message: `Envoyé (job: ${jobId.slice(0, 8)}...)` };
+  }
+
+  return {
+    ok: true,
+    status,
+    jobId: null,
+    message: itemId ? 'Ajouté au board LiveChat.' : 'Envoyé vers LiveChat.'
+  };
+};
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/**
+ * Calls a trivial extension API so the browser counts the wait as activity.
+ *
+ * Chrome stops an idle MV3 service worker 30 s after its last extension event
+ * or API call, and a `fetch` does not count. When no sender holds the message
+ * open (context menu, popup closed during the send) the follow-up died there
+ * and the final toast was lost, while the server kept processing the media.
+ */
+const keepBackgroundAlive = async (): Promise<void> => {
+  await browser.runtime.getPlatformInfo();
+};
+
+/**
+ * Lit l'état d'une ingestion acceptée jusqu'à sa fin ou jusqu'au délai.
+ *
+ * Au délai, le média est encore en préparation côté serveur : il sera joué
+ * dès qu'il est prêt, l'envoi reste donc un succès.
+ */
+const waitIngestion = async (
+  settings: ExtensionSettings,
+  ingestionId: string,
+  deadline: number,
+  pollIntervalMs: number,
+): Promise<IngestResult> => {
+  const url = `${settings.apiUrl}/ingest/ingestions/${encodeURIComponent(ingestionId)}`;
+
+  while (Date.now() < deadline) {
+    await keepBackgroundAlive();
+    await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
+
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${settings.ingestToken}` },
+      signal: AbortSignal.timeout(Math.max(1, deadline - Date.now()))
+    });
+    const body = await parseResponseBody(response);
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return {
+          ok: false,
+          error: {
+            code: 'SERVER_ERROR',
+            status: 404,
+            message: 'Le serveur LiveChat a perdu le suivi de cet envoi (redémarrage ?). Réessayez.'
+          }
+        };
+      }
+      return { ok: false, error: mapHttpFailure(response.status, body) };
+    }
+
+    const state = isRecord(body) ? toNonEmptyString(body.status) : null;
+
+    if (state === 'ready') {
+      return readySuccess(response.status, body);
+    }
+
+    if (state === 'failed') {
+      return { ok: false, error: mapIngestionFailure(isRecord(body) ? body.error : null) };
+    }
+  }
+
+  return {
+    ok: true,
+    status: 202,
+    jobId: null,
+    message: 'Envoyé : LiveChat prépare encore ce média, il sera joué dès qu’il est prêt.'
+  };
+};
+
 export const sendToIngest = async (
   request: IngestRequest,
   providedSettings?: ExtensionSettings | null,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 ): Promise<IngestResult> => {
   const resolvedSettings = providedSettings ?? (await getSettings());
 
@@ -142,6 +240,7 @@ export const sendToIngest = async (
     };
   }
 
+  const deadline = Date.now() + timeoutMs;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => {
     controller.abort();
@@ -167,17 +266,15 @@ export const sendToIngest = async (
       };
     }
 
-    const jobId =
-      responseBody && typeof responseBody === 'object' && responseBody !== null && 'jobId' in responseBody
-        ? toNonEmptyString((responseBody as { jobId?: unknown }).jobId) || null
-        : null;
+    // Un média est accepté en `202` puis traité en tâche de fond : le résultat
+    // se lit sur `GET /ingest/ingestions/{id}` jusqu'au délai de l'envoi.
+    const ingestionId = isRecord(responseBody) ? toNonEmptyString(responseBody.ingestionId) : null;
 
-    return {
-      ok: true,
-      status: response.status,
-      jobId,
-      message: jobId ? `Envoyé (job: ${jobId.slice(0, 8)}...)` : 'Envoyé vers LiveChat.'
-    };
+    if (ingestionId) {
+      return await waitIngestion(resolvedSettings, ingestionId, deadline, pollIntervalMs);
+    }
+
+    return readySuccess(response.status, responseBody);
   } catch (error) {
     // Le message brut d'une erreur fetch peut inclure l'URL et le header Bearer :
     // on masque le jeton avant de construire le message d'erreur renvoyé.

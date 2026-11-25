@@ -61,16 +61,26 @@ nécessaire (dépendances déjà déclarées par le Lead).
 POST /ingest
   → auth::resolve          (401 unauthorized / 503 ingest_api_disabled)
   → NormalizedIngest       (validation/normalisation)
-  → MediaService::for_state (pipeline partagé lc-media + limites)
-      → assets::find_reusable (cache hit par source_hash, touch TTL)
-      → assets::begin_processing (ligne PROCESSING)
-      → MediaPipeline::ingest_url (resolve → download → probe → transcode)
-      → quotas::enforce_cache_budget (éviction LRU éventuelle)
-      → assets::mark_ready | assets::mark_failed
-  → board::add_to_board    (saveToBoard)  OU  jobs::create_for_ingest
-  → hook::notify_ingested  (déclenchement lecture, Phase 4b)
-  → 201 JSON legacy
+  → validate_ingest_source (garde SSRF/LFI, 422 synchrone)
+  → texte seul : jobs::create_for_ingest → hook::notify_ingested → 201 {jobId}
+  → média : MediaService::for_state, IngestionRegistry::start
+      → 202 {accepted, ingestionId, guildId}
+      → tâche de fond (task.rs), détachée de la connexion :
+          → assets::find_reusable (cache hit par source_hash, touch TTL)
+          → assets::begin_processing (ligne PROCESSING)
+          → MediaPipeline::ingest_url (resolve → download → probe → transcode)
+          → quotas::enforce_cache_budget (éviction LRU éventuelle)
+          → assets::mark_ready | assets::mark_failed
+          → board::add_to_board (saveToBoard) OU jobs::create_for_ingest
+          → hook::notify_ingested (déclenchement lecture, Phase 4b)
+          → IngestionRegistry::complete_* (lu par GET /ingest/ingestions/{id})
 ```
+
+Un média n'est jamais traité dans la requête : une carte de commentaire TikTok
+ou une longue vidéo prend souvent plus d'une minute, au-delà du délai d'un
+Raccourci iOS. Quand le traitement restait dans la requête, la connexion
+fermée par le client annulait le handler (ffmpeg compris), et rien n'était
+joué.
 
 ## 3. Contrats HTTP (parité legacy)
 
@@ -137,10 +147,10 @@ Authentification **avant** toute validation de corps, comme le legacy.
 | `authorName`/`authorImage` fournis | 400 | `{"error":"invalid_payload","message":"authorName/authorImage are token-bound for ingest clients"}` |
 | ni `url`/`media` ni `text` | 400 | `{"error":"invalid_payload"}` |
 | `saveToBoard` sans `url`/`media` | 400 | `{"error":"invalid_payload","message":"saveToBoard requires a resolvable media source"}` |
-| ingestion média en échec | 422 | `{"error":"media_ingestion_failed","code":<CODE>,"message":…}` |
-| ingestion au-delà du budget `/ingest` | 504 | `{"error":"ingest_timeout","message":…}` |
-| `saveToBoard` réussi | 201 | `{"accepted":true,"savedToBoard":true,"created":bool,"guildId","mediaBoardItemId","mediaAssetId"}` |
-| job créé | 201 | `{"accepted":true,"jobId","guildId","hasMedia":bool,"hasText":bool}` |
+| source refusée par la politique (SSRF, schéma) | 422 | `{"error":"media_ingestion_failed","code":<CODE>,"message":…}` |
+| client avec 20 ingestions en cours | 429 | `{"error":"too_many_ingestions"}` |
+| `url`/`media` accepté | 202 | `{"accepted":true,"ingestionId","guildId"}` |
+| texte seul, job créé | 201 | `{"accepted":true,"jobId","guildId","hasMedia":false,"hasText":true}` |
 | erreur interne (base) | 500 | `{"error":"internal_error"}` |
 
 Champs acceptés : `guildId`, `url`, `media`, `text`, `showText`, `forceRefresh`,
@@ -175,6 +185,31 @@ défaillance : si le commentaire n'est pas retrouvé ou si l'API limite/échoue,
 pipeline retombe sur la vidéo TikTok d'origine, sans échec d'ingestion ; si le
 média lui-même est indisponible, la carte reste une image PNG statique.
 
+### `GET /ingest/ingestions/{id}`
+
+État d'un média accepté en `202` par `POST /ingest` ou `POST /ingest/file`,
+avec le même jeton. L'entrée vit dans `IngestionRegistry` (mémoire, comme les
+ingestions de la board) sous l'identifiant du client d'ingestion : un autre
+jeton reçoit `404`, et une entrée terminée reste lisible une heure. Un
+redémarrage du serveur perd les entrées (et les tâches en cours).
+
+| Cas | Statut | Corps |
+| --- | --- | --- |
+| en cours | 200 | `{"ingestionId","status":"processing"}` |
+| job de lecture créé | 200 | `{"ingestionId","status":"ready","created":false,"jobId"}` |
+| ajouté au board | 200 | `{"ingestionId","status":"ready","created":bool,"itemId"}` |
+| ingestion média en échec | 200 | `{"ingestionId","status":"failed","error":{"code":"media_ingestion_failed","message":…,"mediaCode":<CODE>}}` |
+| service indisponible / erreur interne | 200 | `{"ingestionId","status":"failed","error":{"code":"ingest_unavailable" \| "internal_error"}}` |
+| inconnue, expirée ou d'un autre client | 404 | `{"error":"ingestion_not_found"}` |
+| token absent, invalide, expiré | 401 / 503 | comme `POST /ingest` |
+
+`mediaCode` est le code stable du `422` synchrone (`PRIVATE_OR_AUTH_REQUIRED`,
+`DOWNLOAD_TIMEOUT`…) : l'extension en tire sa phrase, sans afficher `message`.
+Elle relit cette route toutes les 1,5 s jusqu'à la fin, dans son budget de
+5 minutes ; au-delà, le média est annoncé « encore en préparation ». Les
+ingestions terminées apparaissent aussi dans l'historique de la console
+d'administration.
+
 ### `GET /ingest/whoami`
 
 Vérifie un token seul, sans rien ingérer : c'est le contrôle à utiliser quand un
@@ -206,11 +241,11 @@ elles reçoivent un budget propre, dérivé du média et jamais infini.
 | reste de l'API (admin, board, config, pairing, health) | `REQUEST_TIMEOUT` = 30 s | `408 {"error":"request_timeout"}` |
 | `/ws`, `/overlay/media/`, `/overlay/media-board/media/`, `PUT .../uploads/<id>/parts` | aucun | — |
 
-La marge de 60 s couvre ce qui entoure le pipeline média et n'a pas de budget
-propre : résolution du lien court (8 s), validation de la source, cache
-d'assets, quotas, création du job et notification de lecture. Le timeout couvre
-aussi la **lecture du corps** (les extracteurs axum s'exécutent dans le futur du
-handler), donc un client lent est interrompu.
+Depuis que les médias sont traités en tâche de fond, ce budget ne couvre plus
+que la validation et, pour `/ingest/file`, la **lecture du corps** (les
+extracteurs axum s'exécutent dans le futur du handler) : un client lent est
+interrompu. Le pipeline de la tâche reste borné par `MEDIA_INGEST_TIMEOUT_MS`
+(`DOWNLOAD_TIMEOUT` sur l'ingestion).
 
 Chaque étape garde par ailleurs sa propre borne, indépendante de la requête :
 résolution DNS du confinement 5 s (`lc_media::guard::DNS_TIMEOUT`), lien court
@@ -219,9 +254,8 @@ résolution DNS du confinement 5 s (`lc_media::guard::DNS_TIMEOUT`), lien court
 (`media::hook::NOTIFY_TIMEOUT`, le job reste `PENDING` et sera joué au tick
 suivant).
 
-Un dépassement annule le handler : un asset resté `PROCESSING` devient candidat
-de la purge runtime (`media_assets::list_stale_purge_candidates`) et aucun
-`PlaybackJob` n'est créé.
+Un dépassement annule le handler avant le `202` : aucune ingestion n'est
+enregistrée et aucun `PlaybackJob` n'est créé.
 
 ## 4. Authentification
 

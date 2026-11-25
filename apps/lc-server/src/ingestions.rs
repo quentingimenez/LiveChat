@@ -66,6 +66,11 @@ pub struct IngestionErrorInfo {
     pub code: String,
     /// Readable detail, when available.
     pub message: Option<String>,
+    /// Stable media code of a `media_ingestion_failed` error
+    /// (`PRIVATE_OR_AUTH_REQUIRED`, `DOWNLOAD_TIMEOUT`, ...), the same value as
+    /// the `code` field of the synchronous `422` body. Ingest clients pick
+    /// their own sentence from it.
+    pub media_code: Option<String>,
 }
 
 /// Where an ingestion comes from, recorded when it starts.
@@ -195,6 +200,9 @@ impl IngestionEntry {
             error_object.insert("code".to_owned(), Value::String(error.code.clone()));
             if let Some(message) = &error.message {
                 error_object.insert("message".to_owned(), Value::String(message.clone()));
+            }
+            if let Some(media_code) = &error.media_code {
+                error_object.insert("mediaCode".to_owned(), Value::String(media_code.clone()));
             }
             object.insert("error".to_owned(), Value::Object(error_object));
         }
@@ -663,6 +671,7 @@ mod tests {
                 IngestionErrorInfo {
                     code: "internal_error".to_owned(),
                     message: None,
+                    media_code: None,
                 },
                 started + Duration::seconds(1),
             );
@@ -695,6 +704,7 @@ mod tests {
             IngestionErrorInfo {
                 code: "unsupported_media".to_owned(),
                 message: Some("source non supportée".to_owned()),
+                media_code: None,
             },
             now(),
         );
@@ -722,6 +732,7 @@ mod tests {
             IngestionErrorInfo {
                 code: "unsupported_media".to_owned(),
                 message: None,
+                media_code: None,
             },
             now(),
         );

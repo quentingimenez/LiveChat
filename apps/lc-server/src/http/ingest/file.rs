@@ -11,12 +11,14 @@
 //! - query `filename`, `text`, `title`, `showText`, `saveToBoard`,
 //!   `durationSec` ;
 //! - corps brut plafonné par `MEDIA_MAX_SIZE_MB` ;
-//! - réponses 201 identiques à [`super::submit`] (`savedToBoard` +
-//!   `mediaBoardItemId`, ou `jobId`).
+//! - réponse `202 {accepted, ingestionId, guildId}` dès le fichier reçu, comme
+//!   un média de [`super::submit`] ; le résultat se lit sur
+//!   `GET /ingest/ingestions/{id}`.
 //!
 //! Le fichier est écrit dans un dossier temporaire, haché en SHA-256, puis
-//! ingéré par [`MediaService::ingest_file`] : le cache `upload:sha256:<hex>`
-//! déduplique les envois identiques.
+//! ingéré en tâche de fond ([`super::task`]) par [`MediaService::ingest_file`] :
+//! le cache `upload:sha256:<hex>` déduplique les envois identiques. Le dossier
+//! temporaire appartient à la tâche et disparaît avec elle.
 //!
 //! L'auteur du job est le profil **live** du membre propriétaire du client,
 //! relu à chaque envoi (cf. [`super::submit::resolved_author`]) : le client ne
@@ -44,7 +46,8 @@ use crate::http::error::ApiError;
 use crate::media::MediaService;
 
 use super::auth;
-use super::submit::{finish_ingest, owning_member, resolved_author, IngestOutcome};
+use super::submit::{owning_member, resolved_author};
+use super::task::{self, IngestSource, IngestTask};
 use super::{internal_error, invalid_payload, media_service_error, simple_error};
 
 /// Nom de repli quand ni la query ni `Content-Disposition` ne fournissent de nom.
@@ -148,7 +151,8 @@ pub async fn upload(
         Err(response) => return response,
     };
 
-    // 5. Ingestion (cache `upload:sha256:<hex>` inclus).
+    // 5. Le fichier est reçu : son ingestion (cache `upload:sha256:<hex>`
+    //    inclus) se fait en tâche de fond, après la réponse `202`.
     let media_service = match MediaService::for_state(&state) {
         Ok(service) => service,
         Err(error) => return media_service_error(error),
@@ -157,30 +161,28 @@ pub async fn upload(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let asset = match media_service
-        .ingest_file(&path, &filename, content_type.as_deref(), &content_hash)
-        .await
-    {
-        Ok(asset) => asset,
-        Err(error) => return media_service_error(error),
-    };
 
     // 6. Auteur live du membre propriétaire, comme sur `/ingest` : le client
     //    ne choisit ni son pseudo ni son avatar.
     let (author_name, author_image) = resolved_author(&client, &member);
 
-    let outcome = IngestOutcome {
-        asset: Some(&asset),
-        service: Some(&media_service),
-        job_text: text.as_deref(),
-        title: title.as_deref(),
+    let task = IngestTask {
+        client,
+        source: IngestSource::File {
+            temp,
+            filename,
+            content_type,
+            content_hash,
+        },
+        job_text: text,
+        title,
         show_text,
-        author_name: &author_name,
-        author_image: author_image.as_deref(),
+        author_name,
+        author_image,
         duration_sec,
         save_to_board,
     };
-    finish_ingest(&state, db, &client, outcome, state.clock.now()).await
+    task::accept(&state, media_service, task)
 }
 
 /// Resolves the ingest client, the member owning it and the extension send
@@ -350,7 +352,7 @@ fn payload_too_large(max_bytes: u64) -> Response {
 }
 
 /// Temporary directory holding one upload, removed on drop.
-struct TempUploadDir {
+pub(super) struct TempUploadDir {
     path: PathBuf,
 }
 
@@ -371,7 +373,7 @@ impl TempUploadDir {
         ))
     }
 
-    fn file_path(&self) -> PathBuf {
+    pub(super) fn file_path(&self) -> PathBuf {
         self.path.join("upload.bin")
     }
 }
@@ -412,6 +414,7 @@ mod tests {
     use crate::app::AppState;
     use crate::config::Config;
     use crate::http::ingest::router;
+    use crate::http::ingest::test_support::{get_ingestion, wait_ingestion};
     use crate::media::tokens::hash_ingest_token;
     use crate::shutdown::Shutdown;
 
@@ -425,15 +428,28 @@ mod tests {
     }
 
     async fn fixture(max_size_mb: u64) -> Fixture {
+        fixture_with(max_size_mb, &[]).await
+    }
+
+    async fn fixture_with(max_size_mb: u64, extra: &[(&str, &str)]) -> Fixture {
         let dir = tempfile::tempdir().expect("dossier temporaire");
         let db = Db::open(dir.path().join("test.db"), &DbConfig::default())
             .await
             .expect("base de test");
-        let config = Config::from_pairs([
+        let mut pairs = vec![
             ("API_URL".to_owned(), "http://localhost:3000".to_owned()),
             ("MEDIA_MAX_SIZE_MB".to_owned(), max_size_mb.to_string()),
-        ])
-        .expect("configuration de test valide");
+            (
+                "MEDIA_STORAGE_DIR".to_owned(),
+                dir.path().join("media").to_string_lossy().into_owned(),
+            ),
+        ];
+        pairs.extend(
+            extra
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned())),
+        );
+        let config = Config::from_pairs(pairs).expect("configuration de test valide");
         let state = AppState::new(Arc::new(config), Some(db.clone()), Shutdown::detached());
         let app = router().with_state(state);
         Fixture { _dir: dir, app, db }
@@ -713,11 +729,12 @@ mod tests {
             &[],
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["hasMedia"], true);
-        assert_eq!(body["hasText"], true);
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert_eq!(body["accepted"], true);
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
 
-        let job_id = body["jobId"].as_str().expect("jobId");
+        let job_id = done["jobId"].as_str().expect("jobId");
         let job = fixture
             .db
             .playback_jobs()
@@ -765,8 +782,9 @@ mod tests {
             &[],
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        let job = read_job(&fixture, &body).await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        let job = read_job(&fixture, &done).await;
         assert_eq!(job.author_name.as_deref(), Some("Nhics_"));
         assert_eq!(job.author_image.as_deref(), Some(avatar));
     }
@@ -785,8 +803,10 @@ mod tests {
             &[],
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["savedToBoard"], true);
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
+        assert!(done["itemId"].is_string(), "{done}");
 
         let guild = GuildId::parse(GUILD).unwrap();
         let items = fixture
@@ -815,8 +835,9 @@ mod tests {
             &[("content-disposition", "attachment; filename=\"photo.png\"")],
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["hasMedia"], true);
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "ready", "{done}");
     }
 
     #[tokio::test]
@@ -833,6 +854,75 @@ mod tests {
             &[],
         )
         .await;
-        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    }
+
+    /// A file the pipeline cannot read is still answered `202`: the failure
+    /// is reported on the ingestion, with the stable media code the clients
+    /// translate, and no job is created.
+    #[tokio::test]
+    async fn upload_failure_is_reported_on_the_ingestion() {
+        let fixture = fixture_with(2048, &[("FFPROBE_BINARY", "lc-missing-ffprobe")]).await;
+        insert_client(&fixture.db).await;
+
+        let (status, body) = post_file(
+            fixture.app.clone(),
+            Some(TOKEN),
+            "/ingest/file?filename=video.mp4",
+            b"not-a-media".to_vec(),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+        let done = wait_ingestion(&fixture.app, TOKEN, &body).await;
+        assert_eq!(done["status"], "failed", "{done}");
+        assert_eq!(done["error"]["code"], "media_ingestion_failed", "{done}");
+        assert!(done["error"]["mediaCode"].is_string(), "{done}");
+        assert!(done.get("jobId").is_none(), "{done}");
+        let guild = GuildId::parse(GUILD).unwrap();
+        let jobs = fixture
+            .db
+            .playback_jobs()
+            .list_pending_by_guild(&guild)
+            .await
+            .unwrap();
+        assert!(jobs.is_empty(), "aucun job ne doit être créé");
+    }
+
+    /// The answer never waits for the media: while the pipeline is blocked
+    /// (here on the lock of the upload's source hash), the client already has
+    /// its `202` and the ingestion reads `processing`. The work then finishes
+    /// on its own, with no connection left.
+    #[tokio::test]
+    async fn upload_is_answered_while_the_pipeline_is_still_busy() {
+        let fixture = fixture_with(2048, &[("FFPROBE_BINARY", "lc-missing-ffprobe")]).await;
+        insert_client(&fixture.db).await;
+        let body = b"busy-pipeline-body".to_vec();
+        let hash = hex::encode(Sha256::digest(&body));
+        let source = lc_media::source::MediaSource::from_upload("video.mp4", &hash);
+        let busy = lc_media::ingest::lock_source_hash(&source.source_hash).await;
+
+        let (status, accepted) = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            post_file(
+                fixture.app.clone(),
+                Some(TOKEN),
+                "/ingest/file?filename=video.mp4",
+                body,
+                &[],
+            ),
+        )
+        .await
+        .expect("la réponse ne doit pas attendre le pipeline");
+        assert_eq!(status, StatusCode::ACCEPTED, "{accepted}");
+        let id = accepted["ingestionId"].as_str().unwrap();
+        let (status, state) = get_ingestion(&fixture.app, TOKEN, id).await;
+        assert_eq!(status, StatusCode::OK, "{state}");
+        assert_eq!(state["status"], "processing", "{state}");
+
+        drop(busy);
+        let done = wait_ingestion(&fixture.app, TOKEN, &accepted).await;
+        assert_eq!(done["status"], "failed", "{done}");
     }
 }

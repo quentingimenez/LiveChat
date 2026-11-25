@@ -187,3 +187,34 @@ export const mapNetworkFailure = (error: unknown): IngestFailure => {
     details: errorMessage || undefined
   };
 };
+
+/**
+ * Échec d'une ingestion acceptée en `202`, lu sur `GET /ingest/ingestions/{id}`.
+ *
+ * Comme pour la réponse `422` synchrone, seul le code média stable
+ * (`mediaCode`) choisit la phrase : le `message` du serveur n'est pas affiché.
+ */
+export const mapIngestionFailure = (error: unknown): IngestFailure => {
+  const code = isRecord(error) ? toNonEmptyString(error.code) : null;
+  const mediaCode = isRecord(error) ? toNonEmptyString(error.mediaCode) : null;
+
+  if (code === 'media_ingestion_failed') {
+    return {
+      code: 'MEDIA_INGESTION_FAILED',
+      message: mediaFailureMessage(mediaCode || undefined),
+      details: mediaCode || undefined
+    };
+  }
+
+  if (code === 'ingest_unavailable') {
+    return {
+      code: 'SERVER_ERROR',
+      message: 'Le service d’ingestion est momentanément indisponible. Réessayez dans un instant.'
+    };
+  }
+
+  return {
+    code: 'SERVER_ERROR',
+    message: 'Le serveur LiveChat n’a pas pu traiter ce média.'
+  };
+};

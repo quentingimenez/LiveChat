@@ -5,7 +5,11 @@
 //! - `POST /ingest/pair/consume` : consommation d'un code d'appairage « invité »
 //!   (`INVITE_READ_ONLY` côté overlay) et création d'un client d'ingestion ;
 //! - `POST /ingest` : soumission d'une URL/média/texte, avec authentification
-//!   par token de client (`Authorization: Bearer <token>`) ;
+//!   par token de client (`Authorization: Bearer <token>`). Un média est
+//!   accepté en `202 {ingestionId}` puis traité en tâche de fond
+//!   ([`task`]) ; un texte seul crée son job tout de suite (`201`) ;
+//! - `POST /ingest/file` : envoi d'un fichier brut, accepté en `202` de même ;
+//! - `GET /ingest/ingestions/{id}` : état d'une ingestion acceptée en `202` ;
 //! - `GET /ingest/whoami` : vérification d'un token seul, sans ingestion
 //!   (diagnostic des raccourcis qui ne regardent pas le statut de `POST`).
 //!
@@ -29,7 +33,11 @@ pub mod auth;
 pub mod body;
 pub mod file;
 pub mod pair;
+pub mod status;
 pub mod submit;
+mod task;
+#[cfg(test)]
+mod test_support;
 pub mod whoami;
 
 use axum::http::StatusCode;
@@ -54,6 +62,8 @@ pub fn router() -> Router<AppState> {
         .route("/ingest/", post(submit::submit))
         .route("/ingest/file", post(file::upload))
         .route("/ingest/file/", post(file::upload))
+        .route("/ingest/ingestions/{id}", get(status::ingestion))
+        .route("/ingest/ingestions/{id}/", get(status::ingestion))
         .route("/ingest/pair/consume", post(pair::consume))
         .route("/ingest/pair/consume/", post(pair::consume))
         .route("/ingest/whoami", get(whoami::whoami))

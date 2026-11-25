@@ -270,6 +270,7 @@ async fn audit_and_ingestion_entries_are_streamed() {
         IngestionErrorInfo {
             code: "unsupported_media".to_owned(),
             message: None,
+            media_code: None,
         },
         now,
     );

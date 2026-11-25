@@ -48,6 +48,7 @@ import {
   returnRadius,
   playTimeline,
 } from '../core/detail-motion.js';
+import { createMediaPrefetcher } from '../core/media-prefetch.js';
 
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
@@ -275,6 +276,9 @@ export function createMediaDetail(options) {
   const view = () => (typeof opts.view === 'function' ? opts.view() : null);
   const hoverEnabled = () => (typeof opts.hoverEnabled === 'function' ? opts.hoverEnabled() !== false : true);
   const describe = (id) => (typeof opts.describe === 'function' ? opts.describe(id) : null);
+  // The media bytes start loading while the pointer rests on a card, so the
+  // preview and the window open on what the browser already has.
+  const prefetcher = createMediaPrefetcher();
   // Durations and curves of styles/motion.css, read at the start of each
   // transition. The tokens already carry the reduced-motion values.
   const motion = () => readMotion(window.getComputedStyle(document.documentElement));
@@ -699,6 +703,32 @@ export function createMediaDetail(options) {
     });
   }
 
+  // The card under the pointer warms its media after a short debounce. This is
+  // independent of the hover preview setting: a double click must open at once
+  // even when the preview is off.
+  function prefetchCard(card) {
+    if (!card || detailPage) {
+      return;
+    }
+    const id = card.dataset && card.dataset.itemId ? card.dataset.itemId : '';
+    if (!id) {
+      return;
+    }
+    const desc = describe(id);
+    if (desc) {
+      prefetcher.schedule(id, desc);
+    }
+  }
+
+  // Leaving the card before the debounce drops the pending load: sweeping
+  // across the grid starts no request. A load already started is kept warm.
+  function cancelPrefetch(card) {
+    const id = card && card.dataset && card.dataset.itemId ? card.dataset.itemId : '';
+    if (id) {
+      prefetcher.cancel(id);
+    }
+  }
+
   function build(card, desc) {
     const thumb = card.querySelector('.thumb');
     if (!thumb) {
@@ -710,6 +740,9 @@ export function createMediaDetail(options) {
     const size = mediaSize(ratio);
     const url = typeof desc.url === 'string' ? desc.url : '';
     const poster = typeof desc.poster === 'string' ? desc.poster : '';
+    // A prefetched element is already loading its bytes: reuse it instead of
+    // starting a second request for the same media.
+    const prefetched = prefetcher.take({ kind, url, expiresAt: desc.expiresAt });
     const el = h('div', { class: 'hp-overlay' });
     // A tall preview may be narrow; keep the title and buttons readable, and
     // never narrower than the card: its first frame is the card itself.
@@ -721,9 +754,12 @@ export function createMediaDetail(options) {
     let still = null;
 
     if (kind === 'video' && url) {
-      player = document.createElement('video');
+      const carried = prefetched && prefetched.kind === 'video' ? prefetched.element : null;
+      player = carried || document.createElement('video');
       player.className = 'hp-video';
-      player.src = url;
+      if (!player.src) {
+        player.src = url;
+      }
       if (poster) {
         player.poster = poster;
       }
@@ -732,9 +768,10 @@ export function createMediaDetail(options) {
       player.loop = true;
       player.autoplay = true;
       player.playsInline = true;
-      player.preload = 'metadata';
+      player.preload = carried ? 'auto' : 'metadata';
       player.setAttribute('muted', '');
       player.setAttribute('playsinline', '');
+      player.removeAttribute('aria-hidden');
       player.setAttribute('aria-label', 'Aperçu vidéo');
       media.appendChild(player);
     } else if (kind === 'audio') {
@@ -744,23 +781,35 @@ export function createMediaDetail(options) {
         media.appendChild(previewGlyph('audio'));
       }
       if (url) {
-        player = document.createElement('audio');
+        const carried = prefetched && prefetched.kind === 'audio' ? prefetched.element : null;
+        player = carried || document.createElement('audio');
         player.className = 'hp-audio-player';
-        player.src = url;
+        if (!player.src) {
+          player.src = url;
+        }
         player.muted = true;
         player.defaultMuted = true;
         player.loop = true;
         player.autoplay = true;
-        player.preload = 'metadata';
+        player.preload = carried ? 'auto' : 'metadata';
         player.setAttribute('muted', '');
+        player.removeAttribute('aria-hidden');
         player.setAttribute('aria-label', 'Aperçu audio');
         media.insertBefore(player, media.firstChild);
       }
     } else {
       const source = url || poster;
       if (source) {
-        still = posterImage(source);
-        media.appendChild(still);
+        if (prefetched && prefetched.kind === 'image' && url) {
+          still = prefetched.element;
+          still.alt = '';
+          still.draggable = false;
+          still.decoding = 'async';
+          media.appendChild(still);
+        } else {
+          still = posterImage(source);
+          media.appendChild(still);
+        }
       } else {
         media.appendChild(previewGlyph(kind));
       }
@@ -821,6 +870,9 @@ export function createMediaDetail(options) {
     if (!desc) {
       return;
     }
+    // The preview loads the media itself; a pending prefetch would start a
+    // second request for the same bytes. A warm entry is taken by build().
+    prefetcher.cancel(id);
     const el = build(card, desc);
     if (!el) {
       return;
@@ -1024,7 +1076,7 @@ export function createMediaDetail(options) {
     return player;
   }
 
-  function buildStage(desc, carriedVisual, carriedPlayer) {
+  function buildStage(desc, carriedVisual, carriedPlayer, prefetched) {
     const kind = normalizeKind(desc);
     const url = typeof desc.url === 'string' ? desc.url : '';
     const poster = typeof desc.poster === 'string' ? desc.poster : '';
@@ -1038,8 +1090,24 @@ export function createMediaDetail(options) {
     let player = null;
     if (kind === 'video' && url) {
       const carriedVideo = carriedVisual && carriedVisual.tagName === 'VIDEO' ? carriedVisual : null;
-      player = carriedVideo || detailVideo(url, poster, volume);
+      const prefetchedVideo = prefetched && prefetched.kind === 'video' ? prefetched.element : null;
+      player = carriedVideo || prefetchedVideo || detailVideo(url, poster, volume);
       if (!carriedVideo) {
+        if (prefetchedVideo) {
+          // The prefetched element was created detached: it joins the stage
+          // before the flight, which then only carries the page itself.
+          prefetchedVideo.className = 'hp-page-video';
+          prefetchedVideo.controls = true;
+          prefetchedVideo.loop = true;
+          prefetchedVideo.autoplay = true;
+          prefetchedVideo.muted = true;
+          if (poster) {
+            prefetchedVideo.poster = poster;
+          }
+          prefetchedVideo.removeAttribute('aria-hidden');
+          prefetchedVideo.setAttribute('aria-label', 'Média en grand');
+          prefetchedVideo.setAttribute('playsinline', '');
+        }
         stage.appendChild(player);
       }
     } else if (kind === 'audio') {
@@ -1056,6 +1124,14 @@ export function createMediaDetail(options) {
         player.controls = true;
         player.setAttribute('aria-label', 'Média audio');
         audioBox.appendChild(player);
+      } else if (prefetched && prefetched.kind === 'audio') {
+        player = prefetched.element;
+        player.className = '';
+        player.controls = true;
+        player.muted = true;
+        player.removeAttribute('aria-hidden');
+        player.setAttribute('aria-label', 'Média audio');
+        audioBox.appendChild(player);
       } else if (url) {
         player = detailAudio(url, volume);
         audioBox.appendChild(player);
@@ -1063,6 +1139,12 @@ export function createMediaDetail(options) {
       stage.appendChild(audioBox);
     } else if (carriedVisual && carriedVisual.tagName === 'IMG') {
       // The preview picture lands in the stage at the end of the flight.
+    } else if (prefetched && prefetched.kind === 'image') {
+      const image = prefetched.element;
+      image.alt = '';
+      image.draggable = false;
+      image.decoding = 'async';
+      stage.appendChild(image);
     } else if (url || poster) {
       stage.appendChild(posterImage(url || poster));
     } else {
@@ -1461,6 +1543,9 @@ export function createMediaDetail(options) {
     const kind = normalizeKind(desc);
     const url = typeof desc.url === 'string' ? desc.url : '';
     const poster = typeof desc.poster === 'string' ? desc.poster : '';
+    // A prefetched element is already loading: the window must use it, not
+    // create a second player that starts from zero. A preview already took it.
+    const prefetched = fromPreview ? null : prefetcher.take({ kind, url, expiresAt: desc.expiresAt });
     const carriedVideo = carriedVisual && carriedVisual.tagName === 'VIDEO' ? carriedVisual : null;
     const carriedImage = carriedVisual && carriedVisual.tagName === 'IMG' ? carriedVisual : null;
     const page = h('section', {
@@ -1487,7 +1572,7 @@ export function createMediaDetail(options) {
     const tools = h('div', { class: 'hp-page-tools' }, detailTools(desc));
     const top = h('div', { class: 'hp-page-top' }, back, crumb, tools);
 
-    const built = buildStage(desc, carriedVisual, carriedPlayer);
+    const built = buildStage(desc, carriedVisual, carriedPlayer, prefetched);
     const info = detailColumn(desc);
     const body = h('div', { class: 'hp-page-grid' }, built.stage, info);
     page.append(top, body);
@@ -1530,16 +1615,20 @@ export function createMediaDetail(options) {
     detailId = id;
     page._unwatch = watchShell(page);
 
-    if (player && player !== carriedVideo && player !== carriedPlayer) {
+    const prefetchedPlayer = prefetched && player === prefetched.element ? player : null;
+    if (player && (prefetchedPlayer || (player !== carriedVideo && player !== carriedPlayer))) {
       // A new player starts silent; the carried one keeps its state.
       player.muted = true;
+      player.volume = clampVolume(desc.volume);
       const attempt = player.play();
       if (attempt && typeof attempt.catch === 'function') {
         attempt.catch(() => {});
       }
     }
 
-    const flyVisual = kind === 'video' && url ? carriedVideo : carriedImage;
+    const flyVisual = fromPreview
+      ? (kind === 'video' && url ? carriedVideo : carriedImage)
+      : null;
     if (flyVisual && poster && flyVisual === carriedVideo) {
       // The preview fades while the video flies: leave the poster in place
       // instead of an empty frame.
@@ -1669,6 +1758,12 @@ export function createMediaDetail(options) {
   // --- public controller ---------------------------------------------------
 
   const controller = {
+    prefetchCard(card) {
+      prefetchCard(card);
+    },
+    cancelPrefetch(card) {
+      cancelPrefetch(card);
+    },
     hoverCard(card) {
       if (!hoverEnabled() || detailPage) {
         return;

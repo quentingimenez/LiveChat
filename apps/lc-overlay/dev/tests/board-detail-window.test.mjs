@@ -10,7 +10,9 @@ const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta
 const board = read('views/board.js');
 const boardCss = read('styles/board.css');
 const detailCss = read('styles/media-detail.css');
-const mediaDetail = read('views/media-detail.js');
+// The tests below match boundaries with plain newlines; a Windows checkout
+// (core.autocrlf=true) must not turn every body regex into a failure.
+const mediaDetail = read('views/media-detail.js').replace(/\r\n/g, '\n');
 
 // Body of a top-level function declaration, without its closing brace line.
 function functionBody(name, source = board) {
@@ -55,9 +57,75 @@ test('a card opens the window and refreshes only its information column', () => 
   assert.match(board, /mediaDetail\.openDetail\(cards\.get\(id\)\.node\)/, 'a click opens the window');
   assert.match(board, /mediaDetail\.hoverCard\(event\.currentTarget\)/, 'the cards feed the hover preview');
   assert.match(board, /mediaDetail\.leaveCard\(event\.currentTarget\)/);
+  assert.match(board, /mediaDetail\.prefetchCard\(event\.currentTarget\)/, 'the cards warm their media first');
+  assert.match(board, /mediaDetail\.cancelPrefetch\(event\.currentTarget\)/);
   assert.match(board, /mediaDetail\.refreshDetail\(\)/, 'a board refresh rebuilds the information column');
   assert.match(board, /mediaDetail\.closeDetail\(\)/, 'a media that left the board closes the window');
   assert.match(board, /mediaDetail\.setVolume\(previewVolume\(state\.activeGuildId\)\)/, 'the sound setting reaches the window player');
+});
+
+test('a card warms its media before the hover preview delay', () => {
+  const enter = board.indexOf('onMouseenter: (event) => {');
+  const leave = board.indexOf('onMouseleave: (event) => {');
+  const prefetch = board.indexOf('mediaDetail.prefetchCard(event.currentTarget)', enter);
+  const hover = board.indexOf('mediaDetail.hoverCard(event.currentTarget)', enter);
+  const cancel = board.indexOf('mediaDetail.cancelPrefetch(event.currentTarget)', leave);
+  const hide = board.indexOf('mediaDetail.leaveCard(event.currentTarget)', leave);
+
+  assert.ok(enter >= 0 && leave > enter, 'both handlers are objects');
+  assert.ok(prefetch > enter, 'entering a card starts the prefetch');
+  assert.ok(hover > prefetch, 'the prefetch starts before the preview is scheduled');
+  assert.ok(cancel > leave && hide > cancel, 'leaving drops a pending prefetch before hiding');
+
+  assert.match(mediaDetail, /import \{ createMediaPrefetcher \} from '\.\.\/core\/media-prefetch\.js'/);
+  assert.match(mediaDetail, /prefetcher\.schedule\(id, desc\)/);
+  assert.match(mediaDetail, /prefetcher\.cancel\(id\)/);
+  assert.match(mediaDetail, /prefetcher\.take\(\{ kind, url, expiresAt: desc\.expiresAt \}\)/);
+  assert.match(mediaDetail, /buildStage\(desc, carriedVisual, carriedPlayer, prefetched\)/);
+  assert.match(functionBody('describeItem'), /const url = previewUrl\(item\);/);
+  assert.match(functionBody('describeItem'), /expiresAt: urlExpiresAt\(url\),/);
+
+  // Warming the bytes is independent of the hover preview setting: the window
+  // must be instant even when the setting is off.
+  const prefetchBody = /\n  function prefetchCard\(card\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
+  assert.ok(prefetchBody, 'prefetchCard is found');
+  assert.doesNotMatch(prefetchBody[1], /hoverEnabled/);
+  assert.match(prefetchBody[1], /if \(!card \|\| detailPage\) \{/);
+});
+
+test('the preview and the window reuse the prefetched element', () => {
+  const build = /\n  function build\(card, desc\) \{([\s\S]*?)\n  \}\n/.exec(mediaDetail);
+  assert.ok(build, 'build is found');
+  assert.match(build[1], /const prefetched = prefetcher\.take\(\{ kind, url, expiresAt: desc\.expiresAt \}\);/);
+  assert.match(build[1], /prefetched && prefetched\.kind === 'video'/);
+  assert.match(build[1], /prefetched && prefetched\.kind === 'audio'/);
+  assert.match(build[1], /prefetched && prefetched\.kind === 'image'/);
+
+  const open = mediaDetail.indexOf('function openDetail(card)');
+  const take = mediaDetail.indexOf('const prefetched = fromPreview ? null : prefetcher.take(', open);
+  const stage = mediaDetail.indexOf('buildStage(desc, carriedVisual, carriedPlayer, prefetched)', open);
+  assert.ok(open >= 0 && take > open, 'the window takes the prefetched element');
+  assert.ok(stage > take, 'the stage receives it');
+
+  // A warm hover opens the preview before the debounce: the pending prefetch
+  // must be dropped, or the same bytes would be requested twice.
+  const previewOpen = /\n  function open\(card\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
+  assert.ok(previewOpen, 'open is found');
+  const cancelAt = previewOpen[1].indexOf('prefetcher.cancel(id);');
+  const buildAt = previewOpen[1].indexOf('const el = build(card, desc);');
+  assert.ok(cancelAt >= 0 && buildAt > cancelAt, 'the preview cancels the pending prefetch before building');
+
+  const stageBody = /\n  function buildStage\(desc, carriedVisual, carriedPlayer, prefetched\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
+  assert.ok(stageBody, 'buildStage is found');
+  assert.match(stageBody[1], /const prefetchedVideo = prefetched && prefetched\.kind === 'video'/);
+  assert.match(stageBody[1], /else if \(prefetched && prefetched\.kind === 'audio'\)/);
+  assert.match(stageBody[1], /else if \(prefetched && prefetched\.kind === 'image'\)/);
+
+  // A detached prefetched element has no rect to fly from: only the preview's
+  // own media rides with the page.
+  const fly = mediaDetail.indexOf('const flyVisual = fromPreview', open);
+  assert.ok(fly > open, 'the flight media is chosen after the prefetch handoff');
+  assert.match(mediaDetail.slice(fly, fly + 160), /: null;/);
 });
 
 test('no trace of the removed drawer remains in the board', () => {

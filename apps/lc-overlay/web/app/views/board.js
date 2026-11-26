@@ -3,7 +3,7 @@
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
 import { afterNextClick } from '../core/after-click.js';
-import { isEditable, openContextMenu } from '../core/contextmenu.js';
+import { contextMenuOpen, isEditable, openContextMenu } from '../core/contextmenu.js';
 import { findAction } from '../core/find-shortcut.js';
 import { acceleratorFromEvent, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
@@ -1263,8 +1263,17 @@ const mediaDetail = createMediaDetail({
     selecting: state.selecting,
     capturing: state.capturing,
     dialogOpen: Boolean(document.getElementById('dialog-root')?.firstElementChild),
+    menuOpen: contextMenuOpen(),
   }),
   describe: (id) => describeItem(id),
+  // The right click lands on the preview that covers its card: it opens the
+  // card's own menu, so both paths keep one definition.
+  onCardMenu: (event, card) => {
+    const entry = cards.get(card.dataset.itemId);
+    if (entry) {
+      openCardMenu(event, entry.item);
+    }
+  },
   onBeforeOpen: (id) => {
     // The draft belongs to one opening: a media reopened later never brings
     // back what was typed for a previous window (nor its old stored message).

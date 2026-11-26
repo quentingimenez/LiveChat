@@ -1122,6 +1122,20 @@ export function createMediaDetail(options) {
     el.addEventListener('pointerenter', cancelHide);
     el.addEventListener('pointerleave', scheduleHide);
 
+    // The preview covers its card whole, so the card itself no longer receives
+    // a right click: the preview takes it, closes on the card it grew from
+    // (the menu paints above it, so the move stays readable), and lets the
+    // board open the same menu the card would have opened.
+    el.addEventListener('contextmenu', (event) => {
+      if (!opts.onCardMenu) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      opts.onCardMenu(event, card);
+    });
+
     // Commit the card-sized start frame while transitions are off, then give
     // them back: the opening runs from that frame to the full preview.
     el.getBoundingClientRect();

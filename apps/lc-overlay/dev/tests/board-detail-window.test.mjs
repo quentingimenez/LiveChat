@@ -499,6 +499,62 @@ test('the inline fields at the column edge keep their focus ring visible', () =>
   }
 });
 
+// The ring base.css draws around a focused control: 2px wide, 2px outside the
+// box, so it reaches 4px out unless the rule moves it inside.
+function ringOutward(baseSource = baseCss) {
+  const ring = ruleOf(baseSource, ':focus-visible');
+  const width = Number(/outline:\s*(\d+)px/.exec(ring)?.[1]);
+  const offset = Number(/outline-offset:\s*(-?\d+)px/.exec(ring)?.[1]);
+  return Math.max(0, width + offset);
+}
+
+// Right padding of a rule, read from the longhand or from the shorthand.
+function paddingRightOf(rule) {
+  const longhand = /padding-right:\s*(-?\d+)px/.exec(rule);
+  if (longhand) {
+    return Number(longhand[1]);
+  }
+  const parts = /padding:\s*([^;]+);/.exec(rule)?.[1].trim().split(/\s+/);
+  if (!parts) {
+    return Number.NaN;
+  }
+  // One value, or the second of a two-, three- and four-value shorthand.
+  return Number.parseFloat(parts.length === 1 ? parts[0] : parts[1]);
+}
+
+test('the action buttons keep their focus ring clear of the column clip edge', () => {
+  // The column is a scrollport: it clips at its padding box. The play button
+  // and the secondary actions span the column, so their ring lost its right
+  // edge, and the last row lost its bottom edge under the sticky footer. The
+  // room comes from the column's own padding, compensated by a negative margin
+  // so neither the buttons nor the separators above them move.
+  const outward = ringOutward();
+  const info = ruleOf(detailCss, '.hp-page-info');
+  const right = Number(/padding-right:\s*(\d+)px/.exec(info)?.[1]);
+  const marginRight = Number(/margin-right:\s*(-?\d+)px/.exec(info)?.[1]);
+  assert.ok(right >= outward, `the scrollport reserves ${right}px for a ${outward}px ring`);
+  assert.equal(marginRight, -right, 'the right room is compensated, so the buttons keep their width');
+
+  // The sticky footer owns the bottom edge of the column: its own padding is
+  // inside the clip, so the last row's ring stays whole.
+  const footer = ruleOf(detailCss, '.hp-page-footer');
+  const bottom = Number(/padding-bottom:\s*(\d+)px/.exec(footer)?.[1]);
+  assert.ok(bottom >= outward, `the footer reserves ${bottom}px under its last row`);
+
+  // Atelier and the stacked layout keep the room: the negative margin stays in
+  // every layout, so a zeroed right padding would push the column out of it.
+  const atelier = ruleOf(detailCss, ".hp-page[data-layout='atelier'] .hp-page-info");
+  assert.ok(paddingRightOf(atelier) >= right, 'the atelier layout keeps the right room');
+  const stacked = detailCss.slice(
+    detailCss.indexOf('@media (max-width: 900px)'),
+    detailCss.indexOf('@media (max-width: 620px)'),
+  );
+  assert.ok(
+    paddingRightOf(ruleOf(stacked, ".hp-page[data-layout='atelier'] .hp-page-info")) >= right,
+    'the stacked layout keeps the right room',
+  );
+});
+
 test('the preview tooltip names the action: « Lecture » or « Pause »', () => {
   const attach = /\n  function attachPlayer\(el, media, player, card, desc\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
   assert.ok(attach, 'attachPlayer is found');

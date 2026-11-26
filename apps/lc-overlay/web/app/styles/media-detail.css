@@ -847,9 +847,13 @@
      stays flush with the labels while the hover frame sits outside it. A
      scrolling column clips at its padding edge: reserve the widest outdent
      inside the scrollport, and pull the column left by the same 8px, so the
-     text does not move. */
+     text does not move. The action buttons span the column and their focus
+     ring needs the same room on the right edge: the right inset is reserved
+     and compensated the same way, so the buttons keep their width. */
   margin-left: -8px;
   padding-left: 8px;
+  margin-right: -8px;
+  padding-right: 8px;
 }
 
 /* Hide the column's scrollbar where the standard property is not enough. */
@@ -939,7 +943,8 @@ h2.hp-page-title,
 /* The facts and the actions are pinned together at the bottom of the column:
    the rest of the column scrolls under them, so an action is never hidden by a
    page that is too tall. The solid shadow closes the 8px clip gutter on its
-   left. */
+   left. The footer closes the column too: its bottom padding keeps the focus
+   ring of its last row out of the clip, its own background covering it. */
 .hp-page-footer {
   position: sticky;
   z-index: 1;
@@ -950,6 +955,7 @@ h2.hp-page-title,
   flex-direction: column;
   gap: 16px;
   margin-top: auto;
+  padding-bottom: 8px;
   background: var(--slate-800);
   box-shadow: -8px 0 0 var(--slate-800);
 }
@@ -1204,9 +1210,9 @@ p.hp-page-legend,
 
 .hp-page[data-layout='atelier'] .hp-page-info {
   gap: 14px;
-  /* Keep the 8px clip room of the base rule; only the top and right insets are
-     atelier-specific. */
-  padding: 2px 2px 0 8px;
+  /* Keep the 8px clip room of the base rule on both sides; only the top inset
+     is atelier-specific. */
+  padding: 2px 8px 0 8px;
 }
 
 .hp-page[data-layout='atelier'] .hp-page-footer {
@@ -1348,8 +1354,9 @@ p.hp-page-legend,
 
   .hp-page[data-layout='atelier'] .hp-page-info {
     /* The page scrolls instead of the column, but the column still owns the
-       left outdent: zeroing the left padding here would shift its text. */
-    padding: 0 0 0 8px;
+       outdent, on both sides: zeroing the left or the right padding here would
+       shift its text or push the buttons out of it. */
+    padding: 0 8px 0 8px;
   }
 }
 

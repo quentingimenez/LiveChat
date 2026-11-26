@@ -54,6 +54,13 @@ export function closeContextMenu() {
   }
 }
 
+// Whether a menu is open. The board keeps the hover preview away while one is:
+// the pointer sits over the card the menu belongs to, so the preview would
+// otherwise re-open over the menu a right click just opened.
+export function contextMenuOpen() {
+  return current !== null;
+}
+
 // Where to open: at the pointer, or under the target for the keyboard (menu
 // key, Shift+F10), which reports no pointer position.
 function anchorPoint(event) {

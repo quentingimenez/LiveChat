@@ -4,10 +4,12 @@
  * Blue marks the editor's main action; amber stays reserved for what is on
  * air, except the selection of the timeline, the one thing being « taken ».
  */
+/* Above the dialogs (210): the editor opens from the detail window and from the
+   board, and a dialog it leaves open (« Ajouter un média ») stays under it. */
 .editor {
   position: fixed;
   inset: 0;
-  z-index: 11;
+  z-index: 220;
   display: flex;
   flex-direction: column;
   background: var(--slate-900);

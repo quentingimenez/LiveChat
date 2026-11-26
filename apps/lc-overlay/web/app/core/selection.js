@@ -135,15 +135,19 @@ export function cardClickAction({ selecting, shiftKey, ctrlKey = false, metaKey 
 }
 
 /**
- * What a click on a card does. A single mouse click outside the selection mode
- * does nothing (playing belongs to the card's Play button and the preview), its
- * second click opens the details, and so does a keyboard click (`clickCount`
- * 0 on the thumbnail). The selection mode (and Ctrl/Cmd) keeps
+ * What a click on a card does. With « Ouvrir l'aperçu au survol » on (the
+ * default), a single mouse click outside the selection mode does nothing
+ * (playing belongs to the card's Play button and the preview), its second click
+ * opens the details, and so does a keyboard click (`clickCount` 0 on the
+ * thumbnail). With the preview off, a single click opens the details at once and
+ * its second click plays the media (`play`); the window opened by the first
+ * click then covers the card, so the board catches that second click on the
+ * window itself (see board.js). The selection mode (and Ctrl/Cmd) keeps
  * `cardClickAction`'s gestures on the first click and ignores the clicks that
  * follow in a double click. A control inside the card (its buttons, an input, a
  * link) keeps its own click.
  */
-export function cardPointerAction({ selecting, clickCount, shiftKey, ctrlKey = false, metaKey = false, onControl = false }) {
+export function cardPointerAction({ selecting, clickCount, shiftKey, ctrlKey = false, metaKey = false, onControl = false, hoverPreview = true }) {
   if (onControl) {
     return 'none';
   }
@@ -151,7 +155,15 @@ export function cardPointerAction({ selecting, clickCount, shiftKey, ctrlKey = f
     // The second click of a double click must not pick the card a second time.
     return clickCount >= 2 ? 'none' : cardClickAction({ selecting, shiftKey, ctrlKey, metaKey });
   }
-  return clickCount === 0 || clickCount === 2 ? 'details' : 'none';
+  if (hoverPreview) {
+    return clickCount === 0 || clickCount === 2 ? 'details' : 'none';
+  }
+  // The details open on the first click: nothing waits for a double-click
+  // window. A keyboard click (0) can only mean the details, like a single click.
+  if (clickCount === 0 || clickCount === 1) {
+    return 'details';
+  }
+  return clickCount === 2 ? 'play' : 'none';
 }
 
 /**

@@ -31,6 +31,7 @@
 // preference itself.
 
 import { h } from '../core/dom.js';
+import { DOUBLE_CLICK_WINDOW } from '../core/detail-actions.js';
 import {
   readMotion,
   containRect,
@@ -53,8 +54,6 @@ import { createMediaPrefetcher } from '../core/media-prefetch.js';
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
 const TOP_INSET = 76;
-const DOUBLE_CLICK_WINDOW = 600;
-const BODY_DOUBLE_CLICK_WINDOW = 600;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // The clock handed to playTimeline. Arrow functions read `window` when called,
@@ -675,7 +674,7 @@ export function createMediaDetail(options) {
         return;
       }
       const now = performance.now();
-      if (now - lastBodyPointerAt < BODY_DOUBLE_CLICK_WINDOW) {
+      if (now - lastBodyPointerAt < DOUBLE_CLICK_WINDOW) {
         lastBodyPointerAt = 0;
         openDetail(card);
         return;
@@ -687,7 +686,7 @@ export function createMediaDetail(options) {
         return;
       }
       const now = performance.now();
-      if (event.detail > 1 || now - lastBodyClickAt < BODY_DOUBLE_CLICK_WINDOW) {
+      if (event.detail > 1 || now - lastBodyClickAt < DOUBLE_CLICK_WINDOW) {
         lastBodyClickAt = 0;
         openDetail(card);
         return;

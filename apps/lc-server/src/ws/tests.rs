@@ -615,6 +615,60 @@ async fn outdated_app_version_closes_with_4403_and_min_version() {
     }
 }
 
+/// An overlay refused as outdated must still leave its version for the admin
+/// console: otherwise the device reads « version inconnue » while it keeps
+/// calling the HTTP API (« vu à l'instant »), and nothing tells the admin that
+/// an update is the fix.
+#[tokio::test]
+async fn outdated_hello_still_stores_version_and_platform() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client_id =
+        seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    send_hello(&mut socket, TOKEN, "2.9.0").await;
+    expect_close(&mut socket, close_code::OUTDATED_PROTOCOL).await;
+
+    let info = server
+        .db
+        .overlay_clients()
+        .client_info(client_id)
+        .await
+        .expect("lecture des informations client")
+        .expect("client présent");
+    assert_eq!(
+        info,
+        (Some("2.9.0".to_owned()), Some("windows".to_owned())),
+        "un overlay refusé car obsolète doit quand même laisser sa version"
+    );
+}
+
+/// A version that does not read as a version is refused without being stored:
+/// the admin console would otherwise display arbitrary client text.
+#[tokio::test]
+async fn unreadable_hello_version_is_not_stored() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client_id =
+        seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    send_hello(&mut socket, TOKEN, "garbage").await;
+    expect_close(&mut socket, close_code::OUTDATED_PROTOCOL).await;
+
+    let info = server
+        .db
+        .overlay_clients()
+        .client_info(client_id)
+        .await
+        .expect("lecture des informations client")
+        .expect("client présent");
+    assert_eq!(
+        info,
+        (None, None),
+        "une version illisible n'est pas stockée"
+    );
+}
+
 #[tokio::test]
 async fn non_hello_first_frame_closes_with_1002() {
     let server = start_server().await;

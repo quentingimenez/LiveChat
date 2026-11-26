@@ -268,25 +268,30 @@ async fn handle_socket(
         }
     }
 
+    // `appVersion` and `platform` are stored for the admin console
+    // (`overlayVersion` / `platform`) before the version gate: an overlay
+    // refused as outdated keeps calling the HTTP API (« vu à l'instant »), and
+    // without its version the admin cannot tell that an update is the fix. An
+    // unreadable version is not stored (refused below, never displayed).
+    if lc_protocol::parse_simple_version(hello.app_version.as_str()).is_some() {
+        if let Err(error) = db
+            .overlay_clients()
+            .update_client_info(
+                client.id,
+                Some(hello.app_version.as_str()),
+                hello.platform.map(lc_protocol::Platform::as_str),
+            )
+            .await
+        {
+            warn!(error = %error, client = %client_id_str, "enregistrement des informations du client impossible");
+        }
+    }
+
     if is_version_below(hello.app_version.as_str(), min_overlay_version.as_str()) {
         let reason = outdated_protocol_reason(min_overlay_version.as_str());
         let info = CloseInfo::new(close_code::OUTDATED_PROTOCOL, reason.as_str());
         close_sink(&mut sink, &info).await;
         return;
-    }
-
-    // `appVersion` and `platform` are accepted with this `hello`: store them
-    // for the admin console (`overlayVersion` / `platform`).
-    if let Err(error) = db
-        .overlay_clients()
-        .update_client_info(
-            client.id,
-            Some(hello.app_version.as_str()),
-            hello.platform.map(lc_protocol::Platform::as_str),
-        )
-        .await
-    {
-        warn!(error = %error, client = %client_id_str, "enregistrement des informations du client impossible");
     }
 
     let engine = match hub.ensure_runtime(&state).await {

@@ -47,12 +47,31 @@ test('le board ouvre le menu de la carte que l’aperçu recouvre', () => {
   assert.match(board, /const entry = cards\.get\(card\.dataset\.itemId\)/, 'la carte transmet son média');
 });
 
-test('un menu ouvert écarte l’aperçu au survol', () => {
+test('un menu ouvert n’écarte l’aperçu que sur sa propre carte', () => {
   // Dès que l'aperçu s'efface, la carte redevient l'élément survolé sous le
   // pointeur : sans cette règle, l'aperçu se rouvrirait 60 ms plus tard
   // par-dessus le menu qu'il vient d'ouvrir.
-  assert.equal(previewAllowed({ hoverPreview: true, menuOpen: true }), false);
-  assert.equal(previewAllowed({ hoverPreview: true, menuOpen: false }), true, 'sans menu, rien ne change');
-  assert.match(board, /menuOpen: contextMenuOpen\(\)/, 'le board demande au menu s’il est ouvert');
+  assert.equal(previewAllowed({ hoverPreview: true, menuOnCard: true }), false);
+  // Le pointeur peut quitter cette carte sans refermer le menu : l'aperçu de
+  // la carte survolée doit alors s'ouvrir, sinon le survol actif reste celui
+  // d'avant et la carte sous le pointeur n'a plus d'aperçu du tout.
+  assert.equal(previewAllowed({ hoverPreview: true, menuOnCard: false }), true);
+  assert.equal(previewAllowed({ hoverPreview: true }), true, 'sans menu, rien ne change');
+  assert.match(
+    board,
+    /menuOnCard: contextMenuOpen\(\) && itemId === menuItemId/,
+    'le board compare la carte survolée à celle du menu',
+  );
+  assert.match(
+    between(board, 'function openCardMenu(event, item) {', 'openContextMenu(event, ['),
+    /menuItemId = item\.id;/,
+    'ouvrir un menu retient sa carte',
+  );
   assert.match(contextMenu, /export function contextMenuOpen\(\)/, 'le menu sait s’il est ouvert');
+});
+
+test('l’aperçu demande la carte survolée', () => {
+  assert.match(mediaDetail, /opts\.hoverEnabled\(card\?\.dataset\?\.itemId\)/, 'la carte est transmise au board');
+  const calls = [...mediaDetail.matchAll(/hoverEnabled\(card\)/g)];
+  assert.ok(calls.length >= 3, `chaque décision d’aperçu passe la carte (${calls.length})`);
 });

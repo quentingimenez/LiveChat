@@ -286,7 +286,11 @@ export function createMediaDetail(options) {
 
   const grid = () => (typeof opts.grid === 'function' ? opts.grid() : null);
   const view = () => (typeof opts.view === 'function' ? opts.view() : null);
-  const hoverEnabled = () => (typeof opts.hoverEnabled === 'function' ? opts.hoverEnabled() !== false : true);
+  // The preview belongs to one card, so the board is told which card is being
+  // hovered: an open card menu only holds the preview off its own card.
+  const hoverEnabled = (card) => (typeof opts.hoverEnabled === 'function'
+    ? opts.hoverEnabled(card?.dataset?.itemId) !== false
+    : true);
   const describe = (id) => (typeof opts.describe === 'function' ? opts.describe(id) : null);
   // The media bytes start loading while the pointer rests on a card, so the
   // preview and the window open on what the browser already has.
@@ -494,7 +498,7 @@ export function createMediaDetail(options) {
     if (hoverHold || !card || card === previewCard || detailPage) {
       return;
     }
-    if (!hoverEnabled()) {
+    if (!hoverEnabled(card)) {
       return;
     }
     cancelHide();
@@ -993,7 +997,7 @@ export function createMediaDetail(options) {
     if (!card || card === previewCard) {
       return;
     }
-    if (!hoverEnabled()) {
+    if (!hoverEnabled(card)) {
       return;
     }
 
@@ -1922,7 +1926,7 @@ export function createMediaDetail(options) {
       cancelPrefetch(card);
     },
     hoverCard(card) {
-      if (!hoverEnabled() || detailPage) {
+      if (!hoverEnabled(card) || detailPage) {
         return;
       }
       if (card && card === previewCard) {

@@ -8,10 +8,12 @@
 export const DOUBLE_CLICK_WINDOW = 600;
 
 // The preview only exists for the device setting « Ouvrir l'aperçu au survol »,
-// and never over the selection mode, a shortcut capture, a dialog or an open
-// card menu: the preview covers its card whole, so it hides the menu.
-export function previewAllowed({ hoverPreview, selecting, capturing, dialogOpen, menuOpen } = {}) {
-  return hoverPreview === true && !selecting && !capturing && !dialogOpen && !menuOpen;
+// and never over the selection mode, a shortcut capture or a dialog. An open
+// card menu only holds it off the card that menu belongs to: it covers its card
+// whole and would hide the menu, while the pointer moving on to another card
+// still expects that card's preview.
+export function previewAllowed({ hoverPreview, selecting, capturing, dialogOpen, menuOnCard } = {}) {
+  return hoverPreview === true && !selecting && !capturing && !dialogOpen && !menuOnCard;
 }
 
 // The preview's one meta line: kind, then the duration and the author when

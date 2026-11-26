@@ -88,6 +88,7 @@ export function itemTitle(item) {
 }
 
 function openCardMenu(event, item) {
+  menuItemId = item.id;
   const link = sourceLink(item);
   openContextMenu(event, [
     { heading: itemTitle(item) },
@@ -1243,6 +1244,11 @@ function setKind(kind) {
 // it off, and the value stays on until it says otherwise.
 let hoverPreview = true;
 
+// The card whose menu is open, if any. The preview stays off that one card —
+// it covers its card whole and would hide the menu it just opened — while the
+// pointer moving on to another card still opens that card's preview.
+let menuItemId = null;
+
 // The caption is a draft owned by the detail window: typed there, sent with
 // the next trigger and never stored on the server. A fresh opening starts
 // empty even when the item still carries an old server-side message, and both
@@ -1258,12 +1264,12 @@ function legendDraft(itemId) {
 const mediaDetail = createMediaDetail({
   grid: () => document.getElementById('grid'),
   view: () => document.getElementById('view'),
-  hoverEnabled: () => previewAllowed({
+  hoverEnabled: (itemId) => previewAllowed({
     hoverPreview,
     selecting: state.selecting,
     capturing: state.capturing,
     dialogOpen: Boolean(document.getElementById('dialog-root')?.firstElementChild),
-    menuOpen: contextMenuOpen(),
+    menuOnCard: contextMenuOpen() && itemId === menuItemId,
   }),
   describe: (id) => describeItem(id),
   // The right click lands on the preview that covers its card: it opens the

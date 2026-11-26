@@ -49,6 +49,7 @@ import {
   playTimeline,
 } from '../core/detail-motion.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
+import { trimVolume } from '../core/sound.js';
 
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
@@ -271,6 +272,10 @@ export function createMediaDetail(options) {
   let pointerY = -1;
   let holdX = -1;
   let holdY = -1;
+  // Level of the preview's own volume bar, kept across previews: it trims the
+  // overlay gain, so 100 % keeps a preview exactly as loud as the overlay.
+  let previewLevel = 1;
+  let lastAudibleLevel = 1;
 
   const grid = () => (typeof opts.grid === 'function' ? opts.grid() : null);
   const view = () => (typeof opts.view === 'function' ? opts.view() : null);
@@ -507,7 +512,7 @@ export function createMediaDetail(options) {
     return track;
   }
 
-  function attachPlayer(el, media, player, card) {
+  function attachPlayer(el, media, player, card, desc) {
     el.classList.add('is-playable');
     el._player = player;
 
@@ -528,24 +533,69 @@ export function createMediaDetail(options) {
     pauseVeil.appendChild(playIcon());
     media.appendChild(pauseVeil);
 
+    const volume = document.createElement('div');
+    volume.className = 'hp-volume';
+
     const mute = document.createElement('button');
     mute.type = 'button';
     mute.className = 'hp-mute';
-    const refreshMute = () => {
-      const muted = player.muted;
-      mute.replaceChildren(speakerIcon(muted));
-      mute.setAttribute('aria-label', muted ? 'Activer le son' : 'Couper le son');
-      mute.setAttribute('title', muted ? 'Activer le son' : 'Couper le son');
-      mute.setAttribute('aria-pressed', String(!muted));
+
+    const pop = document.createElement('div');
+    pop.className = 'hp-volume-pop';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'hp-volume-range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '1';
+    slider.setAttribute('aria-label', 'Volume de l’aperçu');
+    slider.setAttribute('aria-orientation', 'vertical');
+    pop.appendChild(slider);
+    volume.append(mute, pop);
+
+    const refreshVolume = () => {
+      const percent = Math.round(previewLevel * 100);
+      slider.value = String(percent);
+      slider.style.setProperty('--hp-volume-level', `${percent}%`);
+      slider.setAttribute('aria-valuetext', `${percent} %`);
+      const audible = !player.muted && player.volume > 0;
+      mute.replaceChildren(speakerIcon(!audible));
+      mute.setAttribute('aria-label', audible ? 'Couper le son' : 'Activer le son');
+      mute.setAttribute('title', audible ? 'Couper le son' : 'Activer le son');
+      mute.setAttribute('aria-pressed', String(audible));
     };
-    refreshMute();
+    player.volume = trimVolume(desc && desc.volume, previewLevel);
+    refreshVolume();
+
+    slider.addEventListener('input', () => {
+      const level = clampVolume(Number(slider.value) / 100);
+      previewLevel = level;
+      player.volume = trimVolume(desc && desc.volume, level);
+      if (level > 0) {
+        lastAudibleLevel = level;
+        player.muted = false;
+      } else {
+        player.muted = true;
+      }
+      refreshVolume();
+    });
     mute.addEventListener('click', (event) => {
       event.stopPropagation();
-      player.muted = !player.muted;
-      refreshMute();
+      if (!player.muted && player.volume > 0) {
+        player.muted = true;
+      } else {
+        // Coming back from zero restores the last level that produced sound,
+        // rather than an arbitrary default.
+        if (previewLevel === 0) {
+          previewLevel = lastAudibleLevel;
+        }
+        player.volume = trimVolume(desc && desc.volume, previewLevel);
+        player.muted = false;
+      }
+      refreshVolume();
     });
-    player.addEventListener('volumechange', refreshMute);
-    media.appendChild(mute);
+    player.addEventListener('volumechange', refreshVolume);
+    media.appendChild(volume);
 
     media.tabIndex = 0;
     media.setAttribute('role', 'button');
@@ -590,7 +640,7 @@ export function createMediaDetail(options) {
 
     // pointerdown recognises a double press more reliably than click/detail.
     media.addEventListener('pointerdown', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       const now = performance.now();
@@ -604,7 +654,7 @@ export function createMediaDetail(options) {
     });
 
     media.addEventListener('click', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       const now = performance.now();
@@ -622,7 +672,7 @@ export function createMediaDetail(options) {
     });
 
     media.addEventListener('dblclick', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       event.preventDefault();
@@ -631,7 +681,7 @@ export function createMediaDetail(options) {
     });
 
     media.addEventListener('keydown', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       if (event.key !== ' ' && event.key !== 'Enter') {
@@ -816,7 +866,7 @@ export function createMediaDetail(options) {
     }
 
     if (player) {
-      attachPlayer(el, media, player, card);
+      attachPlayer(el, media, player, card, desc);
     } else if (media.querySelector('img, .hp-audio')) {
       attachStillOpen(media, card);
     }

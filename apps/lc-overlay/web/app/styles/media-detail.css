@@ -216,15 +216,28 @@
   outline-offset: 2px;
 }
 
-.hp-mute {
+/* One hover area for the mute button and its bar: the wrapper is exactly the
+   button, and the bar overlaps it by 2 px so moving left keeps the wrapper
+   hovered. The bar only shows over an open preview; keyboard focus reveals
+   it too. */
+.hp-volume {
   position: absolute;
   top: 10px;
   right: 10px;
   z-index: 5;
+  width: 32px;
+  height: 32px;
+  /* The wrapper must never take the pointer on its own: while the mute
+     button is hidden during the opening, a click has to reach the media. */
+  pointer-events: none;
+}
+
+.hp-mute {
   display: grid;
   place-items: center;
   width: 32px;
   height: 32px;
+  pointer-events: auto;
   padding: 0;
   border: 0;
   background: transparent;
@@ -249,6 +262,75 @@
   display: block;
   width: 24px;
   height: 24px;
+}
+
+/* The level bar is a trim of the overlay gain: its fill follows its own level,
+   not an absolute volume. It stays hidden until the open preview is hovered or
+   the control is reached by keyboard; `is-in` keeps it out of the opening and
+   closing frames. */
+.hp-volume-pop {
+  position: absolute;
+  top: 0;
+  right: calc(100% - 2px);
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 96px;
+  padding: 10px 0;
+  border-radius: 999px;
+  background: rgba(10, 13, 19, 0.84);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(6px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.hp-overlay.is-in .hp-volume:hover .hp-volume-pop,
+.hp-overlay.is-in .hp-volume:has(:focus-visible) .hp-volume-pop {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.hp-volume-range {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 24px;
+  height: 76px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  writing-mode: vertical-lr;
+  direction: rtl;
+  cursor: pointer;
+}
+
+.hp-volume-range::-webkit-slider-runnable-track {
+  width: 4px;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(
+    to top,
+    var(--blue) 0 var(--hp-volume-level, 100%),
+    rgba(255, 255, 255, 0.26) var(--hp-volume-level, 100%) 100%
+  );
+}
+
+.hp-volume-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+}
+
+.hp-volume-range:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+  border-radius: 999px;
 }
 
 /* The mute control belongs to the full preview, not to the card frame: hidden

@@ -70,3 +70,10 @@ export function previewVolume(guildId) {
   const guild = guildId ? sound.guilds[guildId] : undefined;
   return mediaGain(sound.volume, guild ? guild.volume : undefined);
 }
+
+// The preview's own level bar trims that gain: 100 % is the overlay's volume,
+// 0 % silence. Keeping it linear preserves the bar as a share of the overlay,
+// instead of giving the preview a second, absolute volume scale.
+export function trimVolume(base, trim) {
+  return level(base) * level(trim);
+}

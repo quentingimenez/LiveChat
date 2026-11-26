@@ -643,6 +643,32 @@ async fn outdated_hello_still_stores_version_and_platform() {
     );
 }
 
+/// `parse_simple_version` ignores a `-suffix` / `+build` tail; only the clean
+/// triplet may reach the admin console, never the client's raw text.
+#[tokio::test]
+async fn suffixed_hello_version_is_stored_canonical() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    let client_id =
+        seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let mut socket = connect(server.addr).await;
+    send_hello(&mut socket, TOKEN, "2.9.0-texte-arbitraire").await;
+    expect_close(&mut socket, close_code::OUTDATED_PROTOCOL).await;
+
+    let info = server
+        .db
+        .overlay_clients()
+        .client_info(client_id)
+        .await
+        .expect("lecture des informations client")
+        .expect("client présent");
+    assert_eq!(
+        info,
+        (Some("2.9.0".to_owned()), Some("windows".to_owned())),
+        "seul le triplet canonique est stocké, sans le texte du client"
+    );
+}
+
 /// A version that does not read as a version is refused without being stored:
 /// the admin console would otherwise display arbitrary client text.
 #[tokio::test]

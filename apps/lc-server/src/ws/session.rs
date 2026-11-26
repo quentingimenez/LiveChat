@@ -271,14 +271,19 @@ async fn handle_socket(
     // `appVersion` and `platform` are stored for the admin console
     // (`overlayVersion` / `platform`) before the version gate: an overlay
     // refused as outdated keeps calling the HTTP API (« vu à l'instant »), and
-    // without its version the admin cannot tell that an update is the fix. An
-    // unreadable version is not stored (refused below, never displayed).
-    if lc_protocol::parse_simple_version(hello.app_version.as_str()).is_some() {
+    // without its version the admin cannot tell that an update is the fix. Only
+    // the canonical triplet is stored: the parser ignores a `-suffix` / `+build`
+    // tail, and arbitrary client text must not reach the console. An unreadable
+    // version is not stored (refused below, never displayed).
+    if let Some((major, minor, patch)) =
+        lc_protocol::parse_simple_version(hello.app_version.as_str())
+    {
+        let version = format!("{major}.{minor}.{patch}");
         if let Err(error) = db
             .overlay_clients()
             .update_client_info(
                 client.id,
-                Some(hello.app_version.as_str()),
+                Some(version.as_str()),
                 hello.platform.map(lc_protocol::Platform::as_str),
             )
             .await

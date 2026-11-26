@@ -779,8 +779,17 @@ Réponse `MediaBoardTriggerResponse` :
 - `outcome` vaut `"playing"` ou `"queued"` ; `position` est le rang 1-based en
   file ; `jobId` l'identifiant du job créé côté serveur. Ces trois champs sont
   omis quand l'`ack` (ou un serveur plus ancien) ne les fournit pas.
-- `socket_unavailable` : aucune guilde, superviseur non connecté, ou canal de
-  réponse fermé avant l'`ack` (session terminée).
+- Guilde ciblée sans session active : la raison dit pourquoi
+  (`undeliverable_reason` dans `src/net/ws.rs`), pour que le board indique
+  quoi faire. Mêmes raisons pour `media_board_stop`, `media_board_pause` et
+  `overlay_request_guild_pause` :
+  - `overlay_outdated` : serveur a refusé l'overlay (close `4403`), mise à jour
+    nécessaire ;
+  - `guild_connecting` : connexion ou reconnexion en cours ;
+  - `device_revoked` : appareil révoqué ;
+  - `guild_disabled` : overlay désactivé ou guilde coupée sur cet appareil ;
+  - `socket_unavailable` : aucune guilde, autre cause (erreur, non appairé), ou
+    canal de réponse fermé avant l'`ack` (session terminée).
 - `ack_timeout` : aucun `ack` reçu dans les 10 s.
 - Refus serveur : `reason` = `error.code`, `message` = `error.message` ; sans
   objet `error`, `reason` vaut `trigger_refused`.

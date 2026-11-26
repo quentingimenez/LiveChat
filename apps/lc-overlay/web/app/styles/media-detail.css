@@ -653,9 +653,12 @@
   background: rgba(233, 237, 245, 0.5);
 }
 
-/* The window does not scroll: the information column does, on its own, while
-   the stage stays in place. */
+/* The window itself never scrolls and never draws a scrollbar: the information
+   column scrolls under its pinned footer while the stage stays in place. */
 .hp-page {
+  /* The column may never grow past the stage: its footer stays at the bottom
+     of the window instead of pushing the window down. */
+  --hp-page-stage-height: clamp(380px, 58vh, 620px);
   display: flex;
   width: min(1080px, calc(100% - 56px));
   max-width: 1080px;
@@ -749,7 +752,7 @@
   position: relative;
   display: flex;
   width: 100%;
-  height: clamp(380px, 58vh, 620px);
+  height: var(--hp-page-stage-height);
   min-height: 0;
   align-self: start;
   align-items: center;
@@ -826,16 +829,20 @@
   height: 42%;
 }
 
-/* The column is the only scrolling area; the stage is aligned to the start. */
+/* The column scrolls under its pinned footer; its scrollbar is never drawn. */
 .hp-page-info {
   display: flex;
   align-self: stretch;
   min-width: 0;
   min-height: 0;
+  max-height: var(--hp-page-stage-height);
   flex-direction: column;
   gap: 16px;
+  overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
   /* The title hangs 1px and the caption 8px left of the column, so their text
      stays flush with the labels while the hover frame sits outside it. A
      scrolling column clips at its padding edge: reserve the widest outdent
@@ -843,18 +850,32 @@
      text does not move. */
   margin-left: -8px;
   padding-left: 8px;
-  scrollbar-gutter: stable;
+}
+
+/* Hide the column's scrollbar where the standard property is not enough. */
+.hp-page-info::-webkit-scrollbar {
+  display: none;
 }
 
 .hp-page-head {
   min-width: 0;
 }
 
+/* The kicker carries the format, the author and the date on one line; it is
+   cut with an ellipsis instead of wrapping. */
 .hp-page-kicker {
   margin: 0 0 5px;
+  overflow: hidden;
   color: var(--text-faint);
   font-size: 12px;
   font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hp-page-kicker strong {
+  color: var(--text);
+  font-weight: 600;
 }
 
 .hp-page-title {
@@ -866,16 +887,16 @@
   overflow-wrap: anywhere;
 }
 
-.hp-page-byline {
-  margin: 7px 0 0;
-  color: var(--text-soft);
-  font-size: 13px;
-  line-height: 1.4;
-}
-
-.hp-page-byline strong {
-  color: var(--text);
-  font-weight: 600;
+/* A too-long title is cut at two lines with an ellipsis, like the preview's
+   heading, so the heading keeps its share of the window. The editing input
+   keeps its own single line and is not clamped. */
+h2.hp-page-title,
+.hp-page-head .inline-edit.is-title .inline-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 
 /* The title is a button (edited in place): its frame outdents like the
@@ -913,6 +934,24 @@
   margin: 0;
   padding-top: 14px;
   border-top: 1px solid var(--line);
+}
+
+/* The facts and the actions are pinned together at the bottom of the column:
+   the rest of the column scrolls under them, so an action is never hidden by a
+   page that is too tall. The solid shadow closes the 8px clip gutter on its
+   left. */
+.hp-page-footer {
+  position: sticky;
+  z-index: 1;
+  bottom: 0;
+  display: flex;
+  min-width: 0;
+  flex: none;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: auto;
+  background: var(--slate-800);
+  box-shadow: -8px 0 0 var(--slate-800);
 }
 
 .hp-page-facts dt {
@@ -990,6 +1029,17 @@
 .hp-page-legend.is-empty {
   color: var(--text-faint);
   font-style: italic;
+}
+
+/* A too-long caption is cut at five lines with an ellipsis, like the title; the
+   editing textarea keeps its own inner scroll and is not clamped. */
+p.hp-page-legend,
+.hp-page-legend-block .inline-edit.is-message .inline-text {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
 }
 
 /* The caption edited in place sits under its label. Its frame starts 8px
@@ -1139,13 +1189,13 @@
 }
 
 /* --- atelier layout ----------------------------------------------------- */
+.hp-page[data-layout='atelier'] {
+  --hp-page-stage-height: clamp(430px, calc(100vh - 300px), 680px);
+}
+
 .hp-page[data-layout='atelier'] .hp-page-grid {
   grid-template-columns: minmax(0, 1fr) 390px;
   gap: 24px;
-}
-
-.hp-page[data-layout='atelier'] .hp-page-stage {
-  height: clamp(430px, calc(100vh - 300px), 680px);
 }
 
 .hp-page[data-layout='atelier'] .hp-page-title {
@@ -1157,6 +1207,10 @@
   /* Keep the 8px clip room of the base rule; only the top and right insets are
      atelier-specific. */
   padding: 2px 2px 0 8px;
+}
+
+.hp-page[data-layout='atelier'] .hp-page-footer {
+  gap: 14px;
 }
 
 /* --- transition layers -------------------------------------------------- */
@@ -1223,11 +1277,16 @@
 
 @media (max-width: 960px) {
   /* Stacked, the stage and the column no longer fit side by side: the whole
-     window scrolls again instead of squeezing the column. */
+     window scrolls again instead of squeezing the column, but it still never
+     draws a scrollbar. */
   .hp-page {
     display: block;
     overflow: auto;
-    scrollbar-gutter: stable;
+    scrollbar-width: none;
+  }
+
+  .hp-page::-webkit-scrollbar {
+    display: none;
   }
 
   .hp-page-grid {

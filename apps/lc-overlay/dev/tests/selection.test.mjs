@@ -184,6 +184,43 @@ test('cardPointerAction opens the details on a double click or a keyboard click'
   assert.equal(cardPointerAction(pointerState({ shiftKey: true, clickCount: 2 })), 'details');
 });
 
+test('cardPointerAction opens on a single click when the hover preview is off', () => {
+  // The setting is off: the card no longer previews under the pointer, so a
+  // single click opens the details at once and a double click plays the media.
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false })), 'details');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, clickCount: 0 })), 'details');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, clickCount: 2 })), 'play');
+  // A triple click is neither a new single click nor a new double click.
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, clickCount: 3 })), 'none');
+});
+
+test('cardPointerAction opens the details at once and plays on the second click', () => {
+  // The window is opened by the first click, so the second one lands on the
+  // window: the board catches it there (see board-card-click.test.mjs). No
+  // click waits for the double-click window.
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false })), 'details');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, shiftKey: true })), 'details');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, clickCount: 2 })), 'play');
+});
+
+test('cardPointerAction keeps a single click idle while the hover preview is on', () => {
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: true })), 'none');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: true, clickCount: 2 })), 'details');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: true, clickCount: 0 })), 'details');
+});
+
+test('the hover preview setting does not change the selection gestures', () => {
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, selecting: true })), 'toggle');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, selecting: true, shiftKey: true })), 'range');
+  // The second click of a double click still does not pick a second time.
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, selecting: true, clickCount: 2 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, ctrlKey: true })), 'pick');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, metaKey: true })), 'pick');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, ctrlKey: true, clickCount: 2 })), 'none');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, onControl: true })), 'none');
+  assert.equal(cardPointerAction(pointerState({ hoverPreview: false, onControl: true, clickCount: 2 })), 'none');
+});
+
 test('cardPointerAction keeps the selection gestures in the selection mode', () => {
   assert.equal(cardPointerAction(pointerState({ selecting: true })), 'toggle');
   assert.equal(cardPointerAction(pointerState({ selecting: true, shiftKey: true })), 'range');

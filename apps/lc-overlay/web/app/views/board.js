@@ -27,7 +27,7 @@ import {
   thumbnailOf,
   withVersion,
 } from '../core/detail-drawer.js';
-import { detailActionIds, previewAllowed, previewMeta } from '../core/detail-actions.js';
+import { detailActionIds, DOUBLE_CLICK_WINDOW, previewAllowed, previewMeta } from '../core/detail-actions.js';
 import { h, icon, registerIcons } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration, relativeDateLabel } from '../core/format.js';
 import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
@@ -379,15 +379,119 @@ function cardMeta(item) {
   );
 }
 
-// Runs what cardPointerAction decided for a card: opening the window and the
-// selection gestures are the only things a click on a card can do.
-function applyCardPointerAction(action, id) {
+// The card's Play button, when the member may play: a double click plays
+// through it so the card shows the same busy state as the button's own click.
+function cardPlayButton(node) {
+  return node.closest('.card')?.querySelector('.play') || null;
+}
+
+// A single click opens the details at once. The second click of a double click
+// then lands on the window the first click just opened, so the board catches it
+// there (same place, one double-click window) before the window acts: that click
+// closes the window and plays the media. Nothing waits between the two clicks.
+let armedCardClick = null;
+let swallowCardDoubleClick = 0;
+
+// A small tolerance around the armed click: a click meant for the window itself
+// lands farther away, one on the same spot is the second click of the double click.
+const CARD_DOUBLE_CLICK_SLOP = 12;
+
+function armCardDoubleClick(entry, event) {
+  // Without the Play command the second click has nothing to launch: it keeps
+  // acting on the window, as a double click did when it only opened the details.
+  if (!can('play') || state.selecting || state.capturing) {
+    return;
+  }
+  armedCardClick = {
+    entry,
+    control: cardPlayButton(event.currentTarget),
+    x: event.clientX,
+    y: event.clientY,
+    at: performance.now(),
+  };
+}
+
+function catchCardDoubleClick(event) {
+  const armed = armedCardClick;
+  if (!armed) {
+    return;
+  }
+  // The next click says what the armed one was: its double click, or a new
+  // click that belongs to the window.
+  armedCardClick = null;
+  if (event.detail < 2) {
+    return;
+  }
+  if (
+    performance.now() - armed.at > DOUBLE_CLICK_WINDOW ||
+    Math.hypot(event.clientX - armed.x, event.clientY - armed.y) > CARD_DOUBLE_CLICK_SLOP ||
+    !can('play') ||
+    !document.querySelector('.hp-page-shell')?.contains(event.target) ||
+    mediaDetail.openId() !== armed.entry.item.id
+  ) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  swallowCardDoubleClick = performance.now();
+  closeDetail();
+  playItem(armed.entry.item, armed.control);
+}
+
+// The native double click that follows the second click would reach the details
+// window (its body reopens the window): swallow it after the play.
+function swallowCardDoubleClickEvent(event) {
+  const at = swallowCardDoubleClick;
+  if (at === 0) {
+    return;
+  }
+  swallowCardDoubleClick = 0;
+  if (event.detail < 2 || performance.now() - at > DOUBLE_CLICK_WINDOW) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+}
+
+// Runs what cardPointerAction decided for a card: opening the window, playing
+// the media, and the selection gestures.
+function applyCardPointerAction(action, entry, control = null) {
   if (action === 'details') {
-    selectItem(id);
+    selectItem(entry.item.id);
+  } else if (action === 'play') {
+    if (can('play')) {
+      // The first click opened this card's window; the second click plays the
+      // media instead, so the window it opened goes away with it.
+      if (mediaDetail.openId() === entry.item.id) {
+        closeDetail();
+      }
+      playItem(entry.item, control);
+    } else {
+      // Without the Play command, a double click keeps opening the details.
+      selectItem(entry.item.id);
+    }
   } else if (action === 'pick') {
-    pickCard(id);
+    pickCard(entry.item.id);
   } else if (action === 'toggle' || action === 'range') {
-    pickItem(id, action === 'range');
+    pickItem(entry.item.id, action === 'range');
+  }
+}
+
+// One handler for the thumbnail and the card's background: they decide the same
+// click, and a single click arms the catch of its possible double click.
+function handleCardClick(entry, event, onControl = false) {
+  const action = cardPointerAction({
+    selecting: state.selecting,
+    clickCount: event.detail,
+    shiftKey: event.shiftKey,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    onControl,
+    hoverPreview,
+  });
+  applyCardPointerAction(action, entry, cardPlayButton(event.currentTarget));
+  if (action === 'details' && event.detail === 1 && !hoverPreview) {
+    armCardDoubleClick(entry, event);
   }
 }
 
@@ -407,16 +511,7 @@ function buildCard(entry) {
       'data-preview-at': previewAt === null ? '' : String(previewAt),
       'data-item-id': item.id,
       'aria-label': `Détails de ${itemTitle(item)}`,
-      onClick: (event) => {
-        const action = cardPointerAction({
-          selecting: state.selecting,
-          clickCount: event.detail,
-          shiftKey: event.shiftKey,
-          ctrlKey: event.ctrlKey,
-          metaKey: event.metaKey,
-        });
-        applyCardPointerAction(action, entry.item.id);
-      },
+      onClick: (event) => handleCardClick(entry, event),
     },
     h('span', { class: 'glyph' }, icon(kind === 'audio' ? 'audio' : kind === 'image' ? 'image' : 'video')),
     h('span', { class: 'pick', 'aria-hidden': 'true' }, icon('check')),
@@ -432,22 +527,14 @@ function buildCard(entry) {
       class: 'card',
       'data-item-id': item.id,
       onContextmenu: (event) => openCardMenu(event, entry.item),
-      // The thumbnail owns its own clicks; the card's background opens the
-      // window on a double click (or picks the media in the selection mode).
+      // The thumbnail owns its own clicks; the card's background follows the
+      // same click decision (details, play or selection).
       onClick: (event) => {
         if (event.target.closest('.thumb')) {
           return;
         }
-        const action = cardPointerAction({
-          selecting: state.selecting,
-          clickCount: event.detail,
-          shiftKey: event.shiftKey,
-          ctrlKey: event.ctrlKey,
-          metaKey: event.metaKey,
-          // The card's buttons (play, favorite) keep their own click.
-          onControl: Boolean(event.target.closest('button, input, a, select')),
-        });
-        applyCardPointerAction(action, entry.item.id);
+        // The card's buttons (play, favorite) keep their own click.
+        handleCardClick(entry, event, Boolean(event.target.closest('button, input, a, select')));
       },
       onMouseenter: (event) => {
         mediaDetail.prefetchCard(event.currentTarget);
@@ -1198,9 +1285,9 @@ function applyHoverPreview(view) {
 invoke('settings_get').then(applyHoverPreview).catch(() => {});
 listen('overlay://device-settings', applyHoverPreview);
 
-// Opens the detail window at once. Its callers only ask on a double click, a
-// keyboard click, the context menu or the shortcut capture: a single mouse
-// click on a card does nothing (see cardPointerAction).
+// Opens the detail window at once. Its callers ask on a single click (with the
+// hover preview off), a keyboard click, the context menu or the shortcut
+// capture; the second click of a double click is caught on the open window.
 export function selectItem(id) {
   if (!cards.has(id)) {
     return;
@@ -1229,6 +1316,11 @@ export function closeDetail() {
   state.capturing = false;
   mediaDetail.closeDetail();
 }
+
+// The second click of a double click is caught before the details window sees
+// it (capture), and the native double click that follows is swallowed with it.
+document.addEventListener('click', catchCardDoubleClick, true);
+document.addEventListener('dblclick', swallowCardDoubleClickEvent, true);
 
 document.addEventListener('keydown', (event) => {
   const action = escapeAction({
@@ -1519,9 +1611,10 @@ let displayDurationDraft = null;
 
 // The information column of the detail window: the media's own facts, its
 // inline title and caption, its shortcut, the display time and picture of what
-// the user can edit, and the actions the context menu offered. Every change
-// applies at once, like the inline fields. A board refresh rebuilds only this
-// node.
+// the user can edit, and the actions the context menu offered. The facts and
+// the actions are pinned in the column's footer, so a long column never hides
+// them. Every change applies at once, like the inline fields. A board refresh
+// rebuilds only this node.
 function detailBody(item) {
   if (inlineEdit && inlineEdit.itemId !== item.id) {
     inlineEdit = null;
@@ -1548,6 +1641,9 @@ function detailBody(item) {
     canDelete: Boolean(item.canEdit),
   });
   const added = addedDateLabel(item);
+  const author = authorName(item);
+  const kicker = [kindLabel, duration].filter(Boolean).join(' · ');
+  const addedBy = `Ajouté par ${author}${added ? ` le ${added}` : ''}`;
 
   // Display time of an image: a fact row edited in place. Enter or leaving the
   // field saves it, Escape puts the stored value back and keeps the window
@@ -1937,8 +2033,8 @@ function detailBody(item) {
     fact('Durée d’affichage', displayDurationField());
   }
 
-  // The caption shown on the overlays, in its own block under the facts: the
-  // inline field when it can be edited, plain text otherwise.
+  // The caption shown on the overlays, in its own block above the pinned
+  // facts: the inline field when it can be edited, plain text otherwise.
   const legendText = inlineField(item, 'message')
     || h('p', { class: 'hp-page-legend is-empty' }, 'Aucune légende');
 
@@ -1952,34 +2048,48 @@ function detailBody(item) {
     h(
       'div',
       { class: 'hp-page-head' },
-      h('p', { class: 'hp-page-kicker' }, [kindLabel, duration].filter(Boolean).join(' · ')),
+      h(
+        'p',
+        { class: 'hp-page-kicker', title: `${kicker} · ${addedBy}` },
+        kicker,
+        ' · Ajouté par ',
+        h('strong', null, author),
+        added ? ` le ${added}` : null,
+      ),
       inlineField(item, 'title'),
-      h('p', { class: 'hp-page-byline' }, 'Ajouté par ', h('strong', null, authorName(item)), added ? ` · ${added}` : null),
     ),
-    h('dl', { class: 'hp-page-facts' }, facts),
     h(
       'section',
       { class: 'hp-page-legend-block' },
       h('p', { class: 'hp-page-label' }, 'Légende'),
       legendText,
     ),
-    actions.length
-      ? h(
-          'div',
-          { class: 'hp-page-actionzone' },
-          actions.includes('play')
-            ? h('div', { class: 'hp-page-actions' }, detailActionNode(item, 'play'))
-            : null,
-          secondaryActions.length
-            ? h(
-                'div',
-                { class: 'hp-page-secondary' },
-                ...secondaryActions.map((action) => detailActionNode(item, action)),
-              )
-            : null,
-        )
-      : null,
     isAudio && item.canEdit ? artworkSection() : null,
+    // The facts and the actions are pinned together at the bottom of the
+    // column: the rest of the column scrolls under them, so an action is never
+    // hidden by a page that is too tall and the facts always stay just above
+    // the buttons.
+    h(
+      'div',
+      { class: 'hp-page-footer' },
+      h('dl', { class: 'hp-page-facts' }, facts),
+      actions.length
+        ? h(
+            'div',
+            { class: 'hp-page-actionzone' },
+            actions.includes('play')
+              ? h('div', { class: 'hp-page-actions' }, detailActionNode(item, 'play'))
+              : null,
+            secondaryActions.length
+              ? h(
+                  'div',
+                  { class: 'hp-page-secondary' },
+                  ...secondaryActions.map((action) => detailActionNode(item, action)),
+                )
+              : null,
+          )
+        : null,
+    ),
   );
 }
 

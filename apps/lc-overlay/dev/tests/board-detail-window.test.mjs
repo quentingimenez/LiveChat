@@ -181,12 +181,24 @@ test('the favorite toggle lives in the window top bar, filled by describe(id).to
   assert.match(ruleOf(detailCss, '.hp-page-tools'), /margin-left:\s*auto/);
 });
 
-test('the head is kicker, a padded title with a visible frame, byline', () => {
+test('the head is a one-line kicker with author and date, then the title', () => {
   const detail = functionBody('detailBody');
   const kicker = detail.indexOf("class: 'hp-page-kicker'");
   const title = detail.indexOf("inlineField(item, 'title')");
-  const byline = detail.indexOf("class: 'hp-page-byline'");
-  assert.ok(kicker >= 0 && title > kicker && byline > title, 'head order: kicker, title, byline');
+  assert.ok(kicker >= 0 && title > kicker, 'head order: kicker, title');
+  assert.doesNotMatch(detail, /hp-page-byline/, 'the separate byline is gone');
+
+  // Format, author and date share the kicker line, which is cut with an
+  // ellipsis instead of wrapping; the whole text is still available as a title.
+  assert.match(detail, /const author = authorName\(item\);/);
+  assert.match(detail, /' · Ajouté par '/);
+  assert.match(detail, /h\('strong', null, author\)/);
+  assert.match(detail, /added \? ` le \$\{added\}` : null/);
+  const kickerRule = ruleOf(detailCss, '.hp-page-kicker');
+  assert.match(kickerRule, /white-space:\s*nowrap/);
+  assert.match(kickerRule, /overflow:\s*hidden/);
+  assert.match(kickerRule, /text-overflow:\s*ellipsis/);
+  assert.doesNotMatch(detailCss, /\.hp-page-byline/, 'no rule left for the removed byline');
 
   // The title control outdents its frame by the column's clip room (8px), like
   // the caption, so the hover frame's left border stays visible; 8px of
@@ -198,6 +210,37 @@ test('the head is kicker, a padded title with a visible frame, byline', () => {
   assert.match(heading, /padding-right:\s*8px/);
   const titleRule = ruleOf(detailCss, ".hp-page[data-layout='atelier'] .hp-page-title");
   assert.match(titleRule, /font-size:\s*28px/);
+});
+
+test('a long title and a long caption are cut with an ellipsis', () => {
+  const clamp = (declarations) => {
+    assert.match(declarations, /display:\s*-webkit-box/);
+    assert.match(declarations, /overflow:\s*hidden/);
+    assert.match(declarations, /-webkit-box-orient:\s*vertical/);
+  };
+
+  const title = ruleOf(detailCss, 'h2.hp-page-title');
+  clamp(title);
+  assert.match(title, /-webkit-line-clamp:\s*2/);
+  const editableTitle = ruleOf(detailCss, '.hp-page-head .inline-edit.is-title .inline-text');
+  clamp(editableTitle);
+  assert.match(editableTitle, /-webkit-line-clamp:\s*2/);
+
+  for (const selector of [
+    'p.hp-page-legend',
+    '.hp-page-legend-block .inline-edit.is-message .inline-text',
+  ]) {
+    const caption = ruleOf(detailCss, selector);
+    clamp(caption);
+    assert.match(caption, /-webkit-line-clamp:\s*5/);
+  }
+
+  // The fields keep their own inner scroll while editing: the box clamp only
+  // targets the read-only heading and caption.
+  const titleClamp = /h2\.hp-page-title,[^{]*\{[^}]*\}/.exec(detailCss)?.[0] ?? '';
+  assert.doesNotMatch(titleClamp, /\.inline-input/);
+  const captionClamp = /p\.hp-page-legend,[^{]*\{[^}]*\}/.exec(detailCss)?.[0] ?? '';
+  assert.doesNotMatch(captionClamp, /textarea/);
 });
 
 test('the facts follow the validated order', () => {
@@ -225,13 +268,13 @@ test('the facts follow the validated order', () => {
   assert.match(detail, /if \(scale\) \{\s*fact\('Échelle', scale\);\s*\}/);
 });
 
-test('the legend block follows the facts, with « Aucune légende » when empty', () => {
+test('the legend block sits above the pinned facts, with « Aucune légende » when empty', () => {
   const detail = functionBody('detailBody');
-  const facts = detail.indexOf("class: 'hp-page-facts'");
   const legend = detail.indexOf("class: 'hp-page-legend-block'");
   const artwork = detail.indexOf('isAudio && item.canEdit ? artworkSection() : null');
-  assert.ok(legend > facts, 'the legend block comes after the facts');
-  assert.ok(artwork > legend, 'the audio picture comes after the legend block');
+  const facts = detail.indexOf("class: 'hp-page-facts'");
+  assert.ok(legend >= 0 && artwork > legend, 'the audio picture follows the legend block');
+  assert.ok(facts > artwork, 'the pinned facts come after the scrolling content');
   assert.match(detail, /'Légende'/);
   assert.match(detail, /'Aucune légende'/, 'an empty caption says so');
   assert.match(detail, /inlineField\(item, 'message'\)/);
@@ -252,15 +295,22 @@ test('the actions put the play button above a two-column grid of secondary actio
   assert.match(button, /text-overflow:\s*ellipsis/);
 });
 
-test('the audio actions come before the picture, so the play button stays visible', () => {
-  // The play button used to sit under the audio picture: it left the first
-  // screenful. The actions block follows the legend, the picture comes last.
+test('the facts and the actions are pinned in a footer at the bottom of the column', () => {
+  // The footer is the last block of the column and holds the facts, then the
+  // actions: a page too tall for the window can never hide an action.
   const detail = functionBody('detailBody');
+  const footer = detail.indexOf("class: 'hp-page-footer'");
+  const facts = detail.indexOf("class: 'hp-page-facts'");
   const actions = detail.indexOf("class: 'hp-page-actionzone'");
-  const artwork = detail.indexOf('isAudio && item.canEdit ? artworkSection() : null');
-  assert.ok(actions >= 0, 'the actions zone is part of the column');
-  assert.ok(artwork >= 0, 'the audio picture block is part of the column');
-  assert.ok(actions < artwork, 'the actions come before the audio picture');
+  assert.ok(footer >= 0 && facts > footer, 'the footer wraps the facts');
+  assert.ok(actions > facts, 'the actions come after the facts in the footer');
+
+  const rule = ruleOf(detailCss, '.hp-page-footer');
+  assert.match(rule, /position:\s*sticky/);
+  assert.match(rule, /bottom:\s*0/);
+  assert.match(rule, /flex:\s*none/, 'the pinned facts and actions never shrink');
+  assert.match(rule, /margin-top:\s*auto/, 'short columns push the footer down');
+  assert.match(rule, /background:\s*var\(--slate-800\)/, 'scrolled content stays hidden behind it');
 });
 
 test('the display time draft survives a refresh of the information column', () => {
@@ -301,12 +351,30 @@ test('the display time draft survives a refresh of the information column', () =
   assert.match(field, /event\.key === 'Escape'[\s\S]{0,200}forget\(\)/);
 });
 
-test('the information column scrolls on its own while the stage stays in place', () => {
+test('the information column scrolls under its footer without a scrollbar', () => {
   const page = ruleOf(detailCss, '.hp-page');
   assert.match(page, /overflow:\s*hidden/, 'the window itself does not scroll');
   const info = ruleOf(detailCss, '.hp-page-info');
-  assert.match(info, /overflow-y:\s*auto/);
-  assert.match(info, /scrollbar-gutter:\s*stable/);
+  assert.match(info, /overflow-y:\s*auto/, 'the column still reaches its own content');
+  assert.match(info, /scrollbar-width:\s*none/, 'its scrollbar is never drawn');
+  assert.doesNotMatch(info, /scrollbar-gutter/, 'no gutter is reserved for a hidden bar');
+  assert.match(ruleOf(detailCss, '.hp-page-info::-webkit-scrollbar'), /display:\s*none/);
+
+  // The column is capped by the stage height, so a long title or caption
+  // scrolls inside it instead of pushing the window down.
+  assert.match(page, /--hp-page-stage-height:\s*clamp\(380px,\s*58vh,\s*620px\)/);
+  assert.match(ruleOf(detailCss, '.hp-page-stage'), /height:\s*var\(--hp-page-stage-height\)/);
+  assert.match(info, /max-height:\s*var\(--hp-page-stage-height\)/);
+  const atelier = ruleOf(detailCss, ".hp-page[data-layout='atelier']");
+  assert.match(atelier, /--hp-page-stage-height:\s*clamp\(430px,\s*calc\(100vh - 300px\),\s*680px\)/);
+
+  // The stacked fallback scrolls the window, still without drawing a bar.
+  const stacked = detailCss.slice(
+    detailCss.indexOf('@media (max-width: 960px)'),
+    detailCss.indexOf('@media (max-width: 620px)'),
+  );
+  assert.match(stacked, /scrollbar-width:\s*none/);
+  assert.match(ruleOf(stacked, '.hp-page::-webkit-scrollbar'), /display:\s*none/);
 });
 
 // The column reserves the left outdent of its inline fields inside its

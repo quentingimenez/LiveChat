@@ -11,13 +11,14 @@
 //
 // detailBody() returns the information column itself, appended next to
 // `.hp-page-stage` in `.hp-page-grid`; this module gives its root the
-// `.hp-page-info` class when it is missing. That column scrolls on its own
-// when it is taller than the window, while the stage stays in place. The
-// classes styled by media-detail.css are `.hp-page-head`, `.hp-page-kicker`,
-// `.hp-page-title`, `.hp-page-byline`, `.hp-page-facts` (dt/dd),
-// `.hp-page-source`, `.hp-page-legend-block`, `.hp-page-label`,
-// `.hp-page-legend` (`.is-empty`), `.hp-page-artwork` and its artwork block,
-// `.hp-page-actions`, `.hp-page-secondary` and `.hp-page-actionzone`.
+// `.hp-page-info` class when it is missing. That column scrolls without a
+// visible scrollbar and pins its footer (the facts and the actions) at the
+// bottom, while the stage stays in place. The classes styled by
+// media-detail.css are `.hp-page-head`, `.hp-page-kicker`, `.hp-page-title`,
+// `.hp-page-facts` (dt/dd), `.hp-page-footer`, `.hp-page-source`,
+// `.hp-page-legend-block`, `.hp-page-label`, `.hp-page-legend` (`.is-empty`),
+// `.hp-page-artwork` and its artwork block, `.hp-page-actions`,
+// `.hp-page-secondary` and `.hp-page-actionzone`.
 //
 // describe(id).tools() returns an optional HTMLElement for the right side of
 // the window's top bar (`.hp-page-tools`), or null when there is none: the
@@ -31,6 +32,7 @@
 // preference itself.
 
 import { h } from '../core/dom.js';
+import { DOUBLE_CLICK_WINDOW } from '../core/detail-actions.js';
 import {
   readMotion,
   containRect,
@@ -57,8 +59,6 @@ import { trimVolume } from '../core/sound.js';
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
 const TOP_INSET = 76;
-const DOUBLE_CLICK_WINDOW = 600;
-const BODY_DOUBLE_CLICK_WINDOW = 600;
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 // The clock handed to playTimeline. Arrow functions read `window` when called,
@@ -810,7 +810,7 @@ export function createMediaDetail(options) {
         return;
       }
       const now = performance.now();
-      if (now - lastBodyPointerAt < BODY_DOUBLE_CLICK_WINDOW) {
+      if (now - lastBodyPointerAt < DOUBLE_CLICK_WINDOW) {
         lastBodyPointerAt = 0;
         openDetail(card);
         return;
@@ -822,7 +822,7 @@ export function createMediaDetail(options) {
         return;
       }
       const now = performance.now();
-      if (event.detail > 1 || now - lastBodyClickAt < BODY_DOUBLE_CLICK_WINDOW) {
+      if (event.detail > 1 || now - lastBodyClickAt < DOUBLE_CLICK_WINDOW) {
         lastBodyClickAt = 0;
         openDetail(card);
         return;

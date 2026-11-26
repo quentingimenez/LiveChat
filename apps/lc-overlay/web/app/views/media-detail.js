@@ -43,6 +43,8 @@ import {
   HOLD_DISTANCE,
   holdReleased,
   HOVER_TIMING,
+  VOLUME_DRAG_MARGIN,
+  volumeDragMargin,
   showDelay,
   placePreview,
   returnRadius,
@@ -276,6 +278,10 @@ export function createMediaDetail(options) {
   // overlay gain, so 100 % keeps a preview exactly as loud as the overlay.
   let previewLevel = 1;
   let lastAudibleLevel = 1;
+  // A held volume slider keeps a transparent band around the preview: the
+  // pointer may finish above or below it without taking the preview away.
+  let volumeMargin = null;
+  let volumeDragging = false;
 
   const grid = () => (typeof opts.grid === 'function' ? opts.grid() : null);
   const view = () => (typeof opts.view === 'function' ? opts.view() : null);
@@ -364,6 +370,7 @@ export function createMediaDetail(options) {
   }
 
   function close(immediate) {
+    clearVolumeDragMargin();
     clearTimers();
     const el = previewEl;
     const card = previewCard;
@@ -401,6 +408,11 @@ export function createMediaDetail(options) {
   }
 
   function scheduleHide() {
+    // While the slider is held, the pointer may leave the preview through the
+    // top or bottom; the band keeps the preview alive until the release.
+    if (volumeDragging) {
+      return;
+    }
     window.clearTimeout(showTimer);
     showTimer = 0;
     if (!previewEl) {
@@ -408,6 +420,61 @@ export function createMediaDetail(options) {
     }
     window.clearTimeout(hideTimer);
     hideTimer = window.setTimeout(() => close(false), HOVER_TIMING.hide);
+  }
+
+  function clearVolumeDragMargin() {
+    volumeDragging = false;
+    window.removeEventListener('pointerup', finishVolumeDrag, true);
+    window.removeEventListener('pointercancel', finishVolumeDrag, true);
+    if (volumeMargin) {
+      volumeMargin.remove();
+      volumeMargin = null;
+    }
+  }
+
+  function finishVolumeDrag() {
+    if (!volumeDragging) {
+      return;
+    }
+    // Still in the band after the release: keep it until the pointer leaves,
+    // so the card does not close under the hand that just set the level.
+    const inMargin = Boolean(volumeMargin && volumeMargin.matches(':hover'));
+    volumeDragging = false;
+    if (inMargin) {
+      return;
+    }
+    clearVolumeDragMargin();
+    if (!(previewEl && previewEl.matches(':hover'))) {
+      scheduleHide();
+    }
+  }
+
+  function attachVolumeDragMargin() {
+    if (!previewEl) {
+      return;
+    }
+    clearVolumeDragMargin();
+    const band = volumeDragMargin(previewEl.getBoundingClientRect(), VOLUME_DRAG_MARGIN);
+    const margin = document.createElement('div');
+    margin.className = 'hp-volume-drag-margin';
+    margin.setAttribute('aria-hidden', 'true');
+    margin.style.left = `${band.left}px`;
+    margin.style.top = `${band.top}px`;
+    margin.style.width = `${band.width}px`;
+    margin.style.height = `${band.height}px`;
+    margin.addEventListener('pointerenter', cancelHide);
+    margin.addEventListener('pointerleave', () => {
+      if (volumeDragging) {
+        return;
+      }
+      clearVolumeDragMargin();
+      scheduleHide();
+    });
+    document.body.appendChild(margin);
+    volumeMargin = margin;
+    volumeDragging = true;
+    window.addEventListener('pointerup', finishVolumeDrag, true);
+    window.addEventListener('pointercancel', finishVolumeDrag, true);
   }
 
   function scheduleShow(card) {
@@ -595,6 +662,11 @@ export function createMediaDetail(options) {
       refreshVolume();
     });
     player.addEventListener('volumechange', refreshVolume);
+    slider.addEventListener('pointerdown', () => {
+      attachVolumeDragMargin();
+    });
+    slider.addEventListener('pointerup', finishVolumeDrag);
+    slider.addEventListener('pointercancel', finishVolumeDrag);
     media.appendChild(volume);
 
     media.tabIndex = 0;
@@ -1829,6 +1901,11 @@ export function createMediaDetail(options) {
       // (which cancels a pending hide) before the card's mouseleave: the
       // pointer did not leave, it is on the preview, so nothing to hide.
       if (previewEl && previewEl.matches(':hover')) {
+        return;
+      }
+      // The band around a held volume slider is part of the preview's hover
+      // surface: leaving the card towards it must not close the preview.
+      if (volumeMargin && volumeMargin.matches(':hover')) {
         return;
       }
       scheduleHide();

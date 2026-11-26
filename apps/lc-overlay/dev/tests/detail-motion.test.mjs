@@ -24,6 +24,8 @@ import {
   readMotion,
   returnRadius,
   showDelay,
+  VOLUME_DRAG_MARGIN,
+  volumeDragMargin,
 } from '../../web/app/core/detail-motion.js';
 
 // A clock the test drives by hand: animation frames are queued until the test
@@ -117,6 +119,19 @@ test('HOVER_TIMING is the hover preview timing table', () => {
     warmWindow: 400,
     hide: 60,
   });
+});
+
+test('the level drag margin reaches above and below the preview', () => {
+  assert.equal(VOLUME_DRAG_MARGIN, 32);
+  const rect = { left: 100, top: 200, width: 460, height: 369 };
+  assert.deepEqual(volumeDragMargin(rect), {
+    left: 100,
+    top: 168,
+    width: 460,
+    height: 433,
+  });
+  assert.deepEqual(rect, { left: 100, top: 200, width: 460, height: 369 }, 'the preview rect is left alone');
+  assert.deepEqual(volumeDragMargin(rect, 0), rect, 'a zero margin is the preview itself');
 });
 
 test('showDelay waits cold once, then stays warm while a preview is open or just closed', () => {

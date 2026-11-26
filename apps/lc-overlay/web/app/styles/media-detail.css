@@ -220,6 +220,16 @@
    button, and the bar sits on the button's line, extending down from its top.
    The wrapper only becomes hoverable once the preview is open; keyboard focus
    reveals the bar too. */
+/* The transparent band that keeps a held volume slider on the preview when the
+   pointer leaves it through the top or the bottom. It only exists during the
+   drag and sits under the preview, over the board. */
+.hp-volume-drag-margin {
+  position: fixed;
+  z-index: 89;
+  background: transparent;
+  pointer-events: auto;
+}
+
 .hp-volume {
   position: absolute;
   top: 10px;
@@ -593,6 +603,12 @@
 
   .hp-overlay .hp-mute {
     transition: opacity calc(var(--motion-preview-open) * 0.5) ease calc(var(--motion-preview-open) * 0.5) !important;
+  }
+
+  /* The hover hand-off is instant in every motion mode: the shortened mute
+     fade above must not leave the button over the bar. */
+  .hp-overlay.is-in .hp-volume:hover .hp-mute {
+    transition: none !important;
   }
 
   .hp-overlay.is-out .hp-card-ghost {

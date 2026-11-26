@@ -3,8 +3,8 @@
 // gain (100 % sounds exactly like the overlay), it replaces the mute button on
 // hover and sits on the button's line, it borrows the playback line's thickness,
 // rail and glow, it fills its whole height at 100 %, it is built with the player
-// and never with a still, it only answers once the preview is open, and a press
-// on it never toggles playback.
+// and never with a still, it only answers once the preview is open, a drag keeps
+// a height margin around the preview, and a press on it never toggles playback.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -160,6 +160,45 @@ test('the bar sits on the mute button and fills its whole height', () => {
   const track = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-runnable-track');
   assert.match(track, /#fff 0 var\(--hp-volume-level, 100%\)/);
   assert.match(track, /rgba\(8, 10, 16, 0\.55\) var\(--hp-volume-level, 100%\) 100%/);
+});
+
+test('the mute button leaves at once under reduced motion too', () => {
+  const reduced = detailCss.slice(detailCss.indexOf('@media (prefers-reduced-motion: reduce)'));
+  assert.match(
+    reduced,
+    /\.hp-overlay\.is-in \.hp-volume:hover \.hp-mute\s*\{[^}]*transition:\s*none\s*!important/,
+    'the shortened mute fade must not keep the button beside the bar',
+  );
+});
+
+test('a level drag keeps a height margin around the preview', () => {
+  assert.match(mediaDetail, /let volumeMargin = null;/);
+  assert.match(mediaDetail, /let volumeDragging = false;/);
+  assert.match(mediaDetail, /function attachVolumeDragMargin\(\)/);
+  assert.match(
+    mediaDetail,
+    /function scheduleHide\(\) \{[\s\S]*?if \(volumeDragging\) \{[\s\S]*?return;/,
+    'a held slider never lets the preview hide',
+  );
+  assert.match(mediaDetail, /className = 'hp-volume-drag-margin'/);
+  assert.match(mediaDetail, /margin\.addEventListener\('pointerenter', cancelHide\)/);
+  assert.match(mediaDetail, /margin\.addEventListener\('pointerleave',/);
+  assert.match(mediaDetail, /scheduleHide\(\)/);
+  assert.match(mediaDetail, /volumeDragMargin\(previewEl\.getBoundingClientRect\(\), VOLUME_DRAG_MARGIN\)/);
+  assert.match(attachBody, /slider\.addEventListener\('pointerdown', \(\) => \{[\s\S]*?attachVolumeDragMargin\(\)/);
+  assert.match(attachBody, /slider\.addEventListener\('pointerup', finishVolumeDrag\)/);
+  assert.match(attachBody, /slider\.addEventListener\('pointercancel', finishVolumeDrag\)/);
+  assert.match(
+    mediaDetail,
+    /if \(volumeMargin && volumeMargin\.matches\(':hover'\)\) \{\s*return;/,
+    'the controller treats the margin as part of the hover surface',
+  );
+  assert.match(mediaDetail, /function close\(immediate\) \{[\s\S]*?clearVolumeDragMargin\(\)/, 'closing drops the margin');
+  const band = ruleOf(detailCss, '.hp-volume-drag-margin');
+  assert.match(band, /position:\s*fixed/);
+  assert.match(band, /z-index:\s*89/);
+  assert.match(band, /background:\s*transparent/);
+  assert.match(band, /pointer-events:\s*auto/);
 });
 
 test('a still preview has no volume control', () => {

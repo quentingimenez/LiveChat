@@ -232,6 +232,12 @@
   pointer-events: none;
 }
 
+/* Once open, the wrapper stays the hover surface while the mute button steps
+   aside; the media handlers ignore the whole control. */
+.hp-overlay.is-in .hp-volume {
+  pointer-events: auto;
+}
+
 .hp-mute {
   display: grid;
   place-items: center;
@@ -264,10 +270,9 @@
   height: 24px;
 }
 
-/* The level bar is a trim of the overlay gain: its fill follows its own level,
-   not an absolute volume. It stays hidden until the open preview is hovered or
-   the control is reached by keyboard; `is-in` keeps it out of the opening and
-   closing frames. */
+/* The level bar borrows the card's playback line: the same 3 px white fill,
+   dark rail and glow, turned vertical. It keeps a transparent 30×96 hit area
+   around the line so the thin control stays easy to reach. */
 .hp-volume-pop {
   position: absolute;
   top: 0;
@@ -277,9 +282,6 @@
   width: 30px;
   height: 96px;
   padding: 10px 0;
-  border-radius: 999px;
-  background: rgba(10, 13, 19, 0.84);
-  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
   opacity: 0;
   pointer-events: none;
   transform: translateX(6px);
@@ -307,30 +309,38 @@
 }
 
 .hp-volume-range::-webkit-slider-runnable-track {
-  width: 4px;
+  width: 3px;
   height: 100%;
-  border-radius: 999px;
+  border-radius: 0;
   background: linear-gradient(
     to top,
-    var(--blue) 0 var(--hp-volume-level, 100%),
-    rgba(255, 255, 255, 0.26) var(--hp-volume-level, 100%) 100%
+    #fff 0 var(--hp-volume-level, 100%),
+    rgba(8, 10, 16, 0.55) var(--hp-volume-level, 100%) 100%
+  );
+}
+
+.hp-volume-range:hover::-webkit-slider-runnable-track {
+  background: linear-gradient(
+    to top,
+    #fff 0 var(--hp-volume-level, 100%),
+    rgba(8, 10, 16, 0.72) var(--hp-volume-level, 100%) 100%
   );
 }
 
 .hp-volume-range::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
-  margin-left: -4px;
+  width: 3px;
+  height: 3px;
+  margin-left: 0;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 6px rgba(255, 255, 255, 0.45);
 }
 
 .hp-volume-range:focus-visible {
   outline: 2px solid var(--blue);
   outline-offset: 2px;
-  border-radius: 999px;
+  border-radius: 3px;
 }
 
 /* The mute control belongs to the full preview, not to the card frame: hidden
@@ -347,6 +357,15 @@
 .hp-overlay.is-in .hp-mute {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Hovering the control leaves only the level bar: the mute button is the way
+   in, the bar the control while it is open. The bar's fade uses the reveal
+   duration instead of the preview's opening half-time. */
+.hp-overlay.is-in .hp-volume:hover .hp-mute {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--motion-reveal) ease;
 }
 
 .hp-overlay.is-out .hp-mute {

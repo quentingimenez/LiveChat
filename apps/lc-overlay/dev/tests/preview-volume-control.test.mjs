@@ -1,7 +1,9 @@
-// The hover preview's mute button reveals a vertical level bar. These checks
-// pin the control: the bar trims the overlay gain (100 % sounds exactly like
-// the overlay), it is built with the player and never with a still, it only
-// answers once the preview is open, and a press on it never toggles playback.
+// The hover preview's mute button reveals a vertical level bar styled like the
+// card's playback line. These checks pin the control: the bar trims the overlay
+// gain (100 % sounds exactly like the overlay), it replaces the mute button on
+// hover, it borrows the playback line's thickness, rail and glow, it is built
+// with the player and never with a still, it only answers once the preview is
+// open, and a press on it never toggles playback.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -87,12 +89,21 @@ test('the bar is hidden until an open preview is hovered, or reached by keyboard
   assert.match(focus, /opacity:\s*1/);
 });
 
-test('the wrapper never takes a press meant for the media', () => {
+test('the wrapper stays out of the opening and owns the hover surface once open', () => {
   // A click must reach the video during the opening, when the mute button is
-  // still hidden; only the button and the visible bar take the pointer.
+  // still hidden. Once open, the wrapper keeps the hover surface alive when
+  // the button steps aside; the media handlers ignore the whole control.
   assert.match(ruleOf(detailCss, '.hp-volume'), /pointer-events:\s*none/);
+  assert.match(ruleOf(detailCss, '.hp-overlay.is-in .hp-volume'), /pointer-events:\s*auto/);
   assert.match(ruleOf(detailCss, '.hp-mute'), /pointer-events:\s*auto/);
   assert.match(ruleOf(detailCss, '.hp-overlay.is-in .hp-mute'), /pointer-events:\s*auto/);
+});
+
+test('hovering the control leaves only the level bar', () => {
+  const hide = ruleOf(detailCss, '.hp-overlay.is-in .hp-volume:hover .hp-mute');
+  assert.match(hide, /opacity:\s*0/, 'the mute button leaves the stage');
+  assert.match(hide, /pointer-events:\s*none/);
+  assert.match(hide, /transition:\s*opacity var\(--motion-reveal\)/, 'it fades out at the control speed');
 });
 
 test('the bar is a vertical range with a visible fill', () => {
@@ -103,7 +114,35 @@ test('the bar is a vertical range with a visible fill', () => {
   const track = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-runnable-track');
   assert.match(track, /linear-gradient/);
   assert.match(track, /var\(--hp-volume-level/);
-  assert.match(ruleOf(detailCss, '.hp-volume-range::-webkit-slider-thumb'), /border-radius:\s*50%/);
+  const thumb = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-thumb');
+  assert.match(thumb, /width:\s*3px/);
+  assert.match(thumb, /border-radius:\s*50%/);
+});
+
+test('the level bar copies the playback line: thickness, rail and glow', () => {
+  const progress = ruleOf(detailCss, '.hp-progress');
+  const fill = ruleOf(detailCss, '.hp-progress span');
+  const track = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-runnable-track');
+  const thumb = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-thumb');
+  const bar = /height:\s*(\d+(?:\.\d+)?)px/.exec(progress);
+  const line = /width:\s*(\d+(?:\.\d+)?)px/.exec(track);
+  assert.ok(bar && line, 'both lines state their thickness');
+  assert.equal(line[1], bar[1], 'the volume line is as thick as the card playback bar');
+  assert.match(track, /rgba\(8, 10, 16, 0\.55\)/, 'same dark rail');
+  assert.match(fill, /background:\s*#fff/);
+  assert.match(track, /#fff/, 'same white fill');
+  assert.match(fill, /box-shadow:\s*0 0 6px rgba\(255, 255, 255, 0\.45\)/);
+  assert.match(thumb, /box-shadow:\s*0 0 6px rgba\(255, 255, 255, 0\.45\)/, 'the fill keeps its glow');
+  assert.match(ruleOf(detailCss, '.hp-progress:hover'), /rgba\(8, 10, 16, 0\.72\)/);
+  assert.match(ruleOf(detailCss, '.hp-volume-range:hover::-webkit-slider-runnable-track'), /rgba\(8, 10, 16, 0\.72\)/, 'the rail lifts on hover too');
+  assert.doesNotMatch(track, /var\(--blue\)/);
+});
+
+test('the level bar is a bare line, not a pill', () => {
+  const pop = ruleOf(detailCss, '.hp-volume-pop');
+  assert.doesNotMatch(pop, /background:/);
+  assert.doesNotMatch(pop, /box-shadow:/);
+  assert.doesNotMatch(pop, /border-radius:/);
 });
 
 test('a still preview has no volume control', () => {

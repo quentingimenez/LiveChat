@@ -1,10 +1,11 @@
 // The hover preview's mute button reveals a vertical level bar styled like the
 // card's playback line. These checks pin the control: the bar trims the overlay
-// gain (100 % sounds exactly like the overlay), it replaces the mute button on
-// hover and sits on the button's line, it borrows the playback line's thickness,
-// rail and glow, it fills its whole height at 100 %, it is built with the player
-// and never with a still, it only answers once the preview is open, a drag keeps
-// a height margin around the preview, and a press on it never toggles playback.
+// gain (100 % sounds exactly like the overlay), the mute button stays visible
+// while the bar opens below it, the bar borrows the playback line's thickness,
+// rail and glow, it fills its whole height at 100 % and still fits the shortest
+// preview, it is built with the player and never with a still, it only answers
+// once the preview is open, a drag keeps a height margin around the preview,
+// and a press on it never toggles playback.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -93,18 +94,30 @@ test('the bar is hidden until an open preview is hovered, or reached by keyboard
 test('the wrapper stays out of the opening and owns the hover surface once open', () => {
   // A click must reach the video during the opening, when the mute button is
   // still hidden. Once open, the wrapper keeps the hover surface alive when
-  // the button steps aside; the media handlers ignore the whole control.
+  // the pointer moves from the button down onto the bar; the media handlers
+  // ignore the whole control.
   assert.match(ruleOf(detailCss, '.hp-volume'), /pointer-events:\s*none/);
   assert.match(ruleOf(detailCss, '.hp-overlay.is-in .hp-volume'), /pointer-events:\s*auto/);
   assert.match(ruleOf(detailCss, '.hp-mute'), /pointer-events:\s*auto/);
   assert.match(ruleOf(detailCss, '.hp-overlay.is-in .hp-mute'), /pointer-events:\s*auto/);
 });
 
-test('hovering the control leaves only the level bar', () => {
-  const hide = ruleOf(detailCss, '.hp-overlay.is-in .hp-volume:hover .hp-mute');
-  assert.match(hide, /opacity:\s*0/, 'the mute button leaves the stage');
-  assert.match(hide, /pointer-events:\s*none/);
-  assert.match(hide, /transition:\s*none/, 'it leaves at once, never beside the bar while the bar fades in');
+test('hovering the control keeps the mute button visible', () => {
+  // The button no longer steps aside for the bar: it stays the way in and out
+  // of the sound, and the bar opens below it.
+  assert.equal(
+    ruleOf(detailCss, '.hp-overlay.is-in .hp-volume:hover .hp-mute'),
+    '',
+    'no rule hides the mute button on hover',
+  );
+  assert.doesNotMatch(
+    detailCss,
+    /\.hp-volume:hover[^{]*\.hp-mute[^{]*\{[^}]*opacity:\s*0/,
+    'the button never fades out while the bar is open',
+  );
+  const open = ruleOf(detailCss, '.hp-overlay.is-in .hp-mute');
+  assert.match(open, /opacity:\s*1/);
+  assert.match(open, /pointer-events:\s*auto/);
 });
 
 test('the bar is a vertical range with a visible fill', () => {
@@ -146,28 +159,45 @@ test('the level bar is a bare line, not a pill', () => {
   assert.doesNotMatch(pop, /border-radius:/);
 });
 
-test('the bar sits on the mute button and fills its whole height', () => {
+test('the bar hangs under the mute button and fits the shortest preview', () => {
   const pop = ruleOf(detailCss, '.hp-volume-pop');
-  assert.match(pop, /top:\s*0/, 'it starts at the button top');
+  assert.match(pop, /top:\s*32px/, 'it starts under the 32 px button, not on it');
   assert.match(pop, /right:\s*1px/, 'its centre is the button centre, not a column beside it');
-  assert.doesNotMatch(pop, /calc\(100%/, 'it is no longer pushed to the left of the button');
-  assert.doesNotMatch(pop, /padding:/, 'no inset keeps the track from the top');
+  assert.doesNotMatch(pop, /calc\(100%/, 'it is no longer pushed onto the button line');
+  assert.doesNotMatch(pop, /padding:/, 'no inset keeps the track from its top');
+
+  const wrapper = ruleOf(detailCss, '.hp-volume');
+  const wrapperTop = /top:\s*(\d+(?:\.\d+)?)px/.exec(wrapper);
+  const popTop = /top:\s*(\d+(?:\.\d+)?)px/.exec(pop);
   const popHeight = /height:\s*(\d+(?:\.\d+)?)px/.exec(pop);
   const range = ruleOf(detailCss, '.hp-volume-range');
   const rangeHeight = /height:\s*(\d+(?:\.\d+)?)px/.exec(range);
-  assert.ok(popHeight && rangeHeight, 'the control states its height');
+  assert.ok(wrapperTop && popTop && popHeight && rangeHeight, 'the control states its geometry');
   assert.equal(rangeHeight[1], popHeight[1], 'the track fills the whole hit area');
+
+  // The bar must end inside the shortest preview media: mediaSize in
+  // views/media-detail.js floors the media height, and .hp-media clips the
+  // overflow. Note the bar is measured from the wrapper, itself inset from
+  // the media top.
+  const shortest = /height:\s*Math\.max\((\d+), Math\.round\(height\)\)/.exec(mediaDetail);
+  assert.ok(shortest, 'the shortest preview media height is stated in mediaSize');
+  const bottom = Number(wrapperTop[1]) + Number(popTop[1]) + Number(popHeight[1]);
+  assert.ok(
+    bottom <= Number(shortest[1]),
+    `the bar ends at ${bottom} px, inside the shortest preview (${shortest[1]} px)`,
+  );
+
   const track = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-runnable-track');
   assert.match(track, /#fff 0 var\(--hp-volume-level, 100%\)/);
   assert.match(track, /rgba\(8, 10, 16, 0\.55\) var\(--hp-volume-level, 100%\) 100%/);
 });
 
-test('the mute button leaves at once under reduced motion too', () => {
+test('reduced motion does not bring back the hiding hand-off', () => {
   const reduced = detailCss.slice(detailCss.indexOf('@media (prefers-reduced-motion: reduce)'));
-  assert.match(
+  assert.doesNotMatch(
     reduced,
-    /\.hp-overlay\.is-in \.hp-volume:hover \.hp-mute\s*\{[^}]*transition:\s*none\s*!important/,
-    'the shortened mute fade must not keep the button beside the bar',
+    /\.hp-volume:hover \.hp-mute/,
+    'the button stays beside the bar in every motion mode',
   );
 });
 

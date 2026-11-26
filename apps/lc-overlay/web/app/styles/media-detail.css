@@ -217,9 +217,9 @@
 }
 
 /* One hover area for the mute button and its bar: the wrapper is exactly the
-   button, and the bar sits on the button's line, extending down from its top.
-   The wrapper only becomes hoverable once the preview is open; keyboard focus
-   reveals the bar too. */
+   button, and the bar hangs under the button's bottom edge. The wrapper only
+   becomes hoverable once the preview is open; keyboard focus reveals the bar
+   too. */
 /* The transparent band that keeps a held volume slider on the preview when the
    pointer leaves it through the top or the bottom. It only exists during the
    drag and sits under the preview, over the board. */
@@ -242,8 +242,9 @@
   pointer-events: none;
 }
 
-/* Once open, the wrapper stays the hover surface while the mute button steps
-   aside; the media handlers ignore the whole control. */
+/* Once open, the wrapper stays the hover surface while the pointer moves from
+   the mute button down onto the bar; the media handlers ignore the whole
+   control. */
 .hp-overlay.is-in .hp-volume {
   pointer-events: auto;
 }
@@ -281,16 +282,18 @@
 }
 
 /* The level bar borrows the card's playback line: the same 3 px white fill,
-   dark rail and glow, turned vertical. It sits exactly where the mute button
-   is and fills its full height, so a 100 % level reaches the top. */
+   dark rail and glow, turned vertical. It hangs under the mute button, which
+   stays visible: the button is 32 px of the wrapper, the bar 72 px below it, so
+   the whole control ends at 114 px, inside the shortest preview media (120 px)
+   and clear of its clip. */
 .hp-volume-pop {
   position: absolute;
-  top: 0;
+  top: 32px;
   right: 1px;
   display: grid;
   place-items: center;
   width: 30px;
-  height: 96px;
+  height: 72px;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease;
@@ -306,7 +309,7 @@
   appearance: none;
   -webkit-appearance: none;
   width: 24px;
-  height: 96px;
+  height: 72px;
   margin: 0;
   padding: 0;
   background: transparent;
@@ -364,16 +367,6 @@
 .hp-overlay.is-in .hp-mute {
   opacity: 1;
   pointer-events: auto;
-}
-
-/* Hovering the control leaves only the level bar: the mute button is the way
-   in, the bar the control while it is open. The button leaves at once; the bar
-   fades in alone. On the way out the bar's 120 ms fade and the button's base
-   delay keep them from being visible together. */
-.hp-overlay.is-in .hp-volume:hover .hp-mute {
-  opacity: 0;
-  pointer-events: none;
-  transition: none;
 }
 
 .hp-overlay.is-out .hp-mute {
@@ -603,12 +596,6 @@
 
   .hp-overlay .hp-mute {
     transition: opacity calc(var(--motion-preview-open) * 0.5) ease calc(var(--motion-preview-open) * 0.5) !important;
-  }
-
-  /* The hover hand-off is instant in every motion mode: the shortened mute
-     fade above must not leave the button over the bar. */
-  .hp-overlay.is-in .hp-volume:hover .hp-mute {
-    transition: none !important;
   }
 
   .hp-overlay.is-out .hp-card-ghost {

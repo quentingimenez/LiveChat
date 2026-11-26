@@ -1081,26 +1081,29 @@ pub async fn media_board_trigger(
         _ => MediaTrigger::Ui,
     };
     let (reply, receiver) = oneshot::channel();
-    let sent = {
+    let guild_id = {
         let state = app.state::<AppState>();
-        match target_guild(&state, parsed.guild_id.as_deref()) {
-            Some(guild_id) => ws::send_command_to(
-                &app,
-                &guild_id,
-                NetCommand::SendWithAck {
-                    message: ClientMessage::MediaTrigger(MediaTriggerPayload {
-                        item_id,
-                        trigger,
-                        message: parsed.message,
-                    }),
-                    reply,
-                },
-            ),
-            None => false,
-        }
+        target_guild(&state, parsed.guild_id.as_deref())
     };
-    if !sent {
+    let Some(guild_id) = guild_id else {
         return Ok(trigger_failure("socket_unavailable"));
+    };
+    let sent = ws::send_command_to(
+        &app,
+        &guild_id,
+        NetCommand::SendWithAck {
+            message: ClientMessage::MediaTrigger(MediaTriggerPayload {
+                item_id,
+                trigger,
+                message: parsed.message,
+            }),
+            reply,
+        },
+    );
+    if !sent {
+        return Ok(trigger_failure(ws::undeliverable_reason_for(
+            &app, &guild_id,
+        )));
     }
     match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
         Ok(Ok(ack)) => Ok(trigger_response_from_ack(ack)),
@@ -1138,25 +1141,26 @@ pub fn media_board_stop(
         .map(|payload| serde_json::from_value::<GuildRequest>(payload).unwrap_or_default())
         .unwrap_or_default();
     let state = app.state::<AppState>();
-    let sent = match target_guild(&state, parsed.guild_id.as_deref()) {
-        Some(guild_id) => send_protocol_to(
-            &app,
-            &guild_id,
-            ClientMessage::StopRequest(StopRequestPayload {
-                job_id: None,
-                source: Some(StopRequestSource::User),
-            }),
-            "media_board_stop",
-        ),
-        None => false,
+    let Some(guild_id) = target_guild(&state, parsed.guild_id.as_deref()) else {
+        return Ok(action_failure("socket_unavailable"));
     };
+    let sent = send_protocol_to(
+        &app,
+        &guild_id,
+        ClientMessage::StopRequest(StopRequestPayload {
+            job_id: None,
+            source: Some(StopRequestSource::User),
+        }),
+        "media_board_stop",
+    );
+    if !sent {
+        return Ok(action_failure(ws::undeliverable_reason_for(
+            &app, &guild_id,
+        )));
+    }
     Ok(MediaBoardActionResponse {
-        ok: sent,
-        reason: if sent {
-            None
-        } else {
-            Some("socket_unavailable".to_string())
-        },
+        ok: true,
+        reason: None,
     })
 }
 
@@ -1251,7 +1255,9 @@ pub async fn media_board_pause(
         },
     );
     if !sent {
-        return Ok(action_failure("socket_unavailable"));
+        return Ok(action_failure(ws::undeliverable_reason_for(
+            &app, &guild_id,
+        )));
     }
     match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
         Ok(Ok(ack)) => Ok(MediaBoardActionResponse {
@@ -1292,7 +1298,7 @@ pub fn overlay_request_guild_pause(
     if sent {
         Ok(())
     } else {
-        Err("socket_unavailable".to_string())
+        Err(ws::undeliverable_reason_for(&app, &guild_id).to_string())
     }
 }
 

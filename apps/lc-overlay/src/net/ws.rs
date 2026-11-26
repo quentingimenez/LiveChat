@@ -331,6 +331,27 @@ fn is_deliverable(status: ConnectionStatus, command: &NetCommand) -> bool {
     }
 }
 
+/// Reason returned to the board when a frame cannot leave because the guild's
+/// session is not live. Says why, so the user knows what to do: an overlay
+/// refused as outdated must be told to update, not that the guild is
+/// « déconnectée ».
+pub fn undeliverable_reason(status: ConnectionStatus) -> &'static str {
+    match status {
+        ConnectionStatus::Outdated => "overlay_outdated",
+        ConnectionStatus::Connecting | ConnectionStatus::Reconnecting => "guild_connecting",
+        ConnectionStatus::Revoked => "device_revoked",
+        ConnectionStatus::Disabled => "guild_disabled",
+        ConnectionStatus::Connected | ConnectionStatus::NotPaired | ConnectionStatus::Error => {
+            "socket_unavailable"
+        }
+    }
+}
+
+/// [`undeliverable_reason`] for the current status of `guild_id`.
+pub fn undeliverable_reason_for(app: &AppHandle<Wry>, guild_id: &str) -> &'static str {
+    undeliverable_reason(app.state::<AppState>().net_snapshot_for(guild_id).status)
+}
+
 /// Ferme proprement toutes les tâches réseau (sortie de l'application).
 pub fn request_shutdown(app: &AppHandle<Wry>) {
     let state = app.state::<AppState>();
@@ -2464,6 +2485,50 @@ mod tests {
         assert_eq!(*effects.acks.lock().expect("acks"), 1);
         drop(sender);
         server.await.expect("serveur mock");
+    }
+
+    /// An overlay refused as outdated, or still connecting, must not be told
+    /// « guilde déconnectée »: that message sent a paired user looking for a
+    /// network problem when an update was the fix.
+    #[test]
+    fn undeliverable_reason_names_the_real_cause() {
+        assert_eq!(
+            undeliverable_reason(ConnectionStatus::Outdated),
+            "overlay_outdated"
+        );
+        assert_eq!(
+            undeliverable_reason(ConnectionStatus::Connecting),
+            "guild_connecting"
+        );
+        assert_eq!(
+            undeliverable_reason(ConnectionStatus::Reconnecting),
+            "guild_connecting"
+        );
+        assert_eq!(
+            undeliverable_reason(ConnectionStatus::Revoked),
+            "device_revoked"
+        );
+        assert_eq!(
+            undeliverable_reason(ConnectionStatus::Disabled),
+            "guild_disabled"
+        );
+    }
+
+    /// Statuses without a more precise cause keep the historical reason, which
+    /// older boards already translate.
+    #[test]
+    fn undeliverable_reason_falls_back_to_socket_unavailable() {
+        for status in [
+            ConnectionStatus::Connected,
+            ConnectionStatus::NotPaired,
+            ConnectionStatus::Error,
+        ] {
+            assert_eq!(
+                undeliverable_reason(status),
+                "socket_unavailable",
+                "{status:?}"
+            );
+        }
     }
 
     #[test]

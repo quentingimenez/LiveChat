@@ -413,13 +413,13 @@
 
 /* The same veil over « Ajouter un média »: a drop there fills the dialog's
    form, not the board. The dialog covers the window, so the veil covers it
-   too, above the dialog's backdrop (z-index 10), and its frame takes the
-   accent of the control being filled. The veil itself adds no dim: the fade
-   behind the dialog takes the veil's own (below), so the form stays readable
-   while it is what the drop is about to fill. */
+   too, above the dialog's backdrop (z-index 210) and below the editor (220),
+   and its frame takes the accent of the control being filled. The veil itself
+   adds no dim: the fade behind the dialog takes the veil's own (below), so the
+   form stays readable while it is what the drop is about to fill. */
 .drop-veil.is-modal {
   inset: 0;
-  z-index: 12;
+  z-index: 215;
   border-color: var(--blue);
   background: none;
 }

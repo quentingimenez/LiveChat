@@ -3,7 +3,7 @@
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
 import { afterNextClick } from '../core/after-click.js';
-import { isEditable, openContextMenu } from '../core/contextmenu.js';
+import { contextMenuOpen, isEditable, openContextMenu } from '../core/contextmenu.js';
 import { findAction } from '../core/find-shortcut.js';
 import { acceleratorFromEvent, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
@@ -88,6 +88,7 @@ export function itemTitle(item) {
 }
 
 function openCardMenu(event, item) {
+  menuItemId = item.id;
   const link = sourceLink(item);
   openContextMenu(event, [
     { heading: itemTitle(item) },
@@ -1243,6 +1244,11 @@ function setKind(kind) {
 // it off, and the value stays on until it says otherwise.
 let hoverPreview = true;
 
+// The card whose menu is open, if any. The preview stays off that one card —
+// it covers its card whole and would hide the menu it just opened — while the
+// pointer moving on to another card still opens that card's preview.
+let menuItemId = null;
+
 // The caption is a draft owned by the detail window: typed there, sent with
 // the next trigger and never stored on the server. A fresh opening starts
 // empty even when the item still carries an old server-side message, and both
@@ -1258,13 +1264,22 @@ function legendDraft(itemId) {
 const mediaDetail = createMediaDetail({
   grid: () => document.getElementById('grid'),
   view: () => document.getElementById('view'),
-  hoverEnabled: () => previewAllowed({
+  hoverEnabled: (itemId) => previewAllowed({
     hoverPreview,
     selecting: state.selecting,
     capturing: state.capturing,
     dialogOpen: Boolean(document.getElementById('dialog-root')?.firstElementChild),
+    menuOnCard: contextMenuOpen() && itemId === menuItemId,
   }),
   describe: (id) => describeItem(id),
+  // The right click lands on the preview that covers its card: it opens the
+  // card's own menu, so both paths keep one definition.
+  onCardMenu: (event, card) => {
+    const entry = cards.get(card.dataset.itemId);
+    if (entry) {
+      openCardMenu(event, entry.item);
+    }
+  },
   onBeforeOpen: (id) => {
     // The draft belongs to one opening: a media reopened later never brings
     // back what was typed for a previous window (nor its old stored message).

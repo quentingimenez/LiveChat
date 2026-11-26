@@ -1,11 +1,13 @@
 /* ------------------------------------------------------------------ dialogue */
+/* Above the media detail window (z-index 180): its actions open dialogs, which
+   must paint over it and not behind it. */
 .backdrop {
   position: fixed;
   inset: 0;
   display: grid;
   place-items: center;
   background: var(--veil);
-  z-index: 10;
+  z-index: 210;
 }
 
 .dialog {

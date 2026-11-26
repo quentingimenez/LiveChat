@@ -1,11 +1,12 @@
 /* ------------------------------------------------------------------- toasts */
 /* Floating notifications: positioned over the page, they never move the
-   layout. Above the "on air" bar when it is shown. */
+   layout. Above the "on air" bar when it is shown, and above every surface the
+   board opens (dialogs 210, the editor 220, the media detail window 180). */
 .toasts {
   position: fixed;
   right: 20px;
   bottom: 20px;
-  z-index: 20;
+  z-index: 240;
   display: flex;
   flex-direction: column;
   align-items: flex-end;

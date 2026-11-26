@@ -1611,9 +1611,10 @@ let displayDurationDraft = null;
 
 // The information column of the detail window: the media's own facts, its
 // inline title and caption, its shortcut, the display time and picture of what
-// the user can edit, and the actions the context menu offered. Every change
-// applies at once, like the inline fields. A board refresh rebuilds only this
-// node.
+// the user can edit, and the actions the context menu offered. The facts and
+// the actions are pinned in the column's footer, so a long column never hides
+// them. Every change applies at once, like the inline fields. A board refresh
+// rebuilds only this node.
 function detailBody(item) {
   if (inlineEdit && inlineEdit.itemId !== item.id) {
     inlineEdit = null;
@@ -1640,6 +1641,9 @@ function detailBody(item) {
     canDelete: Boolean(item.canEdit),
   });
   const added = addedDateLabel(item);
+  const author = authorName(item);
+  const kicker = [kindLabel, duration].filter(Boolean).join(' · ');
+  const addedBy = `Ajouté par ${author}${added ? ` le ${added}` : ''}`;
 
   // Display time of an image: a fact row edited in place. Enter or leaving the
   // field saves it, Escape puts the stored value back and keeps the window
@@ -2029,8 +2033,8 @@ function detailBody(item) {
     fact('Durée d’affichage', displayDurationField());
   }
 
-  // The caption shown on the overlays, in its own block under the facts: the
-  // inline field when it can be edited, plain text otherwise.
+  // The caption shown on the overlays, in its own block above the pinned
+  // facts: the inline field when it can be edited, plain text otherwise.
   const legendText = inlineField(item, 'message')
     || h('p', { class: 'hp-page-legend is-empty' }, 'Aucune légende');
 
@@ -2044,34 +2048,48 @@ function detailBody(item) {
     h(
       'div',
       { class: 'hp-page-head' },
-      h('p', { class: 'hp-page-kicker' }, [kindLabel, duration].filter(Boolean).join(' · ')),
+      h(
+        'p',
+        { class: 'hp-page-kicker', title: `${kicker} · ${addedBy}` },
+        kicker,
+        ' · Ajouté par ',
+        h('strong', null, author),
+        added ? ` le ${added}` : null,
+      ),
       inlineField(item, 'title'),
-      h('p', { class: 'hp-page-byline' }, 'Ajouté par ', h('strong', null, authorName(item)), added ? ` · ${added}` : null),
     ),
-    h('dl', { class: 'hp-page-facts' }, facts),
     h(
       'section',
       { class: 'hp-page-legend-block' },
       h('p', { class: 'hp-page-label' }, 'Légende'),
       legendText,
     ),
-    actions.length
-      ? h(
-          'div',
-          { class: 'hp-page-actionzone' },
-          actions.includes('play')
-            ? h('div', { class: 'hp-page-actions' }, detailActionNode(item, 'play'))
-            : null,
-          secondaryActions.length
-            ? h(
-                'div',
-                { class: 'hp-page-secondary' },
-                ...secondaryActions.map((action) => detailActionNode(item, action)),
-              )
-            : null,
-        )
-      : null,
     isAudio && item.canEdit ? artworkSection() : null,
+    // The facts and the actions are pinned together at the bottom of the
+    // column: the rest of the column scrolls under them, so an action is never
+    // hidden by a page that is too tall and the facts always stay just above
+    // the buttons.
+    h(
+      'div',
+      { class: 'hp-page-footer' },
+      h('dl', { class: 'hp-page-facts' }, facts),
+      actions.length
+        ? h(
+            'div',
+            { class: 'hp-page-actionzone' },
+            actions.includes('play')
+              ? h('div', { class: 'hp-page-actions' }, detailActionNode(item, 'play'))
+              : null,
+            secondaryActions.length
+              ? h(
+                  'div',
+                  { class: 'hp-page-secondary' },
+                  ...secondaryActions.map((action) => detailActionNode(item, action)),
+                )
+              : null,
+          )
+        : null,
+    ),
   );
 }
 

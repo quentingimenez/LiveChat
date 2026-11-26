@@ -201,6 +201,21 @@ test('a level drag keeps a height margin around the preview', () => {
   assert.match(band, /pointer-events:\s*auto/);
 });
 
+test('a release inside the band keeps it even when the band was never hovered', () => {
+  const finish = /\n  function finishVolumeDrag\(([^)]*)\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
+  assert.ok(finish, 'finishVolumeDrag must exist');
+  assert.match(finish[1], /event/, 'the release event carries the pointer position');
+  assert.match(finish[2], /clientX/, 'the released x is read');
+  assert.match(finish[2], /clientY/, 'the released y is read');
+  assert.match(finish[2], /getBoundingClientRect\(\)/, 'the band rectangle is measured at release');
+  assert.match(finish[2], /volumeDragMarginContains/, 'the release point is tested against the band');
+  assert.doesNotMatch(
+    finish[2],
+    /const inMargin = Boolean\(volumeMargin && volumeMargin\.matches\(':hover'\)\);/,
+    'hover must only be the fallback for a release without coordinates',
+  );
+});
+
 test('a still preview has no volume control', () => {
   const build = /\n  function build\(card, desc\) \{([\s\S]*?)\n  \}\n/.exec(mediaDetail);
   assert.ok(build, 'build is found');

@@ -45,6 +45,7 @@ import {
   HOVER_TIMING,
   VOLUME_DRAG_MARGIN,
   volumeDragMargin,
+  volumeDragMarginContains,
   showDelay,
   placePreview,
   returnRadius,
@@ -432,13 +433,25 @@ export function createMediaDetail(options) {
     }
   }
 
-  function finishVolumeDrag() {
+  function finishVolumeDrag(event) {
     if (!volumeDragging) {
       return;
     }
-    // Still in the band after the release: keep it until the pointer leaves,
+    // A native slider keeps the pointer captured while it is dragged, so this
+    // band never hovers under the hand. Decide from the release point itself:
+    // a release inside the band leaves it in place until the pointer leaves,
     // so the card does not close under the hand that just set the level.
-    const inMargin = Boolean(volumeMargin && volumeMargin.matches(':hover'));
+    const band = volumeMargin ? volumeMargin.getBoundingClientRect() : null;
+    const released =
+      event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : null;
+    const inMargin = Boolean(
+      band &&
+        (released
+          ? volumeDragMarginContains(band, released)
+          : volumeMargin.matches(':hover')),
+    );
     volumeDragging = false;
     if (inMargin) {
       return;

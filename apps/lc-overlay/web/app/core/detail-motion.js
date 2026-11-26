@@ -47,6 +47,21 @@ export function volumeDragMargin(rect, margin = VOLUME_DRAG_MARGIN) {
   };
 }
 
+// A native slider keeps the pointer captured while it is dragged, so the band
+// is never hovered under the hand. The release itself must decide whether the
+// pointer ended inside the band.
+export function volumeDragMarginContains(rect, point) {
+  if (!rect || !point) {
+    return false;
+  }
+  return (
+    point.x >= rect.left &&
+    point.x <= rect.left + rect.width &&
+    point.y >= rect.top &&
+    point.y <= rect.top + rect.height
+  );
+}
+
 // Delay before opening a hover preview: the first one waits for the pointer to
 // show intent, then the next ones follow it. A preview that is still open, or
 // one that closed less than `warmWindow` ago, counts as warm. A missing, NaN or

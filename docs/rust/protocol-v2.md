@@ -383,13 +383,17 @@ ack `rate_limited`).
 ### 5.7 `media.trigger`
 
 ```json
-{"v":2,"type":"media.trigger","id":"cli-media-trigger-0001","ts":1794182400000,"payload":{"itemId":"clx7q2x0b0004abcd1234efgh","trigger":"shortcut"}}
+{"v":2,"type":"media.trigger","id":"cli-media-trigger-0001","ts":1794182400000,"payload":{"itemId":"clx7q2x0b0004abcd1234efgh","trigger":"shortcut","message":"Légende locale"}}
 ```
 
 Parité v1 (`index.ts:73-76`, `socketLoader.ts:277-338`). `trigger` ∈ `shortcut` | `ui`.
-Serveur : mode lecture seule → ack `read_only` ; item/média absent ou non `READY` → ack
-`item_not_found`/`media_not_ready` ; sinon crée un job `source = BOARD`
-(`text = item.message.trim().slice(0, 500)`, `showText = !!message`,
+`message` est optionnel : la fenêtre de détails de la board y envoie sa légende locale, qui
+n'est jamais persistée dans l'item. Serveur : mode lecture seule → ack `read_only` ;
+item/média absent ou non `READY` → ack `item_not_found`/`media_not_ready` ; sinon crée un job
+`source = BOARD`
+(`text = payload.message.trim().slice(0, 500)` quand `message` est présent — une chaîne vide
+supprime le texte —, sinon repli sur `item.message.trim().slice(0, 500)` pour les anciens
+clients qui n'envoient pas le champ ; `showText = !!text`,
 `authorName = session.authorName || item.createdByName`, `authorImage = session.authorImage`),
 `ack {ok:true}`, puis `play` du média du board quand la file de la guilde arrive à ce job.
 Aucune préemption : si un média joue déjà, celui du board attend la fin du job en cours.
@@ -737,8 +741,9 @@ reprise ; `remainingMs` borné au restant réel du job. `v2_pause_request.json` 
 `PeersRequestPayload = {}` (objet vide obligatoire).
 
 ### 7.7 `MediaTriggerPayload`
-`{ itemId: string, trigger: "shortcut"|"ui" }` (`index.ts:73-76`,
-`meme-bindings-service.ts:78-116`).
+`{ itemId: string, trigger: "shortcut"|"ui", message?: string }` (`index.ts:73-76`,
+`meme-bindings-service.ts:78-116`). `message` a été ajouté après coup : il est absent des
+anciens JSON (désérialisé en `None`) et omis à la sérialisation quand il vaut `None`.
 
 ### 7.8 `WelcomePayload`
 `{ protocolVersion: 2, guildId: string, clientId: string, sessionMode: SessionMode,

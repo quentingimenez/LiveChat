@@ -1,8 +1,10 @@
 // The board lays its cards out as the regular V1 grid: one card shape whatever
 // the media's own shape. This file used to pin the masonry helpers
 // (core/masonry.js, the per-card row span); it now pins the regular grid in the
-// same spirit: the CSS and the card builders must keep one width, one height,
-// a 16 / 10 thumbnail and the title + meta body.
+// same spirit: the CSS and the card builders must keep one fixed width, one
+// height, a 16 / 10 thumbnail and the title + meta body. The width is fixed
+// (232px) so that resizing the window only changes the number of columns per
+// row, never the size of the cards.
 //
 // The views need a DOM and the harness has none: these checks read the source.
 
@@ -34,19 +36,34 @@ function functionBody(source, name) {
   return match[1];
 }
 
-test('the board is a regular grid of equal cards', () => {
+test('the board keeps one card width and only the column count follows the window', () => {
   const grid = ruleOf(boardCss, '.grid');
   assert.ok(grid, '.grid must exist in board.css');
+  // A fixed 232px track: resizing the window only adds or removes a column
+  // (three at 960, four at 1120, five at 1400), the cards themselves keep
+  // their width. The tracks stay anchored to the content's left edge: a
+  // centred row would move every card by a sub-pixel step on each width and
+  // shimmer while the window is dragged.
   assert.match(
     grid,
-    /grid-template-columns:\s*repeat\(auto-fill,\s*minmax\(205px,\s*1fr\)\)/,
-    'columns follow the window, never the media',
+    /grid-template-columns:\s*repeat\(auto-fill,\s*232px\)/,
+    'the track is fixed at 232px, never a share of the available width',
   );
+  assert.match(grid, /justify-content:\s*start/, 'the fixed tracks stay anchored, not centred');
+  assert.doesNotMatch(grid, /\b1fr\b/, 'no fractional track: a card never stretches with the window');
   assert.match(grid, /gap:\s*22px 18px/, 'the V1 gap');
   assert.match(grid, /align-items:\s*stretch/, 'every card of a row keeps the same height');
   // The masonry is gone: tiny rows, per-card spans and a fixed card width.
   assert.doesNotMatch(grid, /grid-auto-rows/);
   assert.doesNotMatch(boardCss, /--span|--card\b/);
+
+  // No card size comes from the viewport: neither the grid nor the card may
+  // declare a width, a min / max width or a basis in vw or %.
+  const card = ruleOf(boardCss, '.card');
+  assert.ok(card, '.card must exist in board.css');
+  const viewportWidth = /(?:^|[\s;])(?:width|min-width|max-width|flex-basis|inline-size):\s*[^;]*(?:vw|[0-9.]+%)/m;
+  assert.doesNotMatch(grid, viewportWidth, 'the grid does not size its cards from the viewport');
+  assert.doesNotMatch(card, viewportWidth, 'the card does not size itself from the viewport');
 });
 
 test('the card is one framed surface with a 16 / 10 thumbnail', () => {

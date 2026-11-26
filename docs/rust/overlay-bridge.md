@@ -754,11 +754,14 @@ La commande est désormais asynchrone : elle envoie `media.trigger` puis attend
 l'`ack` correspondant pendant **10 s** (`TRIGGER_ACK_TIMEOUT`). Le champ
 `ref` de l'`ack` est comparé à l'`id` de l'enveloppe envoyée.
 
-Entrée (inchangée) :
+Entrée :
 
 ```json
-{ "payload": { "itemId": "media-1", "trigger": "ui", "guildId": "111" } }
+{ "payload": { "itemId": "media-1", "trigger": "ui", "guildId": "111", "message": "Légende locale" } }
 ```
+
+`message` est optionnel et transmis tel quel dans `media.trigger` : la board y met la légende
+locale de sa fenêtre de détails, sans jamais l'écrire dans l'item ni sur le serveur.
 
 Réponse `MediaBoardTriggerResponse` :
 

@@ -3,7 +3,7 @@
 // are shown in its « Réglages » tab.
 
 import { api, run } from '../core/api.js';
-import { isObsolete, newestVersion, platformLabel, presenceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
+import { isObsolete, newestVersion, platformLabel, presenceSinceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
 import { avatarNode, clearSettingsDirty, h, icon, resetOnDoubleClick } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
 import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
@@ -136,9 +136,10 @@ function activeCodeCount() {
 }
 
 // One list: an optional lead panel, then the column head and the rows, or one
-// explicit state (loading, error, empty). The tab chips and the columns say
-// what the list holds, so no sentence introduces it.
-function renderList({ kind, tab, status, count, labels, rows, empty, lead = null }) {
+// explicit state (loading, error, empty), then an optional trailing node (used
+// by the journal filters to report an empty result under the list). The tab
+// chips and the columns say what the list holds, so no sentence introduces it.
+function renderList({ kind, tab, status, count, labels, rows, empty, lead = null, after = null }) {
   const phase = count > 0 ? 'ready' : status.failed ? 'error' : status.loading ? 'loading' : 'empty';
   return h(
     'div',
@@ -146,6 +147,7 @@ function renderList({ kind, tab, status, count, labels, rows, empty, lead = null
     lead,
     phase === 'ready' ? listHead(kind, labels) : null,
     phase === 'ready' ? h('div', { class: 'list' }, rows) : listState(phase, tab, empty),
+    after,
   );
 }
 
@@ -259,19 +261,27 @@ function renderMembers(status) {
             memberMeta(member),
           ),
         ),
+        // The role control sits on the identity line in the card layout: on
+        // the meta line it read as a second, oversized button under the name.
+        // On desktop its select is placed back in the Rôle track by CSS.
+        h(
+          'div',
+          { class: 'list-cell member-role', 'data-label': 'Rôle' },
+          h(
+            'select',
+            {
+              class: 'field member-role-select',
+              'aria-label': `Rôle de ${member.displayName}`,
+              onChange: (event) => onRoleChange(member, event),
+            },
+            Object.entries(ROLE_LABELS).map(([id, label]) => h('option', { value: id, selected: member.role === id }, label)),
+          ),
+        ),
       ),
       h(
         'div',
         { class: 'line-meta' },
         listCell('Vu', h('span', { class: 'sub seen' }, presenceLabel(member, selfMuted))),
-        listCell(
-          'Rôle',
-          h(
-            'select',
-            { class: 'field', 'aria-label': `Rôle de ${member.displayName}`, onChange: (event) => onRoleChange(member, event) },
-            Object.entries(ROLE_LABELS).map(([id, label]) => h('option', { value: id, selected: member.role === id }, label)),
-          ),
-        ),
       ),
       h(
         'div',
@@ -788,7 +798,7 @@ function renderCodes(status) {
     );
   };
   const rows = codeRows();
-  return renderList({
+  const list = renderList({
     kind: 'code',
     tab: 'codes',
     status,
@@ -814,6 +824,63 @@ function renderCodes(status) {
       ),
     ),
   });
+  scheduleCodeColumnMeasure(list);
+  return list;
+}
+
+// The code fields must start at the same x on every row (Auteur, Expiration,
+// Utilisations), while the two gutters between them stay equal and shrink
+// together as the card narrows. Their widest text is not known in CSS before
+// the rows exist, so measure it once after the render and expose the three
+// widths to the grid declared in admin.css.
+function scheduleCodeColumnMeasure(root) {
+  if (typeof requestAnimationFrame !== 'function') {
+    return;
+  }
+  requestAnimationFrame(() => {
+    if (root.isConnected) {
+      measureCodeColumns(root);
+    }
+  });
+}
+
+function measureCodeColumns(root) {
+  const list = root.querySelector('.list');
+  if (!list) {
+    return;
+  }
+  const columns = [[], [], []];
+  for (const meta of list.querySelectorAll('.line.is-code .line-meta')) {
+    const cells = Array.from(meta.children).filter((child) => child.classList.contains('list-cell'));
+    if (cells.length !== 3) {
+      continue;
+    }
+    cells.forEach((cell, index) => columns[index].push(cell));
+  }
+  if (!columns[0].length) {
+    return;
+  }
+  const widths = columns.map((cells) => Math.max(...cells.map(measureCodeCell)));
+  if (!widths.every((width) => width > 0)) {
+    return;
+  }
+  list.classList.add('has-code-columns');
+  list.style.setProperty('--code-author-width', `${Math.ceil(widths[0]) + 1}px`);
+  list.style.setProperty('--code-expiry-width', `${Math.ceil(widths[1]) + 1}px`);
+  list.style.setProperty('--code-uses-width', `${Math.ceil(widths[2]) + 1}px`);
+}
+
+// The probe is a clone of the cell with the card layout forced by CSS, appended
+// out of flow inside the same row: it measures the natural width of the label
+// and value without depending on the current viewport or on the row's flex
+// shrinking. It is removed immediately after the read.
+function measureCodeCell(cell) {
+  const probe = cell.cloneNode(true);
+  probe.classList.add('code-cell-probe');
+  cell.parentElement.append(probe);
+  const width = probe.getBoundingClientRect().width;
+  probe.remove();
+  return width;
 }
 
 function openRevokeDialog(row) {
@@ -928,27 +995,149 @@ function auditActor(entry) {
   return entry.actor.name || entry.actor.method || '—';
 }
 
+// The text query reads the displayed values, accent- and case-insensitively:
+// « proprietaire » finds « Propriétaire ». Combining marks are dropped after
+// the NFD decomposition, so the comparison works on plain letters.
+function auditFilterText(value) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
+// One searchable string per row. The raw ISO timestamp is kept next to the
+// displayed date, so a query can use either form.
+function auditSearchText(...parts) {
+  return auditFilterText(
+    parts.filter((part) => part !== null && part !== undefined && part !== '').join(' '),
+  );
+}
+
+function matchesAuditFilters(entry, query, origin, action) {
+  const needle = auditFilterText(query);
+  return (
+    (!needle || entry.search.includes(needle)) &&
+    (!origin || entry.origin === origin) &&
+    (!action || entry.action === action)
+  );
+}
+
+// Hide rows in place from the dataset written when they were built: no DOM is
+// rebuilt, so the search field keeps its focus and the caret while typing.
+function filterAuditRows(list, empty, counter, controls) {
+  const total = list.children.length;
+  let visible = 0;
+  for (const row of list.children) {
+    const match = matchesAuditFilters(
+      {
+        search: row.dataset.auditSearch || '',
+        origin: row.dataset.auditOrigin || '',
+        action: row.dataset.auditAction || '',
+      },
+      controls.query.value,
+      controls.origin.value,
+      controls.action.value,
+    );
+    row.hidden = !match;
+    if (match) {
+      visible += 1;
+    }
+  }
+  empty.hidden = visible > 0;
+  counter.textContent =
+    visible === total
+      ? `${visible} action${visible > 1 ? 's' : ''}`
+      : `${visible} sur ${total} action${total > 1 ? 's' : ''}`;
+}
+
+function resetAuditFilters(controls, refresh) {
+  controls.query.value = '';
+  controls.origin.value = '';
+  controls.action.value = '';
+  refresh();
+  controls.query.focus();
+}
+
+function auditFilterControls(actions, total, onReset) {
+  const query = h('input', {
+    class: 'field audit-search',
+    type: 'search',
+    placeholder: 'Rechercher (date, origine, auteur, action)',
+    'aria-label': 'Rechercher dans le journal',
+  });
+  const origin = h(
+    'select',
+    { class: 'field', 'aria-label': 'Origine' },
+    h('option', { value: '' }, 'Toutes les origines'),
+    h('option', { value: 'Overlay' }, 'Overlay'),
+    h('option', { value: 'Panneau serveur' }, 'Panneau serveur'),
+  );
+  const action = h(
+    'select',
+    { class: 'field', 'aria-label': 'Action' },
+    h('option', { value: '' }, 'Toutes les actions'),
+    actions.map((id) => h('option', { value: id }, auditActionLabel(id))),
+  );
+  const counter = h(
+    'span',
+    { class: 'sub audit-count', role: 'status', 'aria-live': 'polite' },
+    `${total} action${total > 1 ? 's' : ''}`,
+  );
+  // Rendered once with the list and only toggled by the filters: it is not the
+  // standard empty state, which would hide the list title and the filters.
+  const empty = h(
+    'p',
+    { class: 'list-state is-empty audit-empty', role: 'status', hidden: true },
+    'Aucun résultat pour ces filtres.',
+  );
+  const node = h(
+    'div',
+    { class: 'panel audit-filters' },
+    query,
+    origin,
+    action,
+    h('button', { class: 'btn is-quiet', type: 'button', onClick: onReset }, 'Réinitialiser'),
+    counter,
+  );
+  return { node, query, origin, action, counter, empty };
+}
+
 function renderAudit(status) {
   const rows = state.auditEntries.map((entry) => {
     const actor = auditActor(entry);
-    return h(
+    const origin = auditOrigin(entry);
+    const actionLabel = auditActionLabel(entry.action);
+    const date = absoluteDate(entry.at);
+    const row = h(
       'div',
       { class: 'line is-audit' },
       h(
         'div',
         { class: 'line-main' },
-        listCell('Date', h('time', { class: 'sub journal-date', datetime: entry.at || null }, absoluteDate(entry.at))),
-        listCell('Origine', h('span', { class: 'badge' }, auditOrigin(entry))),
+        listCell('Date', h('time', { class: 'sub journal-date', datetime: entry.at || null }, date)),
+        listCell('Origine', h('span', { class: 'badge' }, origin)),
       ),
       h(
         'div',
         { class: 'line-meta' },
         listCell('Auteur', h('span', { class: 'ellipsis', title: actor === '—' ? '' : actor }, actor)),
-        listCell('Action', h('span', { class: 'ellipsis' }, auditActionLabel(entry.action))),
+        listCell('Action', h('span', { class: 'ellipsis' }, actionLabel)),
       ),
     );
+    // Index consumed by the filters. The action id is kept next to its label so
+    // the action select can match the same rows the label displays.
+    row.dataset.auditSearch = auditSearchText(date, entry.at, origin, actor, actionLabel, entry.action);
+    row.dataset.auditOrigin = origin;
+    row.dataset.auditAction = entry.action;
+    return row;
   });
-  return renderList({
+  const actions = [...new Set(state.auditEntries.map((entry) => entry.action).filter(Boolean))].sort(
+    (left, right) => auditActionLabel(left).localeCompare(auditActionLabel(right), 'fr'),
+  );
+  let apply = () => {};
+  const filters = auditFilterControls(actions, rows.length, () => resetAuditFilters(filters, apply));
+  const card = renderList({
     kind: 'audit',
     tab: 'audit',
     status,
@@ -956,7 +1145,18 @@ function renderAudit(status) {
     labels: ['Date', 'Origine', 'Auteur', 'Action'],
     rows,
     empty: 'Aucune action d’administration enregistrée pour cette guilde.',
+    lead: rows.length > 0 ? filters.node : null,
+    after: rows.length > 0 ? filters.empty : null,
   });
+  if (rows.length > 0) {
+    const list = card.querySelector('.list');
+    apply = () => filterAuditRows(list, filters.empty, filters.counter, filters);
+    filters.query.addEventListener('input', apply);
+    filters.origin.addEventListener('change', apply);
+    filters.action.addEventListener('change', apply);
+    apply();
+  }
+  return card;
 }
 
 // ---------------------------------------------------------- server settings

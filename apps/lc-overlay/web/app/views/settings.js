@@ -16,8 +16,10 @@
 import { run } from '../core/api.js';
 import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
 import { resizeAvatar } from '../core/avatar.js';
-import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleClick, settingsControlActive, SLIDER_RESET_HINT } from '../core/dom.js';
+import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleClick, settingsControlActive, settingsFormDirty, SLIDER_RESET_HINT } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
+import { forgetFollower, PROFILE_SYNCED_EVENT } from '../core/profile-sync.js';
+import { settingsBackInMargin } from '../core/settings-back.js';
 import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { guildLabel, state } from '../core/state.js';
@@ -113,6 +115,36 @@ function syncLogo() {
   }
 }
 
+// ------------------------------------------------------- « Retour » placement
+
+let backPlacementFrame = null;
+
+// Reads the current layout and moves « Retour » into the left margin only when
+// it fits entirely there. Re-running after a resize or a scroll keeps the
+// decision in step with the view; the CSS transition animates the change.
+function updateBackPlacement() {
+  const view = document.getElementById('view');
+  const button = view && view.querySelector('.settings-back');
+  if (!view || !button) {
+    return;
+  }
+  const inMargin = settingsBackInMargin({
+    scrollerWidth: view.clientWidth,
+    buttonWidth: button.offsetWidth,
+  });
+  button.classList.toggle('is-in-margin', inMargin);
+}
+
+function scheduleBackPlacement() {
+  if (backPlacementFrame !== null) {
+    return;
+  }
+  backPlacementFrame = requestAnimationFrame(() => {
+    backPlacementFrame = null;
+    updateBackPlacement();
+  });
+}
+
 // ------------------------------------------------------------------ navigation
 
 export function openSettings() {
@@ -145,7 +177,31 @@ export function initDeviceSettings() {
       openSettings();
     }
   });
+  // A followed Discord profile was copied into the device profile: refresh the
+  // page when it is open and idle. A focused field or an edited form keeps its
+  // DOM, so the user's caret and typed value survive.
+  document.addEventListener(PROFILE_SYNCED_EVENT, (event) => {
+    const patch = event.detail;
+    if (!patch || !deviceSettings) {
+      return;
+    }
+    deviceSettings = {
+      ...deviceSettings,
+      profile: { ...(deviceSettings.profile || {}), ...patch },
+    };
+    if (settingsShown() && !settingsControlActive() && !settingsFormDirty() && !state.switchingGuild) {
+      renderView();
+    }
+  });
   subscribeTheme(syncLogo);
+  // « Retour » moves between the flow and the left margin as the window
+  // resizes; the same check follows the scroll so a late layout shift cannot
+  // leave it in the wrong place.
+  const view = document.getElementById('view');
+  if (view) {
+    view.addEventListener('scroll', scheduleBackPlacement, { passive: true });
+  }
+  window.addEventListener('resize', scheduleBackPlacement);
   // Dirty-tracking is delegated: the settings view is rebuilt often, and a
   // captured reference would go stale. Any edit marks the current form, even
   // after focus moves to a heading or another control.
@@ -648,6 +704,7 @@ function renderProfile(settings) {
     placeholder: 'Ton pseudo',
     value: profile.displayName || '',
     onInput: () => {
+      forgetFollower();
       preview.replaceChildren(avatarNode(name.value || '?', avatar));
       debounce('profile.displayName', () => applyPatch({ profile: { displayName: name.value.trim() || null } }));
     },
@@ -667,6 +724,7 @@ function renderProfile(settings) {
         notify('Cette image ne peut pas être lue.', true);
         return;
       }
+      forgetFollower();
       const response = await sendSettings({ profile: { avatar: resized } });
       if (response && response.ok && state.page === 'settings') {
         renderView();
@@ -681,6 +739,7 @@ function renderProfile(settings) {
       type: 'button',
       disabled: !avatar,
       onClick: async () => {
+        forgetFollower();
         const response = await sendSettings({ profile: { avatar: null } });
         if (response && response.ok && state.page === 'settings') {
           renderView();
@@ -776,30 +835,40 @@ function renderAbout(settings) {
   );
 }
 
+// « Retour » is a sibling of the heading, not a child of it: on a wide board it
+// can leave the 880 px column and stick in the left margin while the page
+// scrolls.
+function settingsBack() {
+  return h(
+    'button',
+    { class: 'btn is-quiet settings-back', type: 'button', onClick: () => selectGuild(state.activeGuildId) },
+    icon('back'),
+    'Retour',
+  );
+}
+
 // Page head, shared by the three states of the page (loaded, loading,
-// unavailable): the way back to the guild or board, then the page title.
+// unavailable): the page title and its save status.
 function renderHead() {
   return h(
     'div',
     { class: 'settings-head' },
-    h(
-      'button',
-      { class: 'btn is-quiet settings-back', type: 'button', onClick: () => selectGuild(state.activeGuildId) },
-      icon('back'),
-      'Retour',
-    ),
     h('h2', null, 'Paramètres'),
     autosaveNote(),
   );
 }
 
+function settingsPage(...children) {
+  return h('div', { class: 'settings' }, settingsBack(), renderHead(), ...children);
+}
+
 export function renderSettings() {
+  // The button is measured once the view owns the new page: decide its place
+  // after the current render task, when layout is available.
+  queueMicrotask(scheduleBackPlacement);
   if (!deviceSettings) {
     if (loadError) {
-      return h(
-        'div',
-        { class: 'settings' },
-        renderHead(),
+      return settingsPage(
         h(
           'div',
           { class: 'empty' },
@@ -809,15 +878,12 @@ export function renderSettings() {
         ),
       );
     }
-    return h('div', { class: 'settings' }, renderHead(), h('p', { class: 'meta' }, 'Chargement des paramètres…'));
+    return settingsPage(h('p', { class: 'meta' }, 'Chargement des paramètres…'));
   }
   const settings = deviceSettings;
   // The order of the sections is fixed (theme.test.mjs pins Démarrage,
   // Apparence and À propos): Apparence stays between the two.
-  return h(
-    'div',
-    { class: 'settings' },
-    renderHead(),
+  return settingsPage(
     renderDisplay(settings),
     renderSound(settings),
     renderShortcuts(settings),

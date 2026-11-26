@@ -1265,6 +1265,32 @@ p.hp-page-legend,
 }
 
 /* --- responsive --------------------------------------------------------- */
+/* On a short window the pinned footer is taller than the room left above it
+   in the column: it would cover the caption. The footer joins the flow and
+   the whole page becomes the scroll container, still without drawing a bar.
+   The column stops owning a nested scroll so the wheel always reaches the
+   footer's actions, and the caption stays at the top of that scroll. */
+@media (max-height: 780px) {
+  .hp-page {
+    overflow-x: hidden;
+    overflow-y: auto;
+    scrollbar-width: none;
+  }
+
+  .hp-page::-webkit-scrollbar {
+    display: none;
+  }
+
+  .hp-page-info {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .hp-page-footer {
+    position: static;
+  }
+}
+
 @media (max-width: 1100px) {
   .hp-page-shell {
     padding: 16px;
@@ -1275,7 +1301,9 @@ p.hp-page-legend,
   }
 }
 
-@media (max-width: 960px) {
+/* The overlay window cannot go below 960px wide: keep the side-by-side layout
+   there, and stack only for narrower embeds (a dev harness, a snapshot). */
+@media (max-width: 900px) {
   /* Stacked, the stage and the column no longer fit side by side: the whole
      window scrolls again instead of squeezing the column, but it still never
      draws a scrollbar. */
@@ -1300,13 +1328,22 @@ p.hp-page-legend,
   }
 
   .hp-page[data-layout='atelier'] .hp-page-stage {
-    height: min(46vh, 430px);
-    min-height: 280px;
+    /* The page itself scrolls here: keeping the stage tall would push the
+       caption below the fold. It stays comfortable but leaves room for the
+       information column, so the caption shows without scrolling. */
+    height: min(38vh, 360px);
+    min-height: 220px;
   }
 
   .hp-page-info {
     max-height: none;
     overflow: visible;
+  }
+
+  /* The whole page is the scroll container in this layout: a sticky footer
+     would cover the bottom of the column instead of pinning inside it. */
+  .hp-page-footer {
+    position: static;
   }
 
   .hp-page[data-layout='atelier'] .hp-page-info {

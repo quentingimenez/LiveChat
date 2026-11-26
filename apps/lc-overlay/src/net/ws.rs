@@ -2358,6 +2358,7 @@ mod tests {
                 message: ClientMessage::MediaTrigger(MediaTriggerPayload {
                     item_id: "item-1".to_string(),
                     trigger: MediaTrigger::Ui,
+                    message: None,
                 }),
                 reply,
             })

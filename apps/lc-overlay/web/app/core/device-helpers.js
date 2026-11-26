@@ -78,15 +78,22 @@ export function isObsolete(version, newest) {
   return compareVersions(version, newest) < 0;
 }
 
-export function lastSeenLabel(iso, now = Date.now()) {
+function lastSeenMinutes(iso, now) {
   if (!iso) {
-    return 'Jamais vu';
+    return null;
   }
   const timestamp = new Date(iso).getTime();
   if (!Number.isFinite(timestamp)) {
+    return null;
+  }
+  return Math.max(0, Math.round((now - timestamp) / 60000));
+}
+
+export function lastSeenLabel(iso, now = Date.now()) {
+  const minutes = lastSeenMinutes(iso, now);
+  if (minutes === null) {
     return 'Jamais vu';
   }
-  const minutes = Math.max(0, Math.round((now - timestamp) / 60000));
   if (minutes < 2) {
     return 'Vu à l’instant';
   }
@@ -97,6 +104,25 @@ export function lastSeenLabel(iso, now = Date.now()) {
     return `Vu il y a ${Math.round(minutes / 60)} h`;
   }
   return `Vu il y a ${Math.round(minutes / 1440)} j`;
+}
+
+// Same wording without the leading « Vu »: the device list already names the
+// column « Vu », so the value under it only has to say how long ago.
+export function lastSeenSinceLabel(iso, now = Date.now()) {
+  const minutes = lastSeenMinutes(iso, now);
+  if (minutes === null) {
+    return 'Jamais vu';
+  }
+  if (minutes < 2) {
+    return 'à l’instant';
+  }
+  if (minutes < 60) {
+    return `il y a ${minutes} min`;
+  }
+  if (minutes < 1440) {
+    return `il y a ${Math.round(minutes / 60)} h`;
+  }
+  return `il y a ${Math.round(minutes / 1440)} j`;
 }
 
 export function presenceLabel(device, now = Date.now()) {
@@ -110,4 +136,19 @@ export function presenceLabel(device, now = Date.now()) {
     return 'Appareil coupé';
   }
   return lastSeenLabel(device.lastSeenAt, now);
+}
+
+// Presence for the admin device list: its « Vu » cell already carries the
+// column name, so the value must not repeat it.
+export function presenceSinceLabel(device, now = Date.now()) {
+  if (!device) {
+    return '—';
+  }
+  if (device.connected) {
+    return 'En ligne';
+  }
+  if (device.guildSettings && device.guildSettings.paused) {
+    return 'Appareil coupé';
+  }
+  return lastSeenSinceLabel(device.lastSeenAt, now);
 }

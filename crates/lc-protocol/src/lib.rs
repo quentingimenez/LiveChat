@@ -703,6 +703,12 @@ pub struct MediaTriggerPayload {
     pub item_id: String,
     /// Origine du déclenchement.
     pub trigger: MediaTrigger,
+    /// Légende transitoire saisie dans la board, envoyée avec le
+    /// déclenchement. `None` (client antérieur) laisse le serveur relire
+    /// l'ancien message de l'item ; `Some("")` demande explicitement aucune
+    /// légende.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
 }
 
 /// Payload de `peers.request` (vide).

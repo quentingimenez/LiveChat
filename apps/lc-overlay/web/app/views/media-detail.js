@@ -595,15 +595,18 @@ export function createMediaDetail(options) {
   function attachPlayer(el, media, player, card, desc) {
     el.classList.add('is-playable');
     el._player = player;
+    // The tooltip names the action, not a sentence: the preview is paused
+    // until its player says otherwise.
+    media.title = 'Lecture';
 
     player.addEventListener('play', () => {
       el.classList.remove('is-paused');
-      media.title = 'Cliquer pour mettre en pause';
+      media.title = 'Pause';
     });
     player.addEventListener('pause', () => {
       if (!el.classList.contains('is-out')) {
         el.classList.add('is-paused');
-        media.title = 'Cliquer pour reprendre la lecture';
+        media.title = 'Lecture';
       }
     });
 
@@ -1653,6 +1656,11 @@ export function createMediaDetail(options) {
     const desc = describe(id);
     if (!desc) {
       return;
+    }
+    // Reset transient window content before the information column is built,
+    // so the first render already shows the fresh state.
+    if (typeof opts.onBeforeOpen === 'function') {
+      opts.onBeforeOpen(id);
     }
 
     // A preview of this card is the origin of the transition: its player and

@@ -17,6 +17,7 @@ import {
   personalDeviceKindLabel,
   personalDeviceSummary,
 } from '../core/personal-devices.js';
+import { syncProfileFromDiscord } from '../core/profile-sync.js';
 import { can, describeError, guildLabel, ROLE_LABELS, state } from '../core/state.js';
 import { selectTab, tabIndexForKey } from '../core/tabs.js';
 import { notify } from '../core/toast.js';
@@ -392,6 +393,9 @@ export function openGuildDialog(guild) {
           if (!body) {
             return;
           }
+          // The link changed the member's Discord identity: adopt it in the
+          // device profile right away, even if a previous account was followed.
+          await syncProfileFromDiscord(body.member, { force: true });
           notify(body.promoted ? 'Compte Discord lié : tu es maintenant admin de la guilde.' : 'Compte Discord lié.');
           close();
           loadGuild();
@@ -625,5 +629,5 @@ export function openGuildDialog(guild) {
         ),
       ),
     ];
-  }, { width: 'wide' });
+  }, { width: 'wide', dialogClass: 'is-profile' });
 }

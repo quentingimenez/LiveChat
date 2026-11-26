@@ -12,6 +12,21 @@ import { notify } from './toast.js';
 // everything else scrolls.
 let dialogCount = 0;
 
+// Classes of the shared dialog frame. Callers can add their own via
+// `dialogClass`, for instance `is-profile`, without changing the frame for
+// every other dialog. Exported so the class contract stays testable without a
+// DOM.
+export function dialogClassNames(options = {}) {
+  const classes = ['dialog'];
+  if (options.width === 'wide') {
+    classes.push('is-wide');
+  }
+  if (typeof options.dialogClass === 'string') {
+    classes.push(...options.dialogClass.trim().split(/\s+/).filter(Boolean));
+  }
+  return classes.join(' ');
+}
+
 export function openDialog(build, options = {}) {
   const root = document.getElementById('dialog-root');
   const previousFocus = document.activeElement;
@@ -36,7 +51,7 @@ export function openDialog(build, options = {}) {
   const dialog = h(
     'div',
     {
-      class: options.width === 'wide' ? 'dialog is-wide' : 'dialog',
+      class: dialogClassNames(options),
       role: 'dialog',
       'aria-modal': 'true',
     },

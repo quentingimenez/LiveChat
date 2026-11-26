@@ -84,12 +84,16 @@ test('the shortcut row holds only the key, without the AltGr hint', () => {
   assert.match(cell, /display:\s*flex/);
 });
 
-test('the information column scrolls on its own, so the stage stays in place', () => {
+test('the information column scrolls under its footer without a scrollbar', () => {
   const page = ruleIn(detailCss, '.hp-page');
   assert.match(page, /overflow:\s*hidden/);
   const info = ruleIn(detailCss, '.hp-page-info');
   assert.match(info, /overflow-y:\s*auto/);
-  assert.match(info, /scrollbar-gutter:\s*stable/);
+  assert.match(info, /scrollbar-width:\s*none/);
+  assert.match(ruleIn(detailCss, '.hp-page-info::-webkit-scrollbar'), /display:\s*none/);
+  const footer = ruleIn(detailCss, '.hp-page-footer');
+  assert.match(footer, /position:\s*sticky/);
+  assert.match(footer, /bottom:\s*0/);
 });
 
 test('the detail window keeps the capture hint on one line', () => {

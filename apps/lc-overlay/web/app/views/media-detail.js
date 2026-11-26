@@ -11,13 +11,14 @@
 //
 // detailBody() returns the information column itself, appended next to
 // `.hp-page-stage` in `.hp-page-grid`; this module gives its root the
-// `.hp-page-info` class when it is missing. That column scrolls on its own
-// when it is taller than the window, while the stage stays in place. The
-// classes styled by media-detail.css are `.hp-page-head`, `.hp-page-kicker`,
-// `.hp-page-title`, `.hp-page-byline`, `.hp-page-facts` (dt/dd),
-// `.hp-page-source`, `.hp-page-legend-block`, `.hp-page-label`,
-// `.hp-page-legend` (`.is-empty`), `.hp-page-artwork` and its artwork block,
-// `.hp-page-actions`, `.hp-page-secondary` and `.hp-page-actionzone`.
+// `.hp-page-info` class when it is missing. That column scrolls without a
+// visible scrollbar and pins its footer (the facts and the actions) at the
+// bottom, while the stage stays in place. The classes styled by
+// media-detail.css are `.hp-page-head`, `.hp-page-kicker`, `.hp-page-title`,
+// `.hp-page-facts` (dt/dd), `.hp-page-footer`, `.hp-page-source`,
+// `.hp-page-legend-block`, `.hp-page-label`, `.hp-page-legend` (`.is-empty`),
+// `.hp-page-artwork` and its artwork block, `.hp-page-actions`,
+// `.hp-page-secondary` and `.hp-page-actionzone`.
 //
 // describe(id).tools() returns an optional HTMLElement for the right side of
 // the window's top bar (`.hp-page-tools`), or null when there is none: the

@@ -72,7 +72,9 @@ jobs:
 
   installer:
     name: installeur NSIS (windows)
-    runs-on: [self-hosted, Windows, X64]
+    # GitHub-hosted Windows runner: MSVC, WebView2 and the NSIS toolchain are
+    # provided by the image; no self-hosted runner required.
+    runs-on: windows-latest
     timeout-minutes: 60
     outputs:
       installer-name: ${{ steps.collect.outputs.installer-name }}

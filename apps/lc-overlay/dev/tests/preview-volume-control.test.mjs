@@ -1,9 +1,10 @@
 // The hover preview's mute button reveals a vertical level bar styled like the
 // card's playback line. These checks pin the control: the bar trims the overlay
 // gain (100 % sounds exactly like the overlay), it replaces the mute button on
-// hover, it borrows the playback line's thickness, rail and glow, it is built
-// with the player and never with a still, it only answers once the preview is
-// open, and a press on it never toggles playback.
+// hover and sits on the button's line, it borrows the playback line's thickness,
+// rail and glow, it fills its whole height at 100 %, it is built with the player
+// and never with a still, it only answers once the preview is open, and a press
+// on it never toggles playback.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -143,6 +144,22 @@ test('the level bar is a bare line, not a pill', () => {
   assert.doesNotMatch(pop, /background:/);
   assert.doesNotMatch(pop, /box-shadow:/);
   assert.doesNotMatch(pop, /border-radius:/);
+});
+
+test('the bar sits on the mute button and fills its whole height', () => {
+  const pop = ruleOf(detailCss, '.hp-volume-pop');
+  assert.match(pop, /top:\s*0/, 'it starts at the button top');
+  assert.match(pop, /right:\s*1px/, 'its centre is the button centre, not a column beside it');
+  assert.doesNotMatch(pop, /calc\(100%/, 'it is no longer pushed to the left of the button');
+  assert.doesNotMatch(pop, /padding:/, 'no inset keeps the track from the top');
+  const popHeight = /height:\s*(\d+(?:\.\d+)?)px/.exec(pop);
+  const range = ruleOf(detailCss, '.hp-volume-range');
+  const rangeHeight = /height:\s*(\d+(?:\.\d+)?)px/.exec(range);
+  assert.ok(popHeight && rangeHeight, 'the control states its height');
+  assert.equal(rangeHeight[1], popHeight[1], 'the track fills the whole hit area');
+  const track = ruleOf(detailCss, '.hp-volume-range::-webkit-slider-runnable-track');
+  assert.match(track, /#fff 0 var\(--hp-volume-level, 100%\)/);
+  assert.match(track, /rgba\(8, 10, 16, 0\.55\) var\(--hp-volume-level, 100%\) 100%/);
 });
 
 test('a still preview has no volume control', () => {

@@ -217,9 +217,9 @@
 }
 
 /* One hover area for the mute button and its bar: the wrapper is exactly the
-   button, and the bar overlaps it by 2 px so moving left keeps the wrapper
-   hovered. The bar only shows over an open preview; keyboard focus reveals
-   it too. */
+   button, and the bar sits on the button's line, extending down from its top.
+   The wrapper only becomes hoverable once the preview is open; keyboard focus
+   reveals the bar too. */
 .hp-volume {
   position: absolute;
   top: 10px;
@@ -271,35 +271,32 @@
 }
 
 /* The level bar borrows the card's playback line: the same 3 px white fill,
-   dark rail and glow, turned vertical. It keeps a transparent 30×96 hit area
-   around the line so the thin control stays easy to reach. */
+   dark rail and glow, turned vertical. It sits exactly where the mute button
+   is and fills its full height, so a 100 % level reaches the top. */
 .hp-volume-pop {
   position: absolute;
   top: 0;
-  right: calc(100% - 2px);
+  right: 1px;
   display: grid;
   place-items: center;
   width: 30px;
   height: 96px;
-  padding: 10px 0;
   opacity: 0;
   pointer-events: none;
-  transform: translateX(6px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition: opacity 120ms ease;
 }
 
 .hp-overlay.is-in .hp-volume:hover .hp-volume-pop,
 .hp-overlay.is-in .hp-volume:has(:focus-visible) .hp-volume-pop {
   opacity: 1;
   pointer-events: auto;
-  transform: none;
 }
 
 .hp-volume-range {
   appearance: none;
   -webkit-appearance: none;
   width: 24px;
-  height: 76px;
+  height: 96px;
   margin: 0;
   padding: 0;
   background: transparent;

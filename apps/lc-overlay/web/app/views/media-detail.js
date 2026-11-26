@@ -45,12 +45,16 @@ import {
   HOLD_DISTANCE,
   holdReleased,
   HOVER_TIMING,
+  VOLUME_DRAG_MARGIN,
+  volumeDragMargin,
+  volumeDragMarginContains,
   showDelay,
   placePreview,
   returnRadius,
   playTimeline,
 } from '../core/detail-motion.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
+import { trimVolume } from '../core/sound.js';
 
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
@@ -271,6 +275,14 @@ export function createMediaDetail(options) {
   let pointerY = -1;
   let holdX = -1;
   let holdY = -1;
+  // Level of the preview's own volume bar, kept across previews: it trims the
+  // overlay gain, so 100 % keeps a preview exactly as loud as the overlay.
+  let previewLevel = 1;
+  let lastAudibleLevel = 1;
+  // A held volume slider keeps a transparent band around the preview: the
+  // pointer may finish above or below it without taking the preview away.
+  let volumeMargin = null;
+  let volumeDragging = false;
 
   const grid = () => (typeof opts.grid === 'function' ? opts.grid() : null);
   const view = () => (typeof opts.view === 'function' ? opts.view() : null);
@@ -359,6 +371,7 @@ export function createMediaDetail(options) {
   }
 
   function close(immediate) {
+    clearVolumeDragMargin();
     clearTimers();
     const el = previewEl;
     const card = previewCard;
@@ -396,6 +409,11 @@ export function createMediaDetail(options) {
   }
 
   function scheduleHide() {
+    // While the slider is held, the pointer may leave the preview through the
+    // top or bottom; the band keeps the preview alive until the release.
+    if (volumeDragging) {
+      return;
+    }
     window.clearTimeout(showTimer);
     showTimer = 0;
     if (!previewEl) {
@@ -403,6 +421,73 @@ export function createMediaDetail(options) {
     }
     window.clearTimeout(hideTimer);
     hideTimer = window.setTimeout(() => close(false), HOVER_TIMING.hide);
+  }
+
+  function clearVolumeDragMargin() {
+    volumeDragging = false;
+    window.removeEventListener('pointerup', finishVolumeDrag, true);
+    window.removeEventListener('pointercancel', finishVolumeDrag, true);
+    if (volumeMargin) {
+      volumeMargin.remove();
+      volumeMargin = null;
+    }
+  }
+
+  function finishVolumeDrag(event) {
+    if (!volumeDragging) {
+      return;
+    }
+    // A native slider keeps the pointer captured while it is dragged, so this
+    // band never hovers under the hand. Decide from the release point itself:
+    // a release inside the band leaves it in place until the pointer leaves,
+    // so the card does not close under the hand that just set the level.
+    const band = volumeMargin ? volumeMargin.getBoundingClientRect() : null;
+    const released =
+      event && Number.isFinite(event.clientX) && Number.isFinite(event.clientY)
+        ? { x: event.clientX, y: event.clientY }
+        : null;
+    const inMargin = Boolean(
+      band &&
+        (released
+          ? volumeDragMarginContains(band, released)
+          : volumeMargin.matches(':hover')),
+    );
+    volumeDragging = false;
+    if (inMargin) {
+      return;
+    }
+    clearVolumeDragMargin();
+    if (!(previewEl && previewEl.matches(':hover'))) {
+      scheduleHide();
+    }
+  }
+
+  function attachVolumeDragMargin() {
+    if (!previewEl) {
+      return;
+    }
+    clearVolumeDragMargin();
+    const band = volumeDragMargin(previewEl.getBoundingClientRect(), VOLUME_DRAG_MARGIN);
+    const margin = document.createElement('div');
+    margin.className = 'hp-volume-drag-margin';
+    margin.setAttribute('aria-hidden', 'true');
+    margin.style.left = `${band.left}px`;
+    margin.style.top = `${band.top}px`;
+    margin.style.width = `${band.width}px`;
+    margin.style.height = `${band.height}px`;
+    margin.addEventListener('pointerenter', cancelHide);
+    margin.addEventListener('pointerleave', () => {
+      if (volumeDragging) {
+        return;
+      }
+      clearVolumeDragMargin();
+      scheduleHide();
+    });
+    document.body.appendChild(margin);
+    volumeMargin = margin;
+    volumeDragging = true;
+    window.addEventListener('pointerup', finishVolumeDrag, true);
+    window.addEventListener('pointercancel', finishVolumeDrag, true);
   }
 
   function scheduleShow(card) {
@@ -507,7 +592,7 @@ export function createMediaDetail(options) {
     return track;
   }
 
-  function attachPlayer(el, media, player, card) {
+  function attachPlayer(el, media, player, card, desc) {
     el.classList.add('is-playable');
     el._player = player;
 
@@ -528,24 +613,74 @@ export function createMediaDetail(options) {
     pauseVeil.appendChild(playIcon());
     media.appendChild(pauseVeil);
 
+    const volume = document.createElement('div');
+    volume.className = 'hp-volume';
+
     const mute = document.createElement('button');
     mute.type = 'button';
     mute.className = 'hp-mute';
-    const refreshMute = () => {
-      const muted = player.muted;
-      mute.replaceChildren(speakerIcon(muted));
-      mute.setAttribute('aria-label', muted ? 'Activer le son' : 'Couper le son');
-      mute.setAttribute('title', muted ? 'Activer le son' : 'Couper le son');
-      mute.setAttribute('aria-pressed', String(!muted));
+
+    const pop = document.createElement('div');
+    pop.className = 'hp-volume-pop';
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.className = 'hp-volume-range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '1';
+    slider.setAttribute('aria-label', 'Volume de l’aperçu');
+    slider.setAttribute('aria-orientation', 'vertical');
+    pop.appendChild(slider);
+    volume.append(mute, pop);
+
+    const refreshVolume = () => {
+      const percent = Math.round(previewLevel * 100);
+      slider.value = String(percent);
+      slider.style.setProperty('--hp-volume-level', `${percent}%`);
+      slider.setAttribute('aria-valuetext', `${percent} %`);
+      const audible = !player.muted && player.volume > 0;
+      mute.replaceChildren(speakerIcon(!audible));
+      mute.setAttribute('aria-label', audible ? 'Couper le son' : 'Activer le son');
+      mute.setAttribute('title', audible ? 'Couper le son' : 'Activer le son');
+      mute.setAttribute('aria-pressed', String(audible));
     };
-    refreshMute();
+    player.volume = trimVolume(desc && desc.volume, previewLevel);
+    refreshVolume();
+
+    slider.addEventListener('input', () => {
+      const level = clampVolume(Number(slider.value) / 100);
+      previewLevel = level;
+      player.volume = trimVolume(desc && desc.volume, level);
+      if (level > 0) {
+        lastAudibleLevel = level;
+        player.muted = false;
+      } else {
+        player.muted = true;
+      }
+      refreshVolume();
+    });
     mute.addEventListener('click', (event) => {
       event.stopPropagation();
-      player.muted = !player.muted;
-      refreshMute();
+      if (!player.muted && player.volume > 0) {
+        player.muted = true;
+      } else {
+        // Coming back from zero restores the last level that produced sound,
+        // rather than an arbitrary default.
+        if (previewLevel === 0) {
+          previewLevel = lastAudibleLevel;
+        }
+        player.volume = trimVolume(desc && desc.volume, previewLevel);
+        player.muted = false;
+      }
+      refreshVolume();
     });
-    player.addEventListener('volumechange', refreshMute);
-    media.appendChild(mute);
+    player.addEventListener('volumechange', refreshVolume);
+    slider.addEventListener('pointerdown', () => {
+      attachVolumeDragMargin();
+    });
+    slider.addEventListener('pointerup', finishVolumeDrag);
+    slider.addEventListener('pointercancel', finishVolumeDrag);
+    media.appendChild(volume);
 
     media.tabIndex = 0;
     media.setAttribute('role', 'button');
@@ -590,7 +725,7 @@ export function createMediaDetail(options) {
 
     // pointerdown recognises a double press more reliably than click/detail.
     media.addEventListener('pointerdown', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       const now = performance.now();
@@ -604,7 +739,7 @@ export function createMediaDetail(options) {
     });
 
     media.addEventListener('click', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       const now = performance.now();
@@ -622,7 +757,7 @@ export function createMediaDetail(options) {
     });
 
     media.addEventListener('dblclick', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       event.preventDefault();
@@ -631,7 +766,7 @@ export function createMediaDetail(options) {
     });
 
     media.addEventListener('keydown', (event) => {
-      if (event.target.closest('.hp-mute')) {
+      if (event.target.closest('.hp-volume')) {
         return;
       }
       if (event.key !== ' ' && event.key !== 'Enter') {
@@ -816,7 +951,7 @@ export function createMediaDetail(options) {
     }
 
     if (player) {
-      attachPlayer(el, media, player, card);
+      attachPlayer(el, media, player, card, desc);
     } else if (media.querySelector('img, .hp-audio')) {
       attachStillOpen(media, card);
     }
@@ -1779,6 +1914,11 @@ export function createMediaDetail(options) {
       // (which cancels a pending hide) before the card's mouseleave: the
       // pointer did not leave, it is on the preview, so nothing to hide.
       if (previewEl && previewEl.matches(':hover')) {
+        return;
+      }
+      // The band around a held volume slider is part of the preview's hover
+      // surface: leaving the card towards it must not close the preview.
+      if (volumeMargin && volumeMargin.matches(':hover')) {
         return;
       }
       scheduleHide();

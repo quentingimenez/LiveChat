@@ -31,6 +31,37 @@ export const HOVER_TIMING = {
   hide: 60,
 };
 
+// A volume drag can leave the preview through its top or bottom edge. The
+// preview keeps a transparent band of this height above and below it while the
+// slider is held, so the pointer stays on the preview instead of closing it.
+export const VOLUME_DRAG_MARGIN = 32;
+
+export function volumeDragMargin(rect, margin = VOLUME_DRAG_MARGIN) {
+  const amount = Number(margin);
+  const extra = Number.isFinite(amount) && amount > 0 ? amount : 0;
+  return {
+    left: rect.left,
+    top: rect.top - extra,
+    width: rect.width,
+    height: rect.height + extra * 2,
+  };
+}
+
+// A native slider keeps the pointer captured while it is dragged, so the band
+// is never hovered under the hand. The release itself must decide whether the
+// pointer ended inside the band.
+export function volumeDragMarginContains(rect, point) {
+  if (!rect || !point) {
+    return false;
+  }
+  return (
+    point.x >= rect.left &&
+    point.x <= rect.left + rect.width &&
+    point.y >= rect.top &&
+    point.y <= rect.top + rect.height
+  );
+}
+
 // Delay before opening a hover preview: the first one waits for the pointer to
 // show intent, then the next ones follow it. A preview that is still open, or
 // one that closed less than `warmWindow` ago, counts as warm. A missing, NaN or

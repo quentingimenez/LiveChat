@@ -29,7 +29,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.HTMLMediaElement = FakeMediaElement;
 globalThis.window = {};
 
-const { mediaGain, previewVolume } = await import('../../web/app/core/sound.js');
+const { mediaGain, previewVolume, trimVolume } = await import('../../web/app/core/sound.js');
 
 const overlayUtils = createOverlayLegacyUtils();
 const bootstrapUtils = createOverlayLegacyBootstrapUtils();
@@ -91,6 +91,18 @@ test('the preview follows the perceptual curve, not the linear product (regressi
   assert.ok(mediaGain(0.8, 0.5) < 0.8 * 0.5);
   assert.equal(mediaGain(1, 1), 1);
   assert.equal(mediaGain(0, 1), 0);
+});
+
+test('the preview level bar trims the overlay gain, never replaces it', () => {
+  // 100 % is the overlay's own volume for the same settings: the preview stays
+  // as loud as the overlay, and lowering the bar only softens this preview.
+  assert.equal(trimVolume(mediaGain(1, 1), 1), 1);
+  assert.ok(Math.abs(trimVolume(mediaGain(0.5, 1), 1) - 0.2176) < 0.001);
+  assert.ok(Math.abs(trimVolume(mediaGain(0.5, 1), 0.5) - 0.1088) < 0.001);
+  assert.equal(trimVolume(0.4, 0), 0);
+  assert.equal(trimVolume(2, 2), 1);
+  assert.equal(trimVolume(-1, 0.5), 0);
+  assert.equal(trimVolume(undefined, 1), 1);
 });
 
 test('missing or out-of-range settings are clamped like on the overlay', () => {

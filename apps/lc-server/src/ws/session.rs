@@ -1229,9 +1229,15 @@ async fn handle_client_message(
                 );
                 return Ok(());
             }
-            let text = item
-                .message
-                .as_deref()
+            // The board now sends its transient caption with the trigger.
+            // `Some("")` explicitly means no caption; `None` comes from an
+            // older client and keeps the item's stored message, so existing
+            // items and clients still play as before.
+            let caption = match payload.message.as_deref() {
+                Some(message) => Some(message),
+                None => item.message.as_deref(),
+            };
+            let text = caption
                 .map(str::trim)
                 .filter(|text| !text.is_empty())
                 .map(|text| text.chars().take(MAX_MEDIA_TEXT_CHARS).collect::<String>());

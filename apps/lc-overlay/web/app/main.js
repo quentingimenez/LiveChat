@@ -13,6 +13,7 @@
 
 import { installContextMenuGuard } from './core/contextmenu.js';
 import { settingsControlActive, settingsFormDirty } from './core/dom.js';
+import { initProfileSync } from './core/profile-sync.js';
 import { initSound } from './core/sound.js';
 import { initTheme } from './core/theme.js';
 import { initSingleLineDescriptions } from './core/measure.js';
@@ -53,6 +54,19 @@ listen('overlay://guilds', applyGuilds);
 
 // Device settings: changes made elsewhere and the tray's « Paramètres… » view.
 initDeviceSettings();
+
+// The device profile follows the linked Discord account: refresh every six
+// hours like the server does. Guild loads and a fresh link sync sooner. The
+// periodic read must fetch the member again, not replay the cached one; while
+// a settings field is being edited, leave the form alone.
+initProfileSync({
+  refresh: () => {
+    if (state.page === 'settings' && (settingsControlActive() || settingsFormDirty())) {
+      return false;
+    }
+    return loadGuildInfo({ quiet: true });
+  },
+});
 
 // Asynchronous media ingestions: conversion results and board resync.
 initUploadIngestion();

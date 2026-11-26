@@ -51,7 +51,7 @@ test('the board imports and creates the media detail controller once', () => {
   assert.match(board, /grid: \(\) => document\.getElementById\('grid'\)/, 'the controller watches the real grid');
   assert.match(board, /view: \(\) => document\.getElementById\('view'\)/);
   assert.match(board, /onOpen: \(id\) => \{\s*state\.detailId = id;/, 'the open media feeds state.detailId');
-  assert.match(board, /onClose: \(\) => \{[\s\S]{0,420}state\.detailId = null;/, 'a close clears state.detailId');
+  assert.match(board, /onClose: \(id\) => \{[\s\S]{0,700}state\.detailId = null;/, 'a close clears state.detailId');
 });
 
 test('a card opens the window and refreshes only its information column', () => {
@@ -268,7 +268,7 @@ test('the facts follow the validated order', () => {
   assert.match(detail, /if \(scale\) \{\s*fact\('Échelle', scale\);\s*\}/);
 });
 
-test('the legend block sits above the pinned facts, with « Aucune légende » when empty', () => {
+test('the legend block sits above the pinned facts and edits the local draft', () => {
   const detail = functionBody('detailBody');
   const legend = detail.indexOf("class: 'hp-page-legend-block'");
   const artwork = detail.indexOf('isAudio && item.canEdit ? artworkSection() : null');
@@ -276,8 +276,9 @@ test('the legend block sits above the pinned facts, with « Aucune légende » w
   assert.ok(legend >= 0 && artwork > legend, 'the audio picture follows the legend block');
   assert.ok(facts > artwork, 'the pinned facts come after the scrolling content');
   assert.match(detail, /'Légende'/);
-  assert.match(detail, /'Aucune légende'/, 'an empty caption says so');
-  assert.match(detail, /inlineField\(item, 'message'\)/);
+  assert.match(detail, /inlineField\(item, 'message', canPlay\)/, 'the caption control is available to playable media');
+  assert.doesNotMatch(detail, /item\.message/, 'the stored legacy caption never reaches the window');
+  assert.match(board, /empty: 'Ajouter une légende'/, 'an empty local draft invites to write one');
 });
 
 test('the actions put the play button above a two-column grid of secondary actions', () => {
@@ -311,6 +312,21 @@ test('the facts and the actions are pinned in a footer at the bottom of the colu
   assert.match(rule, /flex:\s*none/, 'the pinned facts and actions never shrink');
   assert.match(rule, /margin-top:\s*auto/, 'short columns push the footer down');
   assert.match(rule, /background:\s*var\(--slate-800\)/, 'scrolled content stays hidden behind it');
+
+  // At the minimum window height the footer is taller than the room left
+  // under the media: sticking it would cover the legend. It becomes a normal
+  // block there, so it can never overlap the caption.
+  const short = detailCss.slice(
+    detailCss.indexOf('@media (max-height: 780px)'),
+    detailCss.indexOf('@media (max-width: 900px)'),
+  );
+  assert.notEqual(short, '', 'a short-height layout exists');
+  assert.match(ruleOf(short, '.hp-page-footer'), /position:\s*static/, 'the footer unpins when the height is short');
+  const stacked = detailCss.slice(
+    detailCss.indexOf('@media (max-width: 900px)'),
+    detailCss.indexOf('@media (max-width: 620px)'),
+  );
+  assert.match(ruleOf(stacked, '.hp-page-footer'), /position:\s*static/, 'the stacked layout never pins over the caption');
 });
 
 test('the display time draft survives a refresh of the information column', () => {
@@ -368,13 +384,28 @@ test('the information column scrolls under its footer without a scrollbar', () =
   const atelier = ruleOf(detailCss, ".hp-page[data-layout='atelier']");
   assert.match(atelier, /--hp-page-stage-height:\s*clamp\(430px,\s*calc\(100vh - 300px\),\s*680px\)/);
 
-  // The stacked fallback scrolls the window, still without drawing a bar.
+  // Below the window's minimum height, the whole page is the scroll container
+  // (still without a bar): no nested column scroll can hide the actions, and
+  // the caption at the top of the column is never under the footer.
+  const short = detailCss.slice(
+    detailCss.indexOf('@media (max-height: 780px)'),
+    detailCss.indexOf('@media (max-width: 1100px)'),
+  );
+  assert.match(ruleOf(short, '.hp-page'), /overflow-y:\s*auto/);
+  assert.match(ruleOf(short, '.hp-page::-webkit-scrollbar'), /display:\s*none/);
+  assert.match(ruleOf(short, '.hp-page-info'), /max-height:\s*none/);
+  assert.match(ruleOf(short, '.hp-page-footer'), /position:\s*static/);
+
+  // The stacked fallback scrolls the window, still without drawing a bar. It
+  // starts below the overlay window's 960px minimum, so that minimum keeps
+  // the caption beside the stage rather than below it.
   const stacked = detailCss.slice(
-    detailCss.indexOf('@media (max-width: 960px)'),
+    detailCss.indexOf('@media (max-width: 900px)'),
     detailCss.indexOf('@media (max-width: 620px)'),
   );
   assert.match(stacked, /scrollbar-width:\s*none/);
   assert.match(ruleOf(stacked, '.hp-page::-webkit-scrollbar'), /display:\s*none/);
+  assert.ok(detailCss.indexOf('@media (max-width: 900px)') >= 0 && 900 < 960);
 });
 
 // The column reserves the left outdent of its inline fields inside its
@@ -415,7 +446,7 @@ test('the information column keeps the inline fields outdents inside its clip', 
   // zeroes its left side would shift the whole column.
   assert.ok(atelierLeftPadding(detailCss) >= outdent, 'the atelier layout keeps the clip room');
   const stacked = detailCss.slice(
-    detailCss.indexOf('@media (max-width: 960px)'),
+    detailCss.indexOf('@media (max-width: 900px)'),
     detailCss.indexOf('@media (max-width: 620px)'),
   );
   assert.ok(atelierLeftPadding(stacked) >= outdent, 'the stacked layout keeps the clip room');
@@ -466,6 +497,18 @@ test('the inline fields at the column edge keep their focus ring visible', () =>
     const outward = Math.max(0, width + offset);
     assert.ok(spare >= outward, `${selector} keeps its ${outward}px ring inside (${spare}px spare, ${offset}px offset)`);
   }
+});
+
+test('the preview tooltip names the action: « Lecture » or « Pause »', () => {
+  const attach = /\n  function attachPlayer\(el, media, player, card, desc\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
+  assert.ok(attach, 'attachPlayer is found');
+  assert.match(attach[1], /media\.title = 'Lecture';/, 'a paused preview offers « Lecture »');
+  assert.match(attach[1], /player\.addEventListener\('play'[\s\S]*?media\.title = 'Pause';/);
+  assert.match(attach[1], /player\.addEventListener\('pause'[\s\S]*?media\.title = 'Lecture';/);
+  assert.doesNotMatch(mediaDetail, /Cliquer pour mettre en pause|Cliquer pour reprendre la lecture/);
+  // The accessible name stays descriptive even though the tooltip is terse.
+  assert.match(mediaDetail, /Mettre l’aperçu en pause/);
+  assert.match(mediaDetail, /Lire l’aperçu/);
 });
 
 test('the window covers the view, not the whole window', () => {
@@ -549,7 +592,7 @@ test('closing the window cancels an in-flight shortcut capture', () => {
   // The capture listens on the window's own control: closing the window by
   // any route must stop it, or the next key press would save a shortcut with
   // no visible control.
-  assert.match(board, /onClose: \(\) => \{[\s\S]{0,420}state\.capturing = false;/);
+  assert.match(board, /onClose: \(id\) => \{[\s\S]{0,700}state\.capturing = false;/);
   assert.match(board, /export function closeDetail\(\) \{[\s\S]{0,400}state\.capturing = false;/);
 });
 

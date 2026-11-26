@@ -613,9 +613,13 @@ fn client_message() -> impl Strategy<Value = ClientMessage> {
             .prop_map(|(job_id, source)| {
                 ClientMessage::StopRequest(StopRequestPayload { job_id, source })
             }),
-        1 => (cuid(), any_media_trigger())
-            .prop_map(|(item_id, trigger)| {
-                ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger })
+        1 => (cuid(), any_media_trigger(), of(short_text()))
+            .prop_map(|(item_id, trigger, message)| {
+                ClientMessage::MediaTrigger(MediaTriggerPayload {
+                    item_id,
+                    trigger,
+                    message,
+                })
             }),
         1 => Just(ClientMessage::PeersRequest(PeersRequestPayload {})),
         1 => (volume(), any::<bool>(), any::<bool>())

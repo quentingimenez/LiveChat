@@ -4,6 +4,7 @@
 import { apiForGuild } from './core/api.js';
 import { readGuildCache, writeGuildCache, invalidateGuildCache, pruneGuildCache } from './core/guild-cache.js';
 import { settingsControlActive, settingsFormDirty } from './core/dom.js';
+import { syncProfileFromDiscord } from './core/profile-sync.js';
 import { pruneSelection } from './core/selection.js';
 import { mediaRefreshDelay } from './core/format.js';
 import { invoke } from './core/ipc.js';
@@ -354,6 +355,10 @@ async function loadGuildInfoForGuild(guildId, quiet, allowDirty = false) {
     state.infoError = null;
     guildInfoLoadedAt = Date.now();
     writeGuildCache(guildId, 'info', info);
+    // The guild member may carry a fresher Discord identity: follow it into the
+    // device profile without blocking the board paint. The module itself
+    // checks that this account is the remembered follower.
+    syncProfileFromDiscord(info.member).catch(() => {});
     // The role may have changed while the guild was cached (a demotion, a
     // revoked permission): fix the tab before painting it.
     if (state.tab === 'admin' && !canAdmin()) {

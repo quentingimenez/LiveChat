@@ -130,7 +130,7 @@ d'erreur pour un `id` inconnu. Le champ `id` est **validé** avant tout traiteme
 | `playback.ended` | `{jobId, reason: completed\|manual\|error}` | transmet `PlaybackEndedEvent` ; idempotent côté moteur ; `jobId` invalide ⇒ `1002 bad_playback_state` |
 | `error` | `{jobId, code, message}` | log seulement (le watchdog libère le job) |
 | `stop.request` | `{jobId?, source?: user\|hotkey\|admin}` | en `invite_read_only` : ack `read_only` ; throttle 1/s (ack `rate_limited`) ; sans `jobId` ⇒ tous les jobs de la guilde ; ack `ok` **puis** `engine.stop(...)` qui diffuse `stop {reason:"manual"}` |
-| `media.trigger` | `{itemId, trigger: shortcut\|ui}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; ack `ok` puis job `source = BOARD` et `engine.enqueue` (dispatch quand la file arrive à lui, **sans préemption**) |
+| `media.trigger` | `{itemId, trigger: shortcut\|ui, message?}` | en lecture seule : ack `read_only` ; item inconnu ⇒ ack `item_not_found` ; média absent/non `READY`/expiré ⇒ ack `media_not_ready` ; `message` fourni remplace `item.message` (chaîne vide ⇒ pas de texte) et n'est jamais enregistré ; sans champ, repli sur `item.message` pour les anciens clients ; ack `ok` puis job `source = BOARD` et `engine.enqueue` (dispatch quand la file arrive à lui, **sans préemption**) |
 | `peers.request` | `{}` | throttle 2 s (excédent ignoré **sans** ack) ; ack `ok` puis broadcast `peers` |
 
 Le type legacy `meme.trigger` n'est **plus accepté** : la désérialisation échoue
@@ -151,7 +151,8 @@ Codes d'ack (`error.code`) : `read_only`, `item_not_found`, `media_not_ready`, `
 `rate_limited`, `internal_error`.
 
 Règles de complétude :
-- texte du média = `item.message` trimé, tronqué à `MAX_MEDIA_TEXT_CHARS` (500) ;
+- texte du média = `payload.message` s'il est fourni (une chaîne vide ou blanche ⇒ aucun
+  texte), sinon `item.message`, trimé et tronqué à `MAX_MEDIA_TEXT_CHARS` (500) ;
 - `showText = message non vide` ; `authorName = profil membre courant || item.createdByName` ;
   `authorImage = avatar du membre courant` ; `durationSec = media.duration_sec` (0 si absent) ;
 - **profil d'auteur lu à l'instant du trigger** : `guild_members.display_name` /

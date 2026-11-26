@@ -266,6 +266,10 @@ pub fn handle_shortcut_pressed(
                 NetCommand::Send(ClientMessage::MediaTrigger(MediaTriggerPayload {
                     item_id: item_id.clone(),
                     trigger: MediaTrigger::Shortcut,
+                    // A global shortcut has no detail window: send an explicit
+                    // empty caption so a legacy stored message is not replayed.
+                    // `None` stays reserved for older clients that omit it.
+                    message: Some(String::new()),
                 })),
             );
             tracing::info!(item_id = %item_id, sent, "déclenchement de média du board demandé");

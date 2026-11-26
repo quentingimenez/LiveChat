@@ -198,13 +198,18 @@
 }
 
 /* Regular grid, like the validated V1: one card shape whatever the media's own
-   shape. The columns follow the window (five at 1440, four at 1024) and every
-   card of a row keeps the same width and height. A portrait thumbnail is
-   cropped to 16 / 10 at its centre; the whole frame stays in the detail
-   window. */
+   shape. The cards keep one normalised width (232px) at every window size, so
+   resizing the window never resizes a card: only the number of columns per row
+   follows the available width (three at 960, four at 1120, five at 1400). The
+   tracks start at the content's left edge instead of being centred: a centred
+   row shifts the whole grid by a fraction of a pixel at every width, which
+   makes the cards shimmer while the window is being dragged. Every card of a
+   row keeps the same height. A portrait thumbnail is cropped to 16 / 10 at its
+   centre; the whole frame stays in the detail window. */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(205px, 1fr));
+  grid-template-columns: repeat(auto-fill, 232px);
+  justify-content: start;
   gap: 22px 18px;
   align-items: stretch;
 }

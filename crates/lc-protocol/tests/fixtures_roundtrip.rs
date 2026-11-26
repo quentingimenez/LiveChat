@@ -58,6 +58,11 @@ const FIXTURES: &[(&str, Direction, &str)] = &[
         msg_type::MEDIA_TRIGGER,
     ),
     (
+        "v2_media_trigger_message.json",
+        Direction::Client,
+        msg_type::MEDIA_TRIGGER,
+    ),
+    (
         "v2_stop_request.json",
         Direction::Client,
         msg_type::STOP_REQUEST,
@@ -797,6 +802,52 @@ fn device_settings_partial_payload_omits_absent_fields() {
         serde_json::json!({"mediaMuted": true})
     );
     assert!(lc_protocol::DeviceSettingsPayload::default().is_empty());
+}
+
+#[test]
+fn media_trigger_message_is_optional_and_empty_is_explicit() {
+    // Old writers omit the field entirely: it must still decode, with no
+    // caption of its own (the server then falls back to the stored message).
+    let old = read_fixture("v2_media_trigger.json");
+    let envelope: ClientEnvelope = serde_json::from_value(old).expect("ancien media.trigger");
+    let ClientMessage::MediaTrigger(payload) = envelope.message else {
+        panic!("la fixture doit être un media.trigger");
+    };
+    assert_eq!(payload.message, None);
+    assert_eq!(
+        serde_json::to_value(&payload).expect("sérialisation sans légende"),
+        serde_json::json!({
+            "itemId": "clx7q2x0b0004abcd1234efgh",
+            "trigger": "shortcut",
+        })
+    );
+
+    // A fresh board sends its caption, including the explicit empty string
+    // that asks for no text at all.
+    let with_caption: ClientEnvelope =
+        serde_json::from_value(read_fixture("v2_media_trigger_message.json"))
+            .expect("media.trigger avec légende");
+    let ClientMessage::MediaTrigger(payload) = with_caption.message else {
+        panic!("la fixture doit être un media.trigger");
+    };
+    assert_eq!(payload.message.as_deref(), Some("Légende locale"));
+
+    let empty: ClientEnvelope = serde_json::from_value(serde_json::json!({
+        "v": 2,
+        "type": "media.trigger",
+        "id": "cli-media-trigger-0003",
+        "ts": 1_794_182_400_000_i64,
+        "payload": {
+            "itemId": "clx7q2x0b0004abcd1234efgh",
+            "trigger": "ui",
+            "message": "",
+        },
+    }))
+    .expect("media.trigger à légende vide");
+    let ClientMessage::MediaTrigger(payload) = empty.message else {
+        panic!("le message doit être un media.trigger");
+    };
+    assert_eq!(payload.message.as_deref(), Some(""));
 }
 
 #[test]

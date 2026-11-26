@@ -70,6 +70,19 @@
   overflow-y: auto;
 }
 
+/* The guild profile is taller than the frame at the minimum board size. Its
+   body keeps scrolling (wheel, keyboard, focus), but the scrollbar itself
+   would sit over the fixed dialog layout: hide the bar, never the scrolling. */
+.dialog.is-profile .dialog-body {
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.dialog.is-profile .dialog-body::-webkit-scrollbar {
+  display: none;
+}
+
 .dialog-foot {
   flex: none;
   padding: 12px 24px 16px;

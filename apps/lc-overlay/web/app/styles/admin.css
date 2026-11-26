@@ -70,13 +70,14 @@
   display: contents;
 }
 
+/* The action cell fills its track and right-aligns its buttons: the column
+   head can then start at the track edge without moving the buttons. */
 .line-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: var(--space-1);
-  justify-self: end;
 }
 
 /* A labelled cell: the desktop head names the track, the card layout below
@@ -94,10 +95,12 @@
   gap: var(--space-4);
 }
 
-/* Member: avatar, name, presence, role, actions. */
+/* Member: avatar, name, presence, role, actions. The action track fits the
+   three controls on one line: a narrower track wrapped them and pushed the
+   head away from the first button. */
 .line.is-member,
 .list-head.is-member {
-  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 320px;
+  grid-template-columns: 30px minmax(0, 1fr) 150px 130px 326px;
 }
 
 /* Ban: avatar, name, date, author, actions. */
@@ -118,10 +121,12 @@
   grid-template-columns: 110px 150px minmax(0, 1fr) 160px 84px 144px;
 }
 
-/* Device: avatar, label, version, presence, session, actions. */
+/* Device: avatar, label, version, presence, session, actions. The action track
+   fits « Régler », « Renommer… » and the fixed last slot; the head then sits
+   above the buttons instead of 27px to their left. */
 .line.is-device,
 .list-head.is-device {
-  grid-template-columns: 30px minmax(0, 1fr) 150px 140px 130px 300px;
+  grid-template-columns: 30px minmax(0, 1fr) 150px 140px 130px 276px;
 }
 
 /* « Cet appareil » is narrower than « Révoquer… ». A fixed slot for the last
@@ -145,11 +150,17 @@
   font-variant-numeric: tabular-nums;
 }
 
-.list-head.is-member > :last-child,
-.list-head.is-device > :last-child,
 .list-head.is-code > :last-child,
 .list-head.is-ban > :last-child {
   justify-self: end;
+}
+
+/* Member and device buttons are right-aligned inside their column, but the
+   head names the column: it starts at the left edge of the action track, which
+   is now the left edge of the button group too. */
+.list-head.is-member > :last-child,
+.list-head.is-device > :last-child {
+  justify-self: start;
 }
 
 .member-cell,
@@ -169,13 +180,15 @@
   font-size: 11px;
 }
 
-/* Version and platform share the version column; the « Obsolète » badge stays
-   visible at every width, wrapped under the version when needed. */
+/* Version and platform share the version column. The grid keeps the platform on
+   its own second line, directly under the version, whether or not the
+   « Obsolète » badge sits next to the version. */
 .device-version {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: auto auto;
+  justify-content: start;
   align-items: center;
-  gap: 6px;
+  gap: 2px 6px;
 }
 
 .device-version .badge {
@@ -188,6 +201,7 @@
 }
 
 .device-platform {
+  grid-column: 1 / -1;
   color: var(--text-faint);
   font-size: 12px;
 }
@@ -217,6 +231,29 @@
   min-width: 0;
 }
 
+/* Off-screen probe used once after a render to measure the widest text of each
+   code field. It forces the card cell layout, so it measures the same box
+   whatever the window width; the real cells then share the measured tracks. */
+.list-cell.code-cell-probe {
+  position: absolute;
+  visibility: hidden;
+  pointer-events: none;
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 2px 8px;
+  width: max-content;
+  min-width: 0;
+}
+
+.list-cell.code-cell-probe::before {
+  content: attr(data-label);
+  flex: none;
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+  line-height: 1.2;
+}
+
 /* ---------------------------------------------------------- code creation */
 
 .panel {
@@ -226,24 +263,35 @@
   background: var(--slate-700);
 }
 
+/* The creation fields and the two buttons share one line, bottom-aligned: the
+   selects may give up a few pixels at 960px, the buttons never wrap under the
+   fields. */
 .code-create {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: flex-end;
   gap: var(--space-3) var(--space-5);
 }
 
 .code-fields {
   display: flex;
-  flex: 1 1 auto;
-  flex-wrap: wrap;
+  flex: 1 1 0;
+  flex-wrap: nowrap;
   align-items: flex-end;
   gap: var(--space-3) var(--space-4);
+  min-width: 0;
 }
 
 .code-field {
   display: grid;
+  flex: 0 1 auto;
+  min-width: 0;
   gap: var(--space-1);
+}
+
+.code-field .field {
+  width: 100%;
+  min-width: 0;
 }
 
 .code-field-label {
@@ -253,9 +301,39 @@
 
 .code-actions {
   display: flex;
+  flex: none;
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-left: auto;
+}
+
+/* ---------------------------------------------------------- journal filters */
+
+/* One wrapping row above the journal: the text query takes the free space, the
+   two selects and the reset keep their natural width, and the counter stays on
+   the right. */
+.audit-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.audit-filters .audit-search {
+  flex: 1 1 200px;
+  width: auto;
+  min-width: 150px;
+  max-width: 360px;
+}
+
+.audit-filters select.field {
+  max-width: 240px;
+}
+
+.audit-filters .audit-count {
+  margin-left: auto;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
 }
 
 /* --------------------------------------------------------- server settings */
@@ -299,6 +377,38 @@
   margin-top: 32px;
 }
 
+/* The role select lives in the identity wrapper so the card keeps it on the
+   first line. Above the breakpoint it goes back to its own track, and the
+   other member cells are pinned to theirs: with the role cell moved out of the
+   meta wrapper, auto-placement would otherwise put the actions in the Rôle
+   track and the presence in the Action one. */
+@media (min-width: 1121px) {
+  .line.is-member .avatar {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .line.is-member .member-cell {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .line.is-member .line-meta .seen {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .line.is-member .member-role-select {
+    grid-column: 4;
+    grid-row: 1;
+  }
+
+  .line.is-member .line-actions {
+    grid-column: 5;
+    grid-row: 1;
+  }
+}
+
 /* ------------------------------------------------------------- card layout */
 
 /* Each row becomes a card: identity and actions on the first line, the
@@ -319,6 +429,8 @@
     padding: 12px 0;
   }
 
+  /* The action column spans both lines, so its buttons centre vertically
+     between the identity line and the meta line. */
   .line.is-member,
   .line.is-device,
   .line.is-code,
@@ -327,7 +439,7 @@
     grid-template-columns: minmax(0, 1fr) 340px;
     grid-template-areas:
       'main actions'
-      'meta meta';
+      'meta actions';
   }
 
   .line.is-audit {
@@ -358,9 +470,122 @@
     grid-area: meta;
   }
 
-  /* The column heads are hidden: every value carries its own label, inline,
-     except the identity cell (the avatar and name say who it is) and the
-     action cell (the buttons speak for themselves). */
+  /* Before the measurement below, the three fields size themselves to their
+     text with equal gutters; this is also the fallback when the list has no
+     row to measure. */
+  .line.is-code .line-meta {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px var(--space-4);
+  }
+
+  .line.is-code .line-meta .list-cell {
+    flex: 0 1 auto;
+    flex-wrap: nowrap;
+    min-width: 0;
+  }
+
+  .line.is-code .line-meta .list-cell:not(:first-child) {
+    flex-shrink: 0;
+  }
+
+  /* Once the widest Auteur/Expiration/Utilisations text of the list is known,
+     every row shares those three tracks: the fields start at the same x from
+     one row to the next. space-between splits the width the tracks do not use
+     equally between the two gutters; on a narrower card both gutters shrink
+     together and reach zero when the fields touch. */
+  .list.has-code-columns .line.is-code .line-meta {
+    display: grid;
+    grid-template-columns:
+      minmax(0, var(--code-author-width))
+      var(--code-expiry-width)
+      var(--code-uses-width);
+    justify-content: space-between;
+    align-items: center;
+    column-gap: 0;
+  }
+
+  .list.has-code-columns .line.is-code .line-meta .list-cell {
+    min-width: 0;
+  }
+
+  /* A code row only has a copy control and its revoke button, so it does not
+     need the 340px reserved for the three member/device controls. 152px keeps
+     the two buttons on one line; the freed width goes to the meta cells and
+     keeps long Discord names readable. */
+  .line.is-code {
+    grid-template-columns: minmax(0, 1fr) 152px;
+  }
+
+  /* The author name truncates on its label line instead of dropping under it. */
+  .line.is-code .line-meta .list-cell:first-child .code-author {
+    flex: 1 1 auto;
+  }
+
+  .line.is-device .line-meta {
+    display: grid;
+    grid-template-columns: minmax(170px, 1.4fr) minmax(99px, 1fr) minmax(175px, 1.6fr);
+    align-items: start;
+    gap: 8px var(--space-4);
+  }
+
+  /* The labels sit above the values in a device card. The version cell is the
+     widest: keeping « Version » inline would push the version, its badge and
+     the platform under the label as soon as the row carries « Obsolète »,
+     misaligning that row with the others. The value line then starts at the
+     same x on every row. */
+  .line.is-device .line-meta .list-cell::before {
+    flex: 0 0 100%;
+  }
+
+  /* In list/card mode the platform sits beside the version, on the same value
+     line. The default device table keeps it on its own second line below. */
+  .line.is-device .device-version {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px 6px;
+  }
+
+  .line.is-device .device-platform {
+    grid-column: auto;
+  }
+
+  /* Every cell starts its label at the top; the value line below starts at
+     the same x on every row, including the row whose version carries the
+     « Obsolète » badge. */
+  .line.is-device .line-meta .list-cell {
+    align-items: flex-start;
+  }
+
+  .line.is-member .line-meta {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: center;
+    gap: 8px var(--space-4);
+  }
+
+  /* The role select rides the identity line, pushed to its right edge: it is
+     no longer a second-line control under the name. It stays compact (same
+     13px text, 24px height) and keeps its « Rôle » label above it. */
+  .line.is-member .member-role {
+    flex: none;
+    margin-left: auto;
+  }
+
+  .line.is-member .member-role-select {
+    height: 24px;
+    padding: 0 24px 0 8px;
+    background-position: right 8px center;
+    font-size: var(--text-sm);
+  }
+
+  /* The column heads are hidden: every value carries its own label (inline,
+     or above it in a device card), except the identity cell (the avatar and
+     name say who it is) and the action cell (the buttons speak for
+     themselves). */
   .list-cell {
     display: flex;
     flex-wrap: wrap;
@@ -389,8 +614,15 @@
     display: none;
   }
 
+  /* The one identity-line cell that still needs its label: the role select
+     would otherwise sit bare next to the name. */
+  .line-main .list-cell.member-role::before {
+    display: block;
+  }
+
   .line-actions {
     grid-area: actions;
+    align-self: center;
     justify-content: flex-end;
   }
 }

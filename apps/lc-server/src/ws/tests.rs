@@ -19,7 +19,7 @@ use std::time::Duration;
 use axum::body::{to_bytes, Body};
 use axum::http::{header, Request, StatusCode};
 use futures_util::{SinkExt, StreamExt};
-use lc_db::Db;
+use lc_db::{BoardItemEdit, Db};
 use lc_domain::{
     Guild, GuildId, GuildMember, GuildMemberId, GuildRole, JobSource, JobStatus, MediaAsset,
     MediaAssetId, MediaBoardItem, MediaBoardItemId, MediaKind as DomainMediaKind, MediaStatus,
@@ -490,6 +490,28 @@ async fn seed_ready_board_item(
         .await
         .expect("item de board de test");
     id
+}
+
+/// Board item carrying the old stored message that pre-caption clients used.
+async fn seed_board_item_with_message(
+    db: &Db,
+    guild_id: &GuildId,
+    media_asset_id: MediaAssetId,
+    message: &str,
+) -> MediaBoardItemId {
+    let item_id = seed_ready_board_item(db, guild_id, media_asset_id).await;
+    db.media_board()
+        .update(
+            item_id,
+            &BoardItemEdit {
+                title: Some("Board"),
+                message: Some(message),
+                ..BoardItemEdit::default()
+            },
+        )
+        .await
+        .expect("message de l'item de test");
+    item_id
 }
 
 // ---------------------------------------------------------------------------
@@ -1502,6 +1524,119 @@ async fn media_trigger_acks_playing_with_job_id() {
         .expect("job créé");
     assert_eq!(stored.status, JobStatus::Playing);
     assert_eq!(stored.source, JobSource::Board);
+}
+
+#[tokio::test]
+async fn media_trigger_uses_the_payload_caption_over_the_stored_message() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id =
+        seed_board_item_with_message(&server.db, &guild, asset_id, "Ancienne légende").await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-caption",
+            json!({
+                "itemId": item_id.to_canonical(),
+                "trigger": "ui",
+                "message": "Légende locale",
+            }),
+        ),
+    )
+    .await;
+
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], true, "{ack}");
+    let job_id = ack["payload"]["jobId"].as_str().expect("jobId de l'ack");
+    let stored = server
+        .db
+        .playback_jobs()
+        .get(PlaybackJobId::parse(job_id).expect("jobId valide"))
+        .await
+        .expect("lecture du job")
+        .expect("job créé");
+    assert_eq!(stored.text.as_deref(), Some("Légende locale"));
+    assert!(stored.show_text);
+}
+
+#[tokio::test]
+async fn media_trigger_empty_caption_suppresses_the_stored_message() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id =
+        seed_board_item_with_message(&server.db, &guild, asset_id, "Ancienne légende").await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-empty-caption",
+            json!({
+                "itemId": item_id.to_canonical(),
+                "trigger": "ui",
+                "message": "",
+            }),
+        ),
+    )
+    .await;
+
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], true, "{ack}");
+    let job_id = ack["payload"]["jobId"].as_str().expect("jobId de l'ack");
+    let stored = server
+        .db
+        .playback_jobs()
+        .get(PlaybackJobId::parse(job_id).expect("jobId valide"))
+        .await
+        .expect("lecture du job")
+        .expect("job créé");
+    assert_eq!(stored.text, None);
+    assert!(!stored.show_text);
+}
+
+#[tokio::test]
+async fn media_trigger_without_caption_keeps_the_stored_message_for_old_clients() {
+    let server = start_server().await;
+    let guild = seed_guild(&server.db).await;
+    seed_overlay_client(&server.db, &guild, TOKEN, OverlaySessionMode::Normal).await;
+    let asset_id = seed_media_asset(&server.db, 120).await;
+    let item_id =
+        seed_board_item_with_message(&server.db, &guild, asset_id, "Ancienne légende").await;
+    let mut socket = connect(server.addr).await;
+    handshake(&mut socket, TOKEN).await;
+
+    send_value(
+        &mut socket,
+        &envelope(
+            "media.trigger",
+            "cli-media-trigger-legacy-caption",
+            json!({ "itemId": item_id.to_canonical(), "trigger": "shortcut" }),
+        ),
+    )
+    .await;
+
+    let ack = recv_until_type(&mut socket, "ack").await;
+    assert_eq!(ack["payload"]["ok"], true, "{ack}");
+    let job_id = ack["payload"]["jobId"].as_str().expect("jobId de l'ack");
+    let stored = server
+        .db
+        .playback_jobs()
+        .get(PlaybackJobId::parse(job_id).expect("jobId valide"))
+        .await
+        .expect("lecture du job")
+        .expect("job créé");
+    assert_eq!(stored.text.as_deref(), Some("Ancienne légende"));
+    assert!(stored.show_text);
 }
 
 #[tokio::test]

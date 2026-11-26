@@ -7,10 +7,12 @@ import {
   compareVersions,
   isObsolete,
   lastSeenLabel,
+  lastSeenSinceLabel,
   newestVersion,
   parseVersion,
   platformLabel,
   presenceLabel,
+  presenceSinceLabel,
   sessionModeLabel,
 } from '../../web/app/core/device-helpers.js';
 
@@ -66,6 +68,27 @@ test('lastSeenLabel words how long ago a device was seen', () => {
   assert.equal(lastSeenLabel(minutes(3), now), 'Vu il y a 3 min');
   assert.equal(lastSeenLabel(minutes(180), now), 'Vu il y a 3 h');
   assert.equal(lastSeenLabel(minutes(2 * 1440), now), 'Vu il y a 2 j');
+});
+
+test('the admin device list does not repeat « Vu » inside its value', () => {
+  const now = Date.parse('2026-11-10T12:00:00.000Z');
+  const minutes = (count) => new Date(now - count * 60_000).toISOString();
+  assert.equal(lastSeenSinceLabel(null, now), 'Jamais vu');
+  assert.equal(lastSeenSinceLabel('nope', now), 'Jamais vu');
+  assert.equal(lastSeenSinceLabel(minutes(0), now), 'à l’instant');
+  assert.equal(lastSeenSinceLabel(minutes(3), now), 'il y a 3 min');
+  assert.equal(lastSeenSinceLabel(minutes(180), now), 'il y a 3 h');
+  assert.equal(lastSeenSinceLabel(minutes(2 * 1440), now), 'il y a 2 j');
+  const lastSeenAt = minutes(180);
+  assert.equal(presenceSinceLabel({ connected: false, lastSeenAt }, now), 'il y a 3 h');
+  assert.equal(presenceSinceLabel({ connected: true, lastSeenAt }, now), 'En ligne');
+  assert.equal(
+    presenceSinceLabel({ connected: false, lastSeenAt, guildSettings: { paused: true } }, now),
+    'Appareil coupé',
+  );
+  // The prefixed wording stays for the profile dialog, which has no « Vu »
+  // label of its own.
+  assert.equal(presenceLabel({ connected: false, lastSeenAt }, now), 'Vu il y a 3 h');
 });
 
 test('presenceLabel prefers the live state, then the local cut, then last seen', () => {

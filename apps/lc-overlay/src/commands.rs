@@ -225,6 +225,10 @@ struct MediaTriggerRequest {
     /// Guilde visée ; par défaut la guilde active.
     #[serde(default)]
     guild_id: Option<String>,
+    /// Légende transitoire de la fenêtre de détails. Absente : le serveur
+    /// relit l'ancien message de l'item (client antérieur).
+    #[serde(default)]
+    message: Option<String>,
 }
 
 /// Payload des commandes ciblant une guilde.
@@ -1084,7 +1088,11 @@ pub async fn media_board_trigger(
                 &app,
                 &guild_id,
                 NetCommand::SendWithAck {
-                    message: ClientMessage::MediaTrigger(MediaTriggerPayload { item_id, trigger }),
+                    message: ClientMessage::MediaTrigger(MediaTriggerPayload {
+                        item_id,
+                        trigger,
+                        message: parsed.message,
+                    }),
                     reply,
                 },
             ),

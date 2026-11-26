@@ -2,6 +2,7 @@
 
 import { api, run } from '../core/api.js';
 import { performAction } from '../core/action-ui.js';
+import { afterNextClick } from '../core/after-click.js';
 import { isEditable, openContextMenu } from '../core/contextmenu.js';
 import { findAction } from '../core/find-shortcut.js';
 import { acceleratorFromEvent, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KEY_MESSAGE, cancelsCapture } from '../core/accelerators.js';
@@ -896,9 +897,13 @@ async function playSelection(items) {
   let sent = 0;
   let failed = 0;
   for (const item of items) {
-    const response = await sendTrigger(item);
+    const caption = legendDraft(item.id);
+    const response = await sendTrigger(item, caption);
     if (response && response.ok) {
       sent += 1;
+      if (legendDraft(item.id) === caption) {
+        legendDrafts.delete(item.id);
+      }
     } else {
       failed += 1;
     }
@@ -1238,6 +1243,16 @@ function setKind(kind) {
 // it off, and the value stays on until it says otherwise.
 let hoverPreview = true;
 
+// The caption is a draft owned by the detail window: typed there, sent with
+// the next trigger and never stored on the server. A fresh opening starts
+// empty even when the item still carries an old server-side message, and both
+// a send and the window's close drop the draft.
+const legendDrafts = new Map();
+
+function legendDraft(itemId) {
+  return (legendDrafts.get(itemId) || '').trim();
+}
+
 // One controller for the board, created once: the hover preview, the modal
 // detail window and their transitions live in views/media-detail.js.
 const mediaDetail = createMediaDetail({
@@ -1250,12 +1265,20 @@ const mediaDetail = createMediaDetail({
     dialogOpen: Boolean(document.getElementById('dialog-root')?.firstElementChild),
   }),
   describe: (id) => describeItem(id),
+  onBeforeOpen: (id) => {
+    // The draft belongs to one opening: a media reopened later never brings
+    // back what was typed for a previous window (nor its old stored message).
+    legendDrafts.delete(id);
+  },
   onOpen: (id) => {
     state.detailId = id;
   },
-  onClose: () => {
-    // A newer window may already be open while the old one fades out: its id
-    // and its capture must survive this late close.
+  onClose: (id) => {
+    // A newer window may already be open while the old one fades out: its id,
+    // its caption draft and its capture must survive this late close.
+    if (mediaDetail.openId() !== id) {
+      legendDrafts.delete(id);
+    }
     if (mediaDetail.openId()) {
       return;
     }
@@ -1394,10 +1417,10 @@ document.addEventListener('keydown', (event) => {
 // Sends one media to the overlays and records its queue badge. Returns the
 // command's response, a refusal `{ ok: false, message }` when the command
 // itself failed, or `null` when it answered nothing.
-async function sendTrigger(item) {
+async function sendTrigger(item, message = legendDraft(item.id)) {
   let response;
   try {
-    response = await invoke('media_board_trigger', { payload: { itemId: item.id, guildId: state.activeGuildId, trigger: 'ui' } });
+    response = await invoke('media_board_trigger', { payload: { itemId: item.id, guildId: state.activeGuildId, trigger: 'ui', message } });
   } catch (error) {
     return { ok: false, message: typeof error === 'string' ? error : error.message || 'Action impossible.' };
   }
@@ -1426,10 +1449,11 @@ export async function playItem(item, control) {
     notify('Guilde coupée ici : réactive-la pour jouer.', true);
     return;
   }
-  await performAction(control, `play:${item.id}`, async () => {
-    const response = await sendTrigger(item);
+  const caption = legendDraft(item.id);
+  const sent = await performAction(control, `play:${item.id}`, async () => {
+    const response = await sendTrigger(item, caption);
     if (!response) {
-      return;
+      return false;
     }
     if (!response.ok) {
       throw new Error(describeError(response.reason, response.message));
@@ -1443,7 +1467,14 @@ export async function playItem(item, control) {
     }
     refreshTriggerBadges();
     setTimeout(refreshQueueAutomatically, 400);
+    return true;
   });
+  // A sent caption is consumed once: the next trigger starts without it. A
+  // newer draft typed while the request was in flight is kept.
+  if (sent && legendDraft(item.id) === caption) {
+    legendDrafts.delete(item.id);
+    syncDetail();
+  }
 }
 
 export function shortcutFor(itemId) {
@@ -2033,10 +2064,11 @@ function detailBody(item) {
     fact('Durée d’affichage', displayDurationField());
   }
 
-  // The caption shown on the overlays, in its own block above the pinned
-  // facts: the inline field when it can be edited, plain text otherwise.
-  const legendText = inlineField(item, 'message')
-    || h('p', { class: 'hp-page-legend is-empty' }, 'Aucune légende');
+  // The caption sent with the next trigger, in its own block above the pinned
+  // facts. It is a local draft, not an item field: everyone allowed to trigger
+  // can type one, and an empty draft keeps the field reachable without a
+  // visible empty frame.
+  const legendText = inlineField(item, 'message', canPlay);
 
   // The play button keeps its own block, full width; the other actions are
   // quiet buttons in a two-column grid under a thin separator.
@@ -2105,6 +2137,18 @@ const INLINE_FIELDS = {
 
 async function commitInline(item, field, value) {
   inlineEdit = null;
+  // The caption is local by design: committing it only moves the text into the
+  // draft map, never to the item (nor to the server). It is sent with the next
+  // trigger and dropped by `playItem` or by the window's close.
+  if (field === 'message') {
+    const caption = value.trim();
+    legendDrafts.delete(item.id);
+    if (caption) {
+      legendDrafts.set(item.id, caption);
+    }
+    syncDetail();
+    return;
+  }
   const before = item[field] || '';
   if (value.trim() === before.trim()) {
     syncDetail();
@@ -2128,7 +2172,21 @@ function inlineInput(item, field) {
     'aria-label': `Modifier ${spec.label}`,
     value: inlineEdit.value,
   });
+  const captionBefore = isTitle ? '' : legendDraft(item.id);
   let settled = false;
+  let captionBlur = false;
+  const finishCaptionBlur = () => {
+    captionBlur = false;
+    if (!input.isConnected || document.activeElement === input) {
+      return;
+    }
+    if (inlineEdit && inlineEdit.itemId === item.id && inlineEdit.field === 'message') {
+      inlineEdit = null;
+    }
+    if (mediaDetail.openId() === item.id) {
+      syncDetail();
+    }
+  };
   const settle = (save) => {
     if (settled) {
       return;
@@ -2137,12 +2195,26 @@ function inlineInput(item, field) {
     if (save) {
       commitInline(item, field, input.value);
     } else {
+      // Escape cancels the edit: restore the caption the window opened with,
+      // including the typed text that the input listener moved into the draft.
+      if (!isTitle) {
+        if (captionBefore) {
+          legendDrafts.set(item.id, captionBefore);
+        } else {
+          legendDrafts.delete(item.id);
+        }
+      }
       inlineEdit = null;
       syncDetail();
     }
   };
   input.addEventListener('input', () => {
     inlineEdit.value = input.value;
+    if (!isTitle) {
+      // Keep the draft current while typing: a click on « Lire » before the
+      // field's deferred blur commit still sends the text on screen.
+      legendDrafts.set(item.id, input.value);
+    }
   });
   input.addEventListener('keydown', (event) => {
     if (event.key === 'Escape') {
@@ -2158,9 +2230,29 @@ function inlineInput(item, field) {
   // blur (the field still in the page) saves.
   input.addEventListener('blur', () => {
     setTimeout(() => {
-      if (input.isConnected) {
-        settle(true);
+      if (!input.isConnected || settled) {
+        return;
       }
+      if (!isTitle) {
+        // Commit the caption now, but rebuild the column only after the click
+        // that took the focus: rebuilding from `blur` used to replace « Lire »
+        // between mousedown and mouseup, so the first click was lost.
+        const caption = input.value.trim();
+        legendDrafts.delete(item.id);
+        if (caption) {
+          legendDrafts.set(item.id, caption);
+        }
+        if (!captionBlur) {
+          captionBlur = true;
+          afterNextClick(document, finishCaptionBlur, {
+            ignore: (event) =>
+              input.contains(event.target) ||
+              Boolean(inlineEdit && inlineEdit.itemId === item.id && inlineEdit.field !== 'message'),
+          });
+        }
+        return;
+      }
+      settle(true);
     });
   });
   queueMicrotask(() => {
@@ -2170,14 +2262,14 @@ function inlineInput(item, field) {
   return input;
 }
 
-function inlineField(item, field) {
+function inlineField(item, field, available = true) {
   const spec = INLINE_FIELDS[field];
   const isTitle = field === 'title';
-  const text = isTitle ? itemTitle(item) : item.message || '';
+  const text = isTitle ? itemTitle(item) : legendDraft(item.id);
   // The window's text classes: the title keeps the page heading, the caption
   // the legend line. The inline-edit control adds its own classes on top.
   const textClass = isTitle ? 'hp-page-title' : 'hp-page-legend';
-  if (!item.canEdit) {
+  if (isTitle ? !item.canEdit : !available) {
     if (isTitle) {
       return h('h2', { class: textClass }, text);
     }
@@ -2193,7 +2285,11 @@ function inlineField(item, field) {
       type: 'button',
       title: `Modifier ${spec.label}`,
       onClick: () => {
-        inlineEdit = { itemId: item.id, field, value: item[field] || '' };
+        inlineEdit = {
+          itemId: item.id,
+          field,
+          value: isTitle ? item[field] || '' : legendDraft(item.id),
+        };
         syncDetail();
       },
     },

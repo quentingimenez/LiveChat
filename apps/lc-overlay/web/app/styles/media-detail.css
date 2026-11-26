@@ -357,12 +357,13 @@
 }
 
 /* Hovering the control leaves only the level bar: the mute button is the way
-   in, the bar the control while it is open. The bar's fade uses the reveal
-   duration instead of the preview's opening half-time. */
+   in, the bar the control while it is open. The button leaves at once; the bar
+   fades in alone. On the way out the bar's 120 ms fade and the button's base
+   delay keep them from being visible together. */
 .hp-overlay.is-in .hp-volume:hover .hp-mute {
   opacity: 0;
   pointer-events: none;
-  transition: opacity var(--motion-reveal) ease;
+  transition: none;
 }
 
 .hp-overlay.is-out .hp-mute {

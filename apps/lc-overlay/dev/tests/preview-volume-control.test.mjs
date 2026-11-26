@@ -104,7 +104,7 @@ test('hovering the control leaves only the level bar', () => {
   const hide = ruleOf(detailCss, '.hp-overlay.is-in .hp-volume:hover .hp-mute');
   assert.match(hide, /opacity:\s*0/, 'the mute button leaves the stage');
   assert.match(hide, /pointer-events:\s*none/);
-  assert.match(hide, /transition:\s*opacity var\(--motion-reveal\)/, 'it fades out at the control speed');
+  assert.match(hide, /transition:\s*none/, 'it leaves at once, never beside the bar while the bar fades in');
 });
 
 test('the bar is a vertical range with a visible fill', () => {

@@ -130,7 +130,9 @@ jobs:
 
   clippy:
     name: clippy
-    runs-on: [self-hosted, Linux, X64]
+    # GitHub-hosted Ubuntu runner: the Tauri system dependencies are installed
+    # by the step below, so no self-hosted runner is needed.
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
       - name: Checkout

@@ -331,16 +331,30 @@ fn is_deliverable(status: ConnectionStatus, command: &NetCommand) -> bool {
     }
 }
 
+/// Raison publiée quand l'overlay entier est coupé (`enabled: false`) : elle
+/// ne doit pas être confondue avec une guilde coupée sur cet appareil.
+pub(crate) const OVERLAY_DISABLED_REASON: &str = "overlay désactivé";
+/// Raison publiée quand seule cette guilde est coupée sur cet appareil.
+pub(crate) const GUILD_MUTED_REASON: &str = "guilde coupée ici";
+
 /// Reason returned to the board when a frame cannot leave because the guild's
 /// session is not live. Says why, so the user knows what to do: an overlay
 /// refused as outdated must be told to update, not that the guild is
-/// « déconnectée ».
-pub fn undeliverable_reason(status: ConnectionStatus) -> &'static str {
-    match status {
+/// « déconnectée ». A `Disabled` status covers three different causes (overlay
+/// off, guild muted, guild not supervised yet), told apart by the snapshot's
+/// `reason`.
+pub fn undeliverable_reason(snapshot: &NetSnapshot) -> &'static str {
+    match snapshot.status {
         ConnectionStatus::Outdated => "overlay_outdated",
         ConnectionStatus::Connecting | ConnectionStatus::Reconnecting => "guild_connecting",
         ConnectionStatus::Revoked => "device_revoked",
-        ConnectionStatus::Disabled => "guild_disabled",
+        ConnectionStatus::Disabled => match snapshot.reason.as_deref() {
+            Some(reason) if reason == OVERLAY_DISABLED_REASON => "overlay_disabled",
+            Some(reason) if reason == GUILD_MUTED_REASON => "guild_disabled",
+            // Guild not supervised yet (or an older state without a reason):
+            // there is nothing to reactivate, so keep the generic message.
+            _ => "socket_unavailable",
+        },
         ConnectionStatus::Connected | ConnectionStatus::NotPaired | ConnectionStatus::Error => {
             "socket_unavailable"
         }
@@ -348,8 +362,8 @@ pub fn undeliverable_reason(status: ConnectionStatus) -> &'static str {
 }
 
 /// [`undeliverable_reason`] for the current status of `guild_id`.
-pub fn undeliverable_reason_for(app: &AppHandle<Wry>, guild_id: &str) -> &'static str {
-    undeliverable_reason(app.state::<AppState>().net_snapshot_for(guild_id).status)
+pub fn undeliverable_reason_for(state: &AppState, guild_id: &str) -> &'static str {
+    undeliverable_reason(&state.net_snapshot_for(guild_id))
 }
 
 /// Ferme proprement toutes les tâches réseau (sortie de l'application).
@@ -409,7 +423,7 @@ async fn supervise(
                 &app,
                 &guild_id,
                 ConnectionStatus::Disabled,
-                Some("overlay désactivé".to_string()),
+                Some(OVERLAY_DISABLED_REASON.to_string()),
             );
             if !wait_for_command(&mut commands, &app).await {
                 return;
@@ -421,7 +435,7 @@ async fn supervise(
                 &app,
                 &guild_id,
                 ConnectionStatus::Disabled,
-                Some("guilde coupée ici".to_string()),
+                Some(GUILD_MUTED_REASON.to_string()),
             );
             if !wait_for_command(&mut commands, &app).await {
                 return;
@@ -2487,30 +2501,66 @@ mod tests {
         server.await.expect("serveur mock");
     }
 
+    fn net_snapshot(status: ConnectionStatus, reason: Option<&str>) -> NetSnapshot {
+        NetSnapshot {
+            status,
+            reason: reason.map(ToString::to_string),
+            ..NetSnapshot::default()
+        }
+    }
+
     /// An overlay refused as outdated, or still connecting, must not be told
     /// « guilde déconnectée »: that message sent a paired user looking for a
     /// network problem when an update was the fix.
     #[test]
     fn undeliverable_reason_names_the_real_cause() {
         assert_eq!(
-            undeliverable_reason(ConnectionStatus::Outdated),
+            undeliverable_reason(&net_snapshot(ConnectionStatus::Outdated, None)),
             "overlay_outdated"
         );
         assert_eq!(
-            undeliverable_reason(ConnectionStatus::Connecting),
+            undeliverable_reason(&net_snapshot(ConnectionStatus::Connecting, None)),
             "guild_connecting"
         );
         assert_eq!(
-            undeliverable_reason(ConnectionStatus::Reconnecting),
+            undeliverable_reason(&net_snapshot(ConnectionStatus::Reconnecting, None)),
             "guild_connecting"
         );
         assert_eq!(
-            undeliverable_reason(ConnectionStatus::Revoked),
+            undeliverable_reason(&net_snapshot(ConnectionStatus::Revoked, None)),
             "device_revoked"
         );
+    }
+
+    /// `Disabled` covers the overlay switch and a muted guild: the board must
+    /// not tell the user to reactivate a guild when the overlay itself is off.
+    #[test]
+    fn undeliverable_reason_tells_a_disabled_overlay_from_a_muted_guild() {
         assert_eq!(
-            undeliverable_reason(ConnectionStatus::Disabled),
+            undeliverable_reason(&net_snapshot(
+                ConnectionStatus::Disabled,
+                Some(OVERLAY_DISABLED_REASON)
+            )),
+            "overlay_disabled"
+        );
+        assert_eq!(
+            undeliverable_reason(&net_snapshot(
+                ConnectionStatus::Disabled,
+                Some(GUILD_MUTED_REASON)
+            )),
             "guild_disabled"
+        );
+        // No supervisor yet (or a state without reason): nothing to reactivate.
+        assert_eq!(
+            undeliverable_reason(&net_snapshot(ConnectionStatus::Disabled, None)),
+            "socket_unavailable"
+        );
+        assert_eq!(
+            undeliverable_reason(&net_snapshot(
+                ConnectionStatus::Disabled,
+                Some("raison inconnue")
+            )),
+            "socket_unavailable"
         );
     }
 
@@ -2524,11 +2574,42 @@ mod tests {
             ConnectionStatus::Error,
         ] {
             assert_eq!(
-                undeliverable_reason(status),
+                undeliverable_reason(&net_snapshot(status, None)),
                 "socket_unavailable",
                 "{status:?}"
             );
         }
+    }
+
+    /// The pure mapping is not enough: the helper must read the guild's own
+    /// snapshot, otherwise a regression on the lookup would bring back the
+    /// generic message even though the mapping is right.
+    #[test]
+    fn undeliverable_reason_for_reads_the_guild_snapshot() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = crate::config::ConfigStore::new(dir.path().join("config.json"));
+        let state = AppState::new(store);
+        state.set_net_status(
+            "guild-disabled",
+            ConnectionStatus::Disabled,
+            Some(OVERLAY_DISABLED_REASON.to_string()),
+        );
+        state.set_net_status("guild-outdated", ConnectionStatus::Outdated, None);
+
+        assert_eq!(
+            undeliverable_reason_for(&state, "guild-disabled"),
+            "overlay_disabled"
+        );
+        assert_eq!(
+            undeliverable_reason_for(&state, "guild-outdated"),
+            "overlay_outdated"
+        );
+        // Une guilde sans superviseur n'a aucune raison de parler de guilde
+        // coupée.
+        assert_eq!(
+            undeliverable_reason_for(&state, "unknown-guild"),
+            "socket_unavailable"
+        );
     }
 
     #[test]

@@ -1102,7 +1102,8 @@ pub async fn media_board_trigger(
     );
     if !sent {
         return Ok(trigger_failure(ws::undeliverable_reason_for(
-            &app, &guild_id,
+            &app.state::<AppState>(),
+            &guild_id,
         )));
     }
     match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
@@ -1155,7 +1156,8 @@ pub fn media_board_stop(
     );
     if !sent {
         return Ok(action_failure(ws::undeliverable_reason_for(
-            &app, &guild_id,
+            &app.state::<AppState>(),
+            &guild_id,
         )));
     }
     Ok(MediaBoardActionResponse {
@@ -1256,7 +1258,8 @@ pub async fn media_board_pause(
     );
     if !sent {
         return Ok(action_failure(ws::undeliverable_reason_for(
-            &app, &guild_id,
+            &app.state::<AppState>(),
+            &guild_id,
         )));
     }
     match tokio::time::timeout(TRIGGER_ACK_TIMEOUT, receiver).await {
@@ -1298,7 +1301,7 @@ pub fn overlay_request_guild_pause(
     if sent {
         Ok(())
     } else {
-        Err(ws::undeliverable_reason_for(&app, &guild_id).to_string())
+        Err(ws::undeliverable_reason_for(&app.state::<AppState>(), &guild_id).to_string())
     }
 }
 

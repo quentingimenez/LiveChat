@@ -2,9 +2,10 @@
 //
 // The shell (`undeliverable_reason` in src/net/ws.rs) names why the guild's
 // session is down: outdated overlay, connection in progress, revoked device,
-// guild cut on this device. Each reason must have its own label: a paired user
-// whose overlay was refused as outdated was told « Guilde déconnectée » and
-// went looking for a network problem when an update was the fix.
+// overlay disabled, guild cut on this device. Each reason must have its own
+// label: a paired user whose overlay was refused as outdated was told
+// « Guilde déconnectée » and went looking for a network problem when an update
+// was the fix.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -51,6 +52,11 @@ test('a precise reason never falls back to « Guilde déconnectée »', () => {
 
 test('an outdated overlay is told to update', () => {
   assert.match(describeError('overlay_outdated'), /mets.*à jour|mise à jour/i);
+});
+
+test('a disabled overlay is not told to reactivate the guild', () => {
+  assert.match(describeError('overlay_disabled'), /overlay/i);
+  assert.doesNotMatch(describeError('overlay_disabled'), /guilde/i);
 });
 
 test('an unknown reason keeps the fallback', () => {

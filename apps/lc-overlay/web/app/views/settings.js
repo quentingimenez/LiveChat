@@ -472,7 +472,7 @@ function renderDisplay(settings) {
       'Ouvrir l’aperçu au survol',
       hoverPreview,
       'settings-hover-preview',
-      'Désactivé : double-clique une carte pour ouvrir les détails.',
+      'Désactivé : un clic ouvre les détails, un double-clic joue le média sur les overlays.',
     ),
     controlRow('Média de test', [testButton]),
   );

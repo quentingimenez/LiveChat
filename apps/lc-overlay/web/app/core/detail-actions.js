@@ -2,6 +2,11 @@
 // dev/tests/detail-actions.test.mjs): whether the hover preview may show, the
 // meta line it displays, and the actions the window offers.
 
+// Two clicks closer together than this are one gesture. The preview uses it to
+// tell a second click from a new one; a board card uses it to tell the second
+// click of a double click from a new click on the window its first click opened.
+export const DOUBLE_CLICK_WINDOW = 600;
+
 // The preview only exists for the device setting « Ouvrir l'aperçu au survol »,
 // and never over the selection mode, a shortcut capture or a dialog.
 export function previewAllowed({ hoverPreview, selecting, capturing, dialogOpen } = {}) {

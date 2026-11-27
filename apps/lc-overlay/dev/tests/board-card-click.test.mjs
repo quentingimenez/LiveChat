@@ -98,7 +98,10 @@ test('the catch and the preview share one double-click window', () => {
   assert.match(board, /DOUBLE_CLICK_WINDOW/, 'the board uses the preview\'s window');
 });
 
-test('the settings hint explains the single and the double click', () => {
-  assert.match(settings, /Désactivé : un clic ouvre les détails, un double-clic joue le média sur les overlays\./);
+test('the hover preview switch carries no click hint', () => {
+  // The single/double click rule is pinned by this file, not by a hint under
+  // the switch: the settings page keeps the control only.
+  assert.match(settings, /switchRow\('Ouvrir l’aperçu au survol', hoverPreview, 'settings-hover-preview'\)/);
+  assert.doesNotMatch(settings, /Désactivé : un clic ouvre les détails/);
   assert.doesNotMatch(settings, /double-clique une carte/);
 });

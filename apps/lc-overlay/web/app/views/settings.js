@@ -536,18 +536,8 @@ function renderDisplay(settings) {
     screenRow,
     h('div', { class: 'settings-zone-group' }, zoneRow, alignmentRow),
     switchRow('Texte des médias', showText, 'settings-show-text'),
-    switchRow(
-      'Ouvrir l’aperçu au survol',
-      hoverPreview,
-      'settings-hover-preview',
-      'Désactivé : un clic ouvre les détails, un double-clic joue le média sur les overlays.',
-    ),
-    switchRow(
-      'Bouton « Revenir en haut »',
-      backToTop,
-      'settings-back-to-top',
-      'Désactivé : la board ne montre plus le bouton flottant qui ramène la grille en haut.',
-    ),
+    switchRow('Ouvrir l’aperçu au survol', hoverPreview, 'settings-hover-preview'),
+    switchRow('Bouton « Revenir en haut »', backToTop, 'settings-back-to-top'),
     controlRow('Média de test', [testButton]),
   );
 }

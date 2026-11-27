@@ -5,9 +5,9 @@
 // grille : la largeur vient de la préférence, jamais de la fenêtre, donc
 // redimensionner ne change que le nombre de colonnes par ligne.
 //
-// Quand la barre devient trop étroite, la rangée se replie en icône et ouvre un
-// panneau vertical au survol ou au focus : le mode compact ne recopie jamais le
-// curseur, il réutilise le même contrôle.
+// Quand la barre devient trop étroite, la rangée se replie en icône et ouvre le
+// curseur horizontalement au survol ou au focus : le mode compact ne recopie
+// jamais le curseur, il réutilise le même contrôle.
 //
 // Les vues ont besoin d'un DOM et le harnais n'en a pas : le câblage du
 // curseur et la règle CSS se lisent dans les sources.
@@ -228,7 +228,7 @@ test('la barre d’outils porte le curseur et le câble à la préférence', () 
   );
 });
 
-test('la barre replie le curseur en panneau vertical quand la place manque', () => {
+test('la barre masque le curseur derrière son icône quand la place manque', () => {
   const boardCss = read('styles/board.css');
   const toolbar = ruleOf(boardCss, '.board-toolbar');
   assert.ok(toolbar, '.board-toolbar doit exister');
@@ -252,6 +252,9 @@ test('la barre replie le curseur en panneau vertical quand la place manque', () 
   const panel = ruleOf(compact, '.board-size-panel');
   assert.ok(panel, 'le panneau compact a sa propre règle');
   assert.match(panel, /position:\s*absolute/, 'le panneau flotte au-dessus du board');
+  assert.match(panel, /right:\s*0/, 'il pend au bord droit de l’icône et s’ouvre vers la gauche');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'le panneau n’est plus centré sur l’icône');
+  assert.doesNotMatch(panel, /flex-direction:\s*column/, 'la piste reste horizontale dans le panneau');
   assert.match(panel, /opacity:\s*0/, 'il est fermé au repos');
   assert.match(panel, /pointer-events:\s*none/, 'fermé, il ne capte pas la souris');
   assert.doesNotMatch(panel, /visibility:\s*hidden/, 'le curseur reste dans l’ordre de tabulation');
@@ -262,10 +265,11 @@ test('la barre replie le curseur en panneau vertical quand la place manque', () 
   assert.match(compact, /\.board-size:focus-within\s+\.board-size-panel/, 'le clavier ouvre aussi le panneau');
   assert.match(compact, /\.board-size-panel::before/, 'un pont de survol comble l’écart vers l’icône');
 
-  const range = ruleOf(compact, '.board-size-range');
-  assert.ok(range, 'le curseur passe en vertical');
-  assert.match(range, /writing-mode:\s*vertical-lr/);
-  assert.match(range, /direction:\s*rtl/, 'le maximum reste en haut, comme un curseur vertical natif');
+  // Le panneau ne redéfinit pas la piste : la règle de base reste horizontale.
+  assert.equal(ruleOf(compact, '.board-size-range'), null, 'le curseur ne passe plus en vertical');
+  const baseRange = ruleOf(boardCss, '.board-size-range');
+  assert.match(baseRange, /width:\s*104px/, 'la piste garde sa largeur horizontale');
+  assert.doesNotMatch(baseRange, /writing-mode|direction:\s*rtl|height:\s*96px/, 'aucune trace du curseur vertical');
 
   const slider = balancedBlock(read('views/board.js'), 'function cardSizeSlider', '{', '}');
   const returned = slider.slice(slider.indexOf('return h('));

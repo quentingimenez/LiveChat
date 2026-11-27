@@ -710,8 +710,8 @@ function retryItems() {
 // is applied live on the grid's `--board-card-width` property, so the cards
 // and their skeleton follow the thumb while it moves; only the release writes
 // localStorage, and a double click puts the V1 width back. The range and its
-// value share one panel, inline in the toolbar and vertical under the icon when
-// the toolbar is too narrow (see the container query in board.css).
+// value share one panel, inline in the toolbar and horizontal under the icon
+// when the toolbar is too narrow (see the container query in board.css).
 function cardSizeSlider() {
   const start = currentBoardCardWidth();
   const sizeLabel = (value) => `${value}\u00A0px`;

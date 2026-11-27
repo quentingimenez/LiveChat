@@ -111,7 +111,7 @@
   flex: 0 0 auto;
 }
 
-/* The range and its value: inline next to the icon, or stacked in the hover
+/* The range and its value: inline next to the icon, or beside it in the hover
    panel of the compact toolbar below. */
 .board-size-panel {
   display: flex;
@@ -133,11 +133,13 @@
   text-align: right;
 }
 
-/* Narrow toolbar: the row collapses to the grid icon and a vertical range
-   opens under it on hover or keyboard focus. The panel fades with opacity
-   rather than `visibility: hidden`, so the range stays in the tab order; its
-   8 px `::before` bridge keeps the hover alive while the pointer crosses the
-   gap between the icon and the panel.
+/* Narrow toolbar: the row collapses to the grid icon and the slider opens
+   horizontally under it on hover or keyboard focus. The panel fades with
+   opacity rather than `visibility: hidden`, so the range stays in the tab
+   order; its 8 px `::before` bridge keeps the hover alive while the pointer
+   crosses the gap between the icon and the panel. The panel hangs from the
+   icon's right edge and grows leftwards, over the filters rather than the
+   actions: the buttons keep their end of the row.
 
    900 px is where the tools still hold the horizontal size next to the
    hidden-label actions (search at its 168 px floor, chips, filters, four icon
@@ -161,18 +163,16 @@
   .board-size-panel {
     position: absolute;
     top: calc(100% + 6px);
-    left: 50%;
+    right: 0;
     z-index: 20;
-    flex-direction: column;
-    gap: 4px;
-    padding: 10px 6px 8px;
+    padding: 8px 10px;
     border: 1px solid var(--field-line);
     border-radius: var(--radius-s);
     background: var(--slate-700);
     box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
     opacity: 0;
     pointer-events: none;
-    transform: translate(-50%, -4px);
+    transform: translateY(-4px);
     transition: opacity 120ms ease, transform 120ms ease;
   }
 
@@ -189,20 +189,7 @@
   .board-size:focus-within .board-size-panel {
     opacity: 1;
     pointer-events: auto;
-    transform: translate(-50%, 0);
-  }
-
-  .board-size-range {
-    width: 24px;
-    height: 96px;
-    writing-mode: vertical-lr;
-    direction: rtl;
-  }
-
-  .board-size-value {
-    min-width: 0;
-    font-size: 11px;
-    text-align: center;
+    transform: translateY(0);
   }
 }
 

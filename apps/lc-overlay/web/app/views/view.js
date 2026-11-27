@@ -3,7 +3,7 @@
 
 import { h } from '../core/dom.js';
 import { fitSingleLineDescriptions } from '../core/measure.js';
-import { boardScrollToKeep } from '../core/scroll-memory.js';
+import { viewScrollToKeep } from '../core/scroll-memory.js';
 import { state } from '../core/state.js';
 import { renderAdmin } from './admin.js';
 import { closeDetail, renderBoard } from './board.js';
@@ -11,6 +11,21 @@ import { openJoinDialog } from './join.js';
 import { renderGuildSettings } from './guild-settings.js';
 import { renderQueue } from './queue.js';
 import { renderSettings } from './settings.js';
+
+// Identity of the view currently in #view. Repainting the same view keeps its
+// position; a real change (page, guild, tab, admin section) starts at the top.
+let paintedView = null;
+
+function shownViewKey() {
+  if (state.page === 'settings') {
+    return 'settings';
+  }
+  if (!state.activeGuildId) {
+    return 'join';
+  }
+  const section = state.tab === 'admin' ? state.adminTab || '' : '';
+  return `guild:${state.activeGuildId}:${state.tab}:${section}`;
+}
 
 export function renderView() {
   const view = document.getElementById('view');
@@ -21,11 +36,13 @@ export function renderView() {
   if (!showsBoard) {
     closeDetail();
   }
-  // The board is repainted often (selection mode, refresh, filters). WebView2
-  // may clamp the scroller back to the top while its children are replaced, so
-  // the position is saved around the swap and put back once the new content is
-  // in place. Switching view (tab, page, guild) still starts at the top.
-  const hadBoard = view.querySelector('.board') !== null;
+  // A repaint of the same view can move the scroller (WebView2 clamps it back to
+  // the top on some repaints, Chromium's scroll anchoring shifts it while the
+  // children are replaced), so the position is saved around the swap and put
+  // back once the new content is in place. Switching view (tab, page, guild,
+  // admin section) still starts at the top.
+  const previousView = paintedView;
+  const nextView = shownViewKey();
   const scrollTop = view.scrollTop;
   if (state.page === 'settings') {
     view.replaceChildren(renderSettings());
@@ -50,12 +67,7 @@ export function renderView() {
   }
   // The 62ch measure is a fallback: the sentences that fit stay on one line.
   fitSingleLineDescriptions(view);
-  const keepScroll = boardScrollToKeep({
-    hadBoard,
-    hasBoard: view.querySelector('.board') !== null,
-    scrollTop,
-  });
-  if (keepScroll !== null) {
-    view.scrollTop = keepScroll;
-  }
+  const keepScroll = viewScrollToKeep({ previousView, nextView, scrollTop });
+  view.scrollTop = keepScroll;
+  paintedView = nextView;
 }

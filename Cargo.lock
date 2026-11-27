@@ -2657,7 +2657,7 @@ dependencies = [
 
 [[package]]
 name = "lc-overlay"
-version = "3.24.0"
+version = "3.25.0"
 dependencies = [
  "base64 0.22.1",
  "futures-util",

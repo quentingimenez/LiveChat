@@ -113,3 +113,20 @@ Test-Case 'no pull request job starts only after another one' {
     }
     Assert-True ($inspected -ge 15) "only $inspected pull request jobs were inspected"
 }
+
+Test-Case 'the image build runs on main, not on pull requests' {
+    # Why this matters: the same image was built three times per release — in the
+    # pull request, on `main` after the merge, and on the tag. The pull request
+    # one repeated, five minutes later, what the `main` run says anyway, on every
+    # PR. Dropping it keeps the `main` run as the pre-release proof (the release
+    # skill reads it before proposing a version) and the tag build as the gate
+    # before a deploy.
+    $image = @(Get-WorkflowJobs $script:RustWorkflow | Where-Object { $_.Id -eq 'image' })
+    Assert-Equal 1 $image.Count 'rust.yml must declare exactly one image job'
+    $jobIf = [regex]::Match($image[0].Body, '(?ms)^    if:[ \t]*(.*?)(?=^    [A-Za-z_][A-Za-z0-9_-]*:[ \t]|\z)').Groups[1].Value
+    Assert-True ($jobIf -match "github\.event_name\s*!=\s*'pull_request'") "the image job must skip pull requests (job-level if: was '$($jobIf.Trim())')"
+    Assert-True ($jobIf -notmatch 'refs/tags/') 'the image job must keep running on main: the release skill reads that run before proposing a version'
+    # The release skill looks the job up by its display name: renaming it would
+    # silently hide the build from the pre-release check.
+    Assert-True ($image[0].Body -match '(?m)^    name: image \(build \+ smoke\)') 'the image job must keep the name the release skill checks'
+}

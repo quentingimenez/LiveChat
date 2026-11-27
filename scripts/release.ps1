@@ -18,6 +18,19 @@ $root = (& git -C $PSScriptRoot rev-parse --show-toplevel).Trim()
 try { Import-DotEnv -Root $root } catch { Write-Warning "could not read .env: $($_.Exception.Message)" }
 if ($null -eq $Rest) { $Rest = @() }
 
+# `-File` ne transmet que des arguments positionnels : une redirection PowerShell
+# tapée dans cmd.exe (`*>` par exemple) arrive ici comme des arguments en trop.
+# Le message de usage liste donc ce qui a été reçu, sinon le piège reste muet.
+function Format-UsageError {
+    param([string]$Usage, [string[]]$Arguments)
+    $extra = @($Arguments | Where-Object { $null -ne $_ -and "$_".Trim().Length -gt 0 })
+    if ($extra.Count -eq 0) {
+        return $Usage
+    }
+    $shown = ($extra | ForEach-Object { "'$_'" }) -join ', '
+    return "$Usage (received: $shown; under cmd.exe '*>' is not a redirection: use '> <file> 2>&1')"
+}
+
 function Invoke-Check {
     $errors = @(Test-VersionConsistency -Root $root)
     if ($errors.Count -eq 0) {
@@ -33,7 +46,7 @@ switch ($Command) {
         if (-not (Invoke-Check)) { exit 1 }
     }
     'bump' {
-        if ($Rest.Count -ne 2) { throw 'usage: release.ps1 bump <server|overlay|extension> <X.Y.Z>' }
+        if ($Rest.Count -ne 2) { throw (Format-UsageError -Usage 'usage: release.ps1 bump <server|overlay|extension> <X.Y.Z>' -Arguments $Rest) }
         $files = @(Set-ComponentVersion -Root $root -Component $Rest[0] -Version $Rest[1])
         Write-Host "$($Rest[0]) -> $($Rest[1]): $($files -join ', ')"
         if (-not (Invoke-Check)) { exit 1 }
@@ -55,7 +68,7 @@ switch ($Command) {
         }
     }
     'pending-tags' {
-        if ($Rest.Count -ne 1) { throw 'usage: release.ps1 pending-tags <baseRef> [-Json]' }
+        if ($Rest.Count -ne 1) { throw (Format-UsageError -Usage 'usage: release.ps1 pending-tags <baseRef> [-Json]' -Arguments $Rest) }
         $pending = @(Get-PendingReleaseTags -Root $root -BaseRef $Rest[0])
         if ($Json) {
             ConvertTo-Json -InputObject $pending -Depth 3
@@ -64,7 +77,7 @@ switch ($Command) {
         foreach ($p in $pending) { Write-Output "$($p.Component) $($p.Tag)" }
     }
     'deploy-server' {
-        if ($Rest.Count -ne 1) { throw 'usage: release.ps1 deploy-server <X.Y.Z> [-Canary]' }
+        if ($Rest.Count -ne 1) { throw (Format-UsageError -Usage 'usage: release.ps1 deploy-server <X.Y.Z> [-Canary]' -Arguments $Rest) }
         Invoke-ServerDeploy -Version $Rest[0] -Canary:$Canary
     }
     default {

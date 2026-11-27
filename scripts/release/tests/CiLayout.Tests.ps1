@@ -55,6 +55,13 @@ Test-Case 'the advisory Bombadil exploration is its own job' {
     Assert-True ($explore.Contains('npm run admin')) 'the exploration must still cover the admin console'
     Assert-True ($explore.Contains('npm run board')) 'the exploration must still cover the overlay board'
     Assert-True ($bombadil.Contains('cargo build -p lc-server --bin lc-server --locked')) 'the bombadil job must build the server it explores'
+    # `lc-server` still needs the Linux system libraries (its image stack pulls
+    # `yeslogic-fontconfig-sys`): without the installer the build step exits 101
+    # and the advisory check turns red, which ci-gate then reports as a failure.
+    $depsAt = $bombadil.IndexOf('scripts/ci/install-linux-tauri-deps.sh')
+    $buildAt = $bombadil.IndexOf('cargo build -p lc-server --bin lc-server --locked')
+    Assert-True ($depsAt -ge 0) 'the bombadil job must install the Linux system dependencies before building: fontconfig is required'
+    Assert-True ($depsAt -lt $buildAt) 'the bombadil job must install the Linux system dependencies before `cargo build`'
     Assert-True ($bombadil.Contains('path: tools/bombadil/out/')) 'the bombadil job must upload the exploration traces'
     Assert-True ($bombadil -match 'actions/upload-artifact@[0-9a-f]{40}') 'the artifact action must stay pinned to a commit'
 

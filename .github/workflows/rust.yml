@@ -227,15 +227,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # Only `lc-server` is built here, not the workspace: the Linux Tauri
-      # dependencies that `test (ubuntu-latest)` needs are not required (the
-      # production image builds the same binary in a bare rust image).
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
+      # Only `lc-server` is built here, not the workspace, but it needs the same
+      # system libraries as `test (ubuntu-latest)`: its image stack pulls
+      # `yeslogic-fontconfig-sys`, whose build script panics without `fontconfig`
+      # (`pkg-config` exits 1, cargo exits 101). Same script as the test job.
+      - name: Linux system dependencies
+        run: bash scripts/ci/install-linux-tauri-deps.sh
       - name: Rust cache
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
       # `rust-embed` embeds apps/lc-admin-web/dist at compile time: the console

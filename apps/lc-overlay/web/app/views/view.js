@@ -12,8 +12,18 @@ import { renderGuildSettings } from './guild-settings.js';
 import { renderQueue } from './queue.js';
 import { renderSettings } from './settings.js';
 
+// `renderView` serves both a real view change (tab, page, guild, admin section)
+// and a repaint of the current view (board refresh, settings update). Only the
+// former starts at the top; telling them apart needs the route of the previous
+// render.
+let renderedRoute = null;
+
 export function renderView() {
   const view = document.getElementById('view');
+  const section = state.tab === 'admin' ? state.adminTab || '' : '';
+  const route = `${state.page}:${state.activeGuildId || ''}:${state.tab}:${section}`;
+  const viewChanged = renderedRoute !== null && renderedRoute !== route;
+  renderedRoute = route;
   // The media detail window is appended to the window, not to the view: it
   // must not stay over another tab. Leaving the board closes it (the board's
   // own refreshes keep it open and only refresh its information column).
@@ -24,7 +34,8 @@ export function renderView() {
   // The board is repainted often (selection mode, refresh, filters). WebView2
   // may clamp the scroller back to the top while its children are replaced, so
   // the position is saved around the swap and put back once the new content is
-  // in place. Switching view (tab, page, guild) still starts at the top.
+  // in place. A view change (tab, page, guild) starts at the top: replacing the
+  // children alone keeps the old offset when the next page is tall enough.
   const hadBoard = view.querySelector('.board') !== null;
   const scrollTop = view.scrollTop;
   if (state.page === 'settings') {
@@ -54,6 +65,7 @@ export function renderView() {
     hadBoard,
     hasBoard: view.querySelector('.board') !== null,
     scrollTop,
+    viewChanged,
   });
   if (keepScroll !== null) {
     view.scrollTop = keepScroll;

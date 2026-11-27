@@ -20,6 +20,17 @@ test('laisse la main au navigateur quand la vue change', () => {
   assert.equal(boardScrollToKeep({ hadBoard: false, hasBoard: true, scrollTop: 4096 }), null);
 });
 
+test('un vrai changement de vue repart du haut, même entre deux boards', () => {
+  assert.equal(
+    boardScrollToKeep({ hadBoard: true, hasBoard: true, scrollTop: 4096, viewChanged: true }),
+    0,
+  );
+  assert.equal(
+    boardScrollToKeep({ hadBoard: false, hasBoard: false, scrollTop: 4096, viewChanged: true }),
+    0,
+  );
+});
+
 test('ignore une position invalide', () => {
   for (const scrollTop of [Number.NaN, Number.POSITIVE_INFINITY, -12, 'nope', null]) {
     assert.equal(boardScrollToKeep({ hadBoard: true, hasBoard: true, scrollTop }), 0);
@@ -35,6 +46,22 @@ test('renderView remet la position sauvée après avoir remplacé le contenu', (
   assert.match(viewSource, /const scrollTop = view\.scrollTop;/);
   assert.match(viewSource, /const keepScroll = boardScrollToKeep\(\{[\s\S]*?\n  \}\);/);
   assert.match(viewSource, /view\.scrollTop = keepScroll;/);
+});
+
+test('renderView distingue une repeinte d’un vrai changement de vue', () => {
+  assert.match(viewSource, /let renderedRoute = null;/);
+  assert.ok(
+    viewSource.includes("const section = state.tab === 'admin' ? state.adminTab || '' : '';"),
+    'la section d’administration fait partie de la route',
+  );
+  assert.ok(
+    viewSource.includes(
+      "const route = `${state.page}:${state.activeGuildId || ''}:${state.tab}:${section}`;",
+    ),
+    'la route doit couvrir la page, la guilde, l’onglet et la section',
+  );
+  assert.match(viewSource, /const viewChanged = renderedRoute !== null && renderedRoute !== route;/);
+  assert.match(viewSource, /viewChanged,\r?\n  \}\);/);
 });
 
 test('entrer en sélection peint la board sur place', () => {

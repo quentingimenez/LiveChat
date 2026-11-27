@@ -1,0 +1,59 @@
+/* Barre de défilement « Atelier », dessinée par l'application.
+ *
+ * Chromium/WebView2 : les pseudo-éléments ::-webkit-scrollbar remplacent la
+ * barre native. Ne pas poser scrollbar-color ni scrollbar-width sur ces
+ * conteneurs : la propriété standard désactive ces pseudo-éléments.
+ *
+ * Voie de 12 px, pouce de 6 px au repos (3 px de bord transparent de chaque
+ * côté), 8 px au survol et à la saisie. Les couleurs viennent des tokens, donc
+ * les deux thèmes suivent sans règle dédiée.
+ *
+ * Le profil de guilde et la colonne d'aperçu (.hp-page-info) gardent leur
+ * barre masquée : ils ne sont pas dans la liste.
+ */
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+  background: transparent;
+}
+
+/* La piste est la surface du conteneur : rien à peindre. */
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Le pouce : 3 px de bord transparent, 6 px de cœur ; le rayon est clippé sur
+   la boîte de remplissage pour que le pouce reste arrondi à toutes les tailles. */
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar-thumb {
+  background: var(--field-line);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+  min-height: 40px;
+  min-width: 40px;
+}
+
+/* Survol et saisie : le bord rétrécit, le pouce passe à 8 px et s'éclaire. Le
+   background-clip est reposé : le raccourci background le remet à border-box. */
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar-thumb:hover {
+  background: var(--text-faint);
+  background-clip: padding-box;
+  border-width: 2px;
+}
+
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar-thumb:active {
+  background: var(--text-soft);
+  background-clip: padding-box;
+  border-width: 2px;
+}
+
+/* Les flèches et le coin système ne sont plus dessinés. */
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
+:is(.view, .rail, .dialog:not(.is-profile) .dialog-body, .file-list, .editor-rail, .editor-panel, .display-preview-scroll)::-webkit-scrollbar-corner {
+  background: transparent;
+}

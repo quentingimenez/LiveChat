@@ -55,7 +55,7 @@ import {
 } from '../core/detail-motion.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
 import { playbackPlan } from '../core/media-playback.js';
-import { playbackSettings } from '../core/sound.js';
+import { mediaPlaybackGain, playbackSettings } from '../core/sound.js';
 
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
@@ -601,8 +601,10 @@ export function createMediaDetail(options) {
   function attachPlayer(el, media, player, card, desc) {
     el.classList.add('is-playable');
     el._player = player;
-    // The bar sets an absolute level: 100 % is full volume. Until the user
-    // moves it, the preview starts at the card's default level.
+    // The bar sets an absolute level: 100 % is full volume. The element gets
+    // that level through the overlay's perceptual curve, so it sounds like the
+    // overlay at the same setting. Until the user moves it, the preview starts
+    // at the card's default level.
     const defaultLevel = clampVolume(desc && desc.volume);
     const currentLevel = () => (previewLevel === null ? defaultLevel : previewLevel);
     // The tooltip names the action, not a sentence: the preview is paused
@@ -657,14 +659,14 @@ export function createMediaDetail(options) {
       mute.setAttribute('title', audible ? 'Couper le son' : 'Activer le son');
       mute.setAttribute('aria-pressed', String(audible));
     };
-    player.volume = currentLevel();
+    player.volume = mediaPlaybackGain(currentLevel());
     player.muted = !playbackSettings().previewSound;
     refreshVolume();
 
     slider.addEventListener('input', () => {
       const level = clampVolume(Number(slider.value) / 100);
       previewLevel = level;
-      player.volume = level;
+      player.volume = mediaPlaybackGain(level);
       if (level > 0) {
         lastAudibleLevel = level;
         player.muted = false;
@@ -683,7 +685,7 @@ export function createMediaDetail(options) {
         if (previewLevel === 0) {
           previewLevel = lastAudibleLevel;
         }
-        player.volume = currentLevel();
+        player.volume = mediaPlaybackGain(currentLevel());
         player.muted = false;
       }
       refreshVolume();
@@ -1242,7 +1244,7 @@ export function createMediaDetail(options) {
       player.setAttribute('muted', '');
     }
     player.setAttribute('aria-label', 'Média en grand');
-    player.volume = volume;
+    player.volume = mediaPlaybackGain(volume);
     return player;
   }
 
@@ -1260,7 +1262,7 @@ export function createMediaDetail(options) {
       player.setAttribute('muted', '');
     }
     player.setAttribute('aria-label', 'Média audio');
-    player.volume = volume;
+    player.volume = mediaPlaybackGain(volume);
     return player;
   }
 
@@ -1822,7 +1824,7 @@ export function createMediaDetail(options) {
       } else {
         player.removeAttribute('muted');
       }
-      player.volume = clampVolume(desc.volume);
+      player.volume = mediaPlaybackGain(desc.volume);
       if (plan.autoplay) {
         const attempt = player.play();
         if (attempt && typeof attempt.catch === 'function') {
@@ -2012,7 +2014,7 @@ export function createMediaDetail(options) {
     setVolume(volume) {
       const page = detailPage;
       if (page && page._player) {
-        page._player.volume = clampVolume(volume);
+        page._player.volume = mediaPlaybackGain(volume);
       }
     },
     openId() {

@@ -8,7 +8,7 @@ import { formatDuration, relativeTime } from '../core/format.js';
 import { historyStatus } from '../core/history-status.js';
 import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
-import { queueClock, queueProgressStyle } from '../core/queue-clock.js';
+import { queueClock, queueProgressStyle, resumedPlaying } from '../core/queue-clock.js';
 import { moveInQueue, moveToQueue, queueJobIds } from '../core/queue-order.js';
 import { can, describeError, state, activeGuild } from '../core/state.js';
 import { notify } from '../core/toast.js';
@@ -132,10 +132,6 @@ async function toggleGuildPause(control, paused) {
       throw new Error(describeError(response.reason));
     }
     renderOnAir();
-    setTimeout(() => {
-      loadQueue();
-      renderOnAir();
-    }, 300);
   });
 }
 
@@ -179,12 +175,43 @@ let historyOpen = false;
 let draggedQueueJobId = null;
 let overQueueJobId = null;
 
-// A resume shifts `startedAt` server-side by the paused time, so the queue must
-// be reloaded before the bar starts moving again. Until then the fast tick keeps
-// the frozen position instead of animating from the stale anchor.
+// A resume shifts `startedAt` server-side by the paused time. The board anchors
+// a local copy at the frozen position and restarts the animation at once; the
+// fresh read then replaces it with the server's exact anchor. Without that
+// local anchor the bar would stay still for the read latency and jump when the
+// read lands.
+let pausedElapsed = null;
 let resumeReloadPending = false;
 let pauseGuildId = null;
 let lastPaused = null;
+
+function pausedClockElapsed(pause) {
+  const playing = state.queue.playing;
+  return playing ? queueClock(playing, Date.now(), pause).elapsed : null;
+}
+
+function resumeQueueAnimation(frozenElapsed) {
+  const playing = state.queue.playing;
+  if (!playing) {
+    return false;
+  }
+  const now = Date.now();
+  const resumed = resumedPlaying(playing, frozenElapsed, now);
+  state.queue.playing = resumed;
+  const clock = queueClock(resumed, now);
+  const time = document.querySelector('[data-queue-clock]');
+  if (time) {
+    time.textContent = clock.text;
+  }
+  const bar = document.querySelector('[data-queue-progress]');
+  if (bar) {
+    bar.style.setProperty('--queue-progress-duration', `${clock.duration}s`);
+    bar.style.setProperty('--queue-progress-delay', `${-clock.elapsed}s`);
+    bar.style.animationName = '';
+    bar.style.transform = `scaleX(${clock.ratio})`;
+  }
+  return true;
+}
 
 function syncQueuePause() {
   const pause = sharedPause();
@@ -195,27 +222,40 @@ function syncQueuePause() {
     pauseGuildId = guildId;
     lastPaused = pause.paused;
     resumeReloadPending = false;
+    pausedElapsed = pause.paused ? pausedClockElapsed(pause) : null;
     if (pause.paused) {
       tickQueueClock();
     }
     return;
   }
   if (pause.paused === lastPaused) {
+    if (pause.paused && pausedElapsed == null) {
+      pausedElapsed = pausedClockElapsed(pause);
+    }
     return;
   }
   lastPaused = pause.paused;
   if (pause.paused) {
+    pausedElapsed = pausedClockElapsed(pause);
     // Freeze at once rather than waiting for the next tick: the CSS animation
     // would otherwise keep advancing for up to a quarter of a second.
     tickQueueClock();
     return;
   }
-  resumeReloadPending = true;
+  const frozen = pausedElapsed;
+  pausedElapsed = null;
+  // Restart from the frozen position immediately: waiting for the fresh read
+  // would hold the bar still and then move it forward by the read latency.
+  const resumed = frozen != null && resumeQueueAnimation(frozen);
+  resumeReloadPending = !resumed;
   const reloaded = () => {
     resumeReloadPending = false;
     tickQueueClock();
   };
-  loadQueue({ fresh: true }).then(reloaded, reloaded);
+  // Reconcile with the server's exact anchor in the background: repainting the
+  // queue here would reset the running CSS animation and make the bar jump. If
+  // there was no frozen position to resume from, the read has to render.
+  loadQueue({ fresh: true, quiet: true, render: !resumed }).then(reloaded, reloaded);
 }
 
 // Fast tick (250 ms): update only the clock and the progress bar. A full
@@ -711,9 +751,11 @@ document.addEventListener('livechat:guilds-updated', () => {
   } else {
     // Keep the transition tracker in step even when the queue view is not
     // shown, so switching to the tab later does not replay a stale resume.
+    const pause = sharedPause();
     pauseGuildId = state.activeGuildId;
-    lastPaused = sharedPause().paused;
+    lastPaused = pause.paused;
     resumeReloadPending = false;
+    pausedElapsed = pause.paused ? pausedClockElapsed(pause) : null;
   }
 });
 

@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import * as queueClockModule from '../../web/app/core/queue-clock.js';
 
-const { queueClock, queueProgressStyle } = queueClockModule;
+const { queueClock, queueProgressStyle, resumedPlaying } = queueClockModule;
 const NOW = Date.parse('2026-11-20T21:00:00.000Z');
 const startedAgo = (seconds) => new Date(NOW - seconds * 1000).toISOString();
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
@@ -45,6 +45,26 @@ test('hors pause, l’horloge repart de l’heure courante', () => {
   assert.equal(resumed.ratio, 2 / 30);
 });
 
+test('la reprise ancre la barre sur la position gelée sans attendre la relecture', () => {
+  const before = { id: 'j0', title: 'Chat qui tombe', startedAt: startedAgo(2), durationSec: 30 };
+  const resumed = resumedPlaying(before, 12, NOW);
+  assert.equal(resumed.startedAt, new Date(NOW - 12_000).toISOString());
+  // The frozen position is kept, and the original snapshot is not mutated.
+  assert.equal(resumed.id, 'j0');
+  assert.equal(resumed.title, 'Chat qui tombe');
+  assert.equal(before.startedAt, startedAgo(2));
+  const clock = queueClock(resumed, NOW);
+  assert.equal(clock.elapsed, 12);
+  assert.equal(clock.ratio, 0.4);
+  assert.equal(clock.text, '0:12 / 0:30');
+});
+
+test('une position de reprise inconnue laisse la file intacte', () => {
+  const before = playing(2);
+  assert.equal(resumedPlaying(before, null, NOW), before);
+  assert.equal(resumedPlaying(before, Number.NaN, NOW), before);
+});
+
 test('le style coupe l’animation CSS pendant la pause', () => {
   assert.equal(typeof queueProgressStyle, 'function');
   const clock = queueClock(playing(12), NOW);
@@ -68,10 +88,15 @@ test('la file branche la pause sur l’horloge et le style', () => {
   assert.match(queue, /pausedRemainingMs/);
   assert.match(queue, /queueProgressStyle\(clock, pause\.paused\)/);
   // A resume shifts `startedAt`: the read must supersede one already in flight,
-  // otherwise the stale position could paint after the resume.
-  assert.match(queue, /loadQueue\(\{ fresh: true \}\)/);
+  // and it must not repaint the queue when the bar resumed locally (that would
+  // reset the running animation); without a frozen position it has to repaint.
+  assert.match(queue, /loadQueue\(\{[^}]*fresh: true[^}]*render: !resumed[^}]*\}\)/);
+  assert.match(queue, /resumeReloadPending = !resumed/);
   assert.match(read('data.js'), /options\.fresh === true/);
+  assert.match(read('data.js'), /options\.render !== false/);
   const tick = queue.match(/export function tickQueueClock\([\s\S]*?\r?\n\}/);
   assert.ok(tick, 'tickQueueClock est exporté');
   assert.match(tick[0], /animationName = 'none'/);
+  assert.match(queue, /resumedPlaying\(playing, frozenElapsed, now\)/);
+  assert.match(queue, /resumeQueueAnimation\(frozen\)/);
 });

@@ -35,6 +35,17 @@ export function queueClock(playing, now = Date.now(), pause = null) {
   };
 }
 
+// On resume the server shifts `startedAt` by the paused time, but the board
+// only learns it with the next fresh read. Anchor a local copy at the frozen
+// position so the bar can start moving at once instead of staying still until
+// the read lands and then jumping forward by the read latency.
+export function resumedPlaying(playing, elapsed, now = Date.now()) {
+  if (!playing || !Number.isFinite(elapsed)) {
+    return playing;
+  }
+  return { ...playing, startedAt: new Date(now - elapsed * 1000).toISOString() };
+}
+
 // The fill is a compositor-driven linear animation: its duration is the job
 // duration and its negative delay is the elapsed time, so it starts exactly
 // where playback already is, even after the queue is re-rendered. The inline

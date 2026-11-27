@@ -194,7 +194,9 @@
   box-shadow: 0 0 6px rgba(255, 255, 255, 0.45);
   transform: scaleX(0);
   transform-origin: left center;
-  transition: transform 90ms linear;
+  /* The fill is animated by core/preview-progress.js: a CSS transition here
+     would re-introduce the short glide followed by a freeze the compositor
+     animation replaces. */
 }
 
 .hp-audio-player {

@@ -8,10 +8,14 @@
 /* The preview's first frame is the card itself: views/media-detail.js measures
    the card and the preview and sets the --hp-* geometry, then the preview
    grows from that frame (origin at its top left) into the full card while the
-   real card stays hidden (board.css, .card.is-previewing). */
+   real card stays hidden (board.css, .card.is-previewing). The preview stays
+   under the fixed chrome (the app header and the sticky board head, z-index 4):
+   a card scrolled under them has a rectangle above their bottom edge, and the
+   opening frame must slide out from behind the chrome instead of painting over
+   it. It still sits above the cards and their controls (z-index 1). */
 .hp-overlay {
   position: fixed;
-  z-index: 90;
+  z-index: 3;
   overflow: hidden;
   border: 1px solid var(--line);
   border-radius: var(--radius-m);
@@ -222,10 +226,12 @@
    too. */
 /* The transparent band that keeps a held volume slider on the preview when the
    pointer leaves it through the top or the bottom. It only exists during the
-   drag and sits under the preview, over the board. */
+   drag and belongs to the preview's surface: one level under it and under the
+   fixed chrome, so it never takes a click from the preview or from the
+   header. It still stays over the board. */
 .hp-volume-drag-margin {
   position: fixed;
-  z-index: 89;
+  z-index: 2;
   background: transparent;
   pointer-events: auto;
 }

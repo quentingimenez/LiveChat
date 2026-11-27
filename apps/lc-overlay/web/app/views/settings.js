@@ -568,7 +568,7 @@ function renderPlayback(settings) {
   const previewSound = h('input', {
     id: 'settings-preview-sound',
     type: 'checkbox',
-    checked: settings.previewSound !== false,
+    checked: settings.previewSound === true,
     disabled: !previewEnabled,
     onChange: (event) => applyPatch({ previewSound: event.target.checked }),
   });
@@ -581,7 +581,7 @@ function renderPlayback(settings) {
   const detailSound = h('input', {
     id: 'settings-detail-sound',
     type: 'checkbox',
-    checked: settings.detailSound !== false,
+    checked: settings.detailSound === true,
     onChange: (event) => applyPatch({ detailSound: event.target.checked }),
   });
   const previewNote = h(

@@ -534,6 +534,63 @@ function renderDisplay(settings) {
   );
 }
 
+function renderPlayback(settings) {
+  const previewAutoplay = h('input', {
+    id: 'settings-preview-autoplay',
+    type: 'checkbox',
+    checked: settings.previewAutoplay !== false,
+    onChange: (event) => applyPatch({ previewAutoplay: event.target.checked }),
+  });
+  const previewSound = h('input', {
+    id: 'settings-preview-sound',
+    type: 'checkbox',
+    checked: settings.previewSound !== false,
+    onChange: (event) => applyPatch({ previewSound: event.target.checked }),
+  });
+  const detailAutoplay = h('input', {
+    id: 'settings-detail-autoplay',
+    type: 'checkbox',
+    checked: settings.detailAutoplay !== false,
+    onChange: (event) => applyPatch({ detailAutoplay: event.target.checked }),
+  });
+  const detailSound = h('input', {
+    id: 'settings-detail-sound',
+    type: 'checkbox',
+    checked: settings.detailSound !== false,
+    onChange: (event) => applyPatch({ detailSound: event.target.checked }),
+  });
+  return section(
+    'Lecture',
+    switchRow(
+      'Lancer les aperçus automatiquement',
+      previewAutoplay,
+      'settings-preview-autoplay',
+      'Désactivé : les aperçus restent sur leur première image ; un clic lance la lecture.',
+    ),
+    switchRow(
+      'Son des aperçus',
+      previewSound,
+      'settings-preview-sound',
+      'Désactivé : les aperçus démarrent en silence ; un audio attend qu’on active le son.',
+    ),
+    switchRow(
+      'Lancer les détails automatiquement',
+      detailAutoplay,
+      'settings-detail-autoplay',
+      'Désactivé : les détails s’ouvrent en pause ; la lecture démarre avec le bouton du lecteur.',
+    ),
+    switchRow(
+      'Son des détails',
+      detailSound,
+      'settings-detail-sound',
+      'Désactivé : les détails s’ouvrent en silence. Un audio ne démarre pas seul tant que ce son est coupé.',
+    ),
+    hint(
+      'Les lecteurs démarrent au plus bas des volumes général et de la guilde, sur une échelle de 0 à 100 %.',
+    ),
+  );
+}
+
 function renderSound(settings) {
   const volume = Number.isFinite(settings.volume) ? settings.volume : 1;
   const generalMute = h('input', {
@@ -885,6 +942,7 @@ export function renderSettings() {
   // Apparence and À propos): Apparence stays between the two.
   return settingsPage(
     renderDisplay(settings),
+    renderPlayback(settings),
     renderSound(settings),
     renderShortcuts(settings),
     renderProfile(settings),

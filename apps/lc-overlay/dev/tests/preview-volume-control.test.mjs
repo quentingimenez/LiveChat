@@ -1,11 +1,12 @@
 // The hover preview's mute button reveals a vertical level bar styled like the
-// card's playback line. These checks pin the control: the bar trims the overlay
-// gain (100 % sounds exactly like the overlay), the mute button stays visible
-// while the bar opens below it, the bar borrows the playback line's thickness,
-// rail and glow, it fills its whole height at 100 % and still fits the shortest
-// preview, it is built with the player and never with a still, it only answers
-// once the preview is open, a drag keeps a height margin around the preview,
-// and a press on it never toggles playback.
+// card's playback line. These checks pin the control: the bar sets an absolute
+// 0–100 % level (100 % is full volume, independent of the device settings, and
+// the preview starts at the card's default level), the mute button stays
+// visible while the bar opens below it, the bar borrows the playback line's
+// thickness, rail and glow, it fills its whole height at 100 % and still fits
+// the shortest preview, it is built with the player and never with a still, it
+// only answers once the preview is open, a drag keeps a height margin around
+// the preview, and a press on it never toggles playback.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -50,10 +51,12 @@ test('the mute button owns a vertical volume bar, built with the player', () => 
   assert.match(attachBody, /aria-orientation', 'vertical'/);
 });
 
-test('the bar trims the overlay gain instead of setting an absolute volume', () => {
-  assert.match(attachBody, /trimVolume\(desc && desc\.volume, previewLevel\)/);
+test('the bar sets an absolute level instead of trimming the overlay gain', () => {
+  assert.doesNotMatch(attachBody, /trimVolume/);
+  assert.match(attachBody, /const defaultLevel = clampVolume\(desc && desc\.volume\)/);
   assert.match(attachBody, /const level = clampVolume\(Number\(slider\.value\) \/ 100\)/);
-  assert.match(attachBody, /trimVolume\(desc && desc\.volume, level\)/);
+  assert.match(attachBody, /player\.volume = level;/, 'a move sets that exact level');
+  assert.match(attachBody, /player\.volume = currentLevel\(\);/, 'before any move, the card default applies');
   assert.doesNotMatch(attachBody, /player\.volume = Number\(slider\.value\)/);
 });
 
@@ -65,10 +68,10 @@ test('the bar mutes at zero and the mute click restores the last audible level',
   assert.match(attachBody, /aria-pressed', String\(audible\)/);
 });
 
-test('the level survives from one preview to the next', () => {
+test('the level survives from one preview to the next and follows the card default until moved', () => {
   const controller = mediaDetail.indexOf('export function createMediaDetail');
-  const level = mediaDetail.indexOf('let previewLevel = 1;');
-  const last = mediaDetail.indexOf('let lastAudibleLevel = 1;');
+  const level = mediaDetail.indexOf('let previewLevel = null;');
+  const last = mediaDetail.indexOf('let lastAudibleLevel = null;');
   const attachAt = mediaDetail.indexOf('function attachPlayer');
   assert.ok(controller >= 0 && level > controller && last > level && attachAt > last, 'shared state lives in the controller closure');
 });

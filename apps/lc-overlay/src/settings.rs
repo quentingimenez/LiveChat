@@ -53,6 +53,14 @@ pub struct SettingsView {
     pub show_text: bool,
     /// A board card shows its preview when the pointer stays on it.
     pub hover_preview: bool,
+    /// The hover preview starts playing as soon as it opens.
+    pub preview_autoplay: bool,
+    /// The details window starts playing as soon as it opens.
+    pub detail_autoplay: bool,
+    /// The hover preview starts with its sound on.
+    pub preview_sound: bool,
+    /// The details window starts with its sound on.
+    pub detail_sound: bool,
     pub auto_start: bool,
     pub shortcuts: ShortcutSettings,
     pub layout: OverlayLayout,
@@ -193,6 +201,10 @@ pub fn build_settings_view(
         media_muted: config.media_muted,
         show_text: config.show_text,
         hover_preview: config.hover_preview,
+        preview_autoplay: config.preview_autoplay,
+        detail_autoplay: config.detail_autoplay,
+        preview_sound: config.preview_sound,
+        detail_sound: config.detail_sound,
         auto_start,
         shortcuts: config.shortcuts.clone(),
         layout: config.layout.clone(),
@@ -596,6 +608,18 @@ pub fn apply_settings_patch(
     if let Some(hover_preview) = bool_value(object, "hoverPreview")? {
         config.hover_preview = hover_preview;
     }
+    if let Some(preview_autoplay) = bool_value(object, "previewAutoplay")? {
+        config.preview_autoplay = preview_autoplay;
+    }
+    if let Some(detail_autoplay) = bool_value(object, "detailAutoplay")? {
+        config.detail_autoplay = detail_autoplay;
+    }
+    if let Some(preview_sound) = bool_value(object, "previewSound")? {
+        config.preview_sound = preview_sound;
+    }
+    if let Some(detail_sound) = bool_value(object, "detailSound")? {
+        config.detail_sound = detail_sound;
+    }
     if let Some(auto_start) = bool_value(object, "autoStart")? {
         config.auto_start = auto_start;
     }
@@ -752,6 +776,68 @@ mod tests {
         )
         .expect_err("boolean only");
         assert_eq!(error.field, "hoverPreview");
+    }
+
+    #[test]
+    fn settings_set_round_trips_media_playback_from_an_old_config() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.6 }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+
+        let view = build_settings_view(&config, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        for key in [
+            "previewAutoplay",
+            "detailAutoplay",
+            "previewSound",
+            "detailSound",
+        ] {
+            assert_eq!(value[key], json!(true), "{key} is on by default");
+        }
+
+        let patched = apply_settings_patch(
+            &config,
+            &json!({
+                "previewAutoplay": false,
+                "detailAutoplay": false,
+                "previewSound": false,
+                "detailSound": false,
+            }),
+            &sample_displays(),
+        )
+        .expect("valid payload");
+        assert!(!patched.preview_autoplay);
+        assert!(!patched.detail_autoplay);
+        assert!(!patched.preview_sound);
+        assert!(!patched.detail_sound);
+        let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        for key in [
+            "previewAutoplay",
+            "detailAutoplay",
+            "previewSound",
+            "detailSound",
+        ] {
+            assert_eq!(value[key], json!(false), "{key} follows the patch");
+        }
+
+        // A partial patch only moves the field it names.
+        let partial = apply_settings_patch(
+            &patched,
+            &json!({ "previewSound": true }),
+            &sample_displays(),
+        )
+        .expect("valid payload");
+        assert!(partial.preview_sound);
+        assert!(!partial.detail_sound);
+        assert!(!partial.preview_autoplay);
+
+        let error = apply_settings_patch(
+            &config,
+            &json!({ "detailSound": "off" }),
+            &sample_displays(),
+        )
+        .expect_err("boolean only");
+        assert_eq!(error.field, "detailSound");
     }
 
     #[test]

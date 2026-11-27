@@ -1,16 +1,14 @@
-// Keeps the board where the viewer left it when only its content is repainted
-// (selection mode, refresh, filters). A real view change starts at the top, even
-// when the next page is a board too (another guild): the browser keeps the old
-// offset as long as the new content is tall enough, so it must be reset here.
-// `null` leaves a repaint of a non-board page to the browser, which keeps that
-// page's own position.
+// Keeps the scroller where the viewer left it when only the content of the same
+// view is repainted (a settings update check, the board's selection mode, a
+// refresh, filters). Chromium's scroll anchoring moves the scroller while its
+// children are replaced, so the position is saved around the swap and put back
+// once the new content is in place. A real view change (page, guild, tab,
+// admin section) starts at the top: a position carried over would land in the
+// middle (or at the end) of another page.
 
-export function boardScrollToKeep({ hadBoard, hasBoard, scrollTop, viewChanged = false }) {
-  if (viewChanged) {
+export function viewScrollToKeep({ previousView, nextView, scrollTop }) {
+  if (previousView !== nextView) {
     return 0;
-  }
-  if (!hadBoard || !hasBoard) {
-    return null;
   }
   const top = Number(scrollTop);
   return Number.isFinite(top) && top > 0 ? top : 0;

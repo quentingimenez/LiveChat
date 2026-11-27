@@ -1,67 +1,73 @@
-// Protège la position de lecture du board : entrer ou sortir du mode sélection
-// ne doit pas ramener la vue tout en haut, et une repeinte du board garde la
-// position tandis qu'un vrai changement de vue repart du haut.
+// Protège la position de lecture : une repeinte de la même vue (paramètres,
+// board, file, admin, réglages de guilde) garde la position ; un vrai
+// changement de vue repart du haut, jamais au milieu de la page suivante.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { boardScrollToKeep } from '../../web/app/core/scroll-memory.js';
+import { viewScrollToKeep } from '../../web/app/core/scroll-memory.js';
 
 const boardSource = readFileSync(new URL('../../web/app/views/board.js', import.meta.url), 'utf8');
 const viewSource = readFileSync(new URL('../../web/app/views/view.js', import.meta.url), 'utf8');
 
-test('garde la position quand seule la board est repeinte', () => {
-  assert.equal(boardScrollToKeep({ hadBoard: true, hasBoard: true, scrollTop: 4096 }), 4096);
+test('garde la position quand la même vue est repeinte', () => {
+  assert.equal(viewScrollToKeep({ previousView: 'settings', nextView: 'settings', scrollTop: 4096 }), 4096);
+  assert.equal(
+    viewScrollToKeep({ previousView: 'guild:42:board', nextView: 'guild:42:board', scrollTop: 1659 }),
+    1659,
+  );
 });
 
-test('laisse la main au navigateur quand la vue change', () => {
-  assert.equal(boardScrollToKeep({ hadBoard: true, hasBoard: false, scrollTop: 4096 }), null);
-  assert.equal(boardScrollToKeep({ hadBoard: false, hasBoard: true, scrollTop: 4096 }), null);
+test('un changement de vue repart du haut', () => {
+  const scrollTop = 4096;
+  for (const [previousView, nextView] of [
+    ['guild:42:board', 'settings'],
+    ['settings', 'guild:42:board'],
+    ['guild:1:board', 'guild:2:board'],
+    ['guild:1:board', 'guild:1:admin'],
+    ['guild:1:admin:members', 'guild:1:admin:devices'],
+    ['join', 'guild:42:board'],
+  ]) {
+    assert.equal(viewScrollToKeep({ previousView, nextView, scrollTop }), 0);
+  }
 });
 
-test('un vrai changement de vue repart du haut, même entre deux boards', () => {
-  assert.equal(
-    boardScrollToKeep({ hadBoard: true, hasBoard: true, scrollTop: 4096, viewChanged: true }),
-    0,
-  );
-  assert.equal(
-    boardScrollToKeep({ hadBoard: false, hasBoard: false, scrollTop: 4096, viewChanged: true }),
-    0,
-  );
+test('premier rendu : départ du haut', () => {
+  assert.equal(viewScrollToKeep({ previousView: null, nextView: 'settings', scrollTop: 0 }), 0);
 });
 
 test('ignore une position invalide', () => {
   for (const scrollTop of [Number.NaN, Number.POSITIVE_INFINITY, -12, 'nope', null]) {
-    assert.equal(boardScrollToKeep({ hadBoard: true, hasBoard: true, scrollTop }), 0);
+    assert.equal(viewScrollToKeep({ previousView: 'settings', nextView: 'settings', scrollTop }), 0);
   }
 });
 
 test('garde une position fractionnaire (zoom)', () => {
-  assert.equal(boardScrollToKeep({ hadBoard: true, hasBoard: true, scrollTop: 12.5 }), 12.5);
+  assert.equal(viewScrollToKeep({ previousView: 'settings', nextView: 'settings', scrollTop: 12.5 }), 12.5);
 });
 
 test('renderView remet la position sauvée après avoir remplacé le contenu', () => {
-  assert.match(viewSource, /const hadBoard = view\.querySelector\('\.board'\) !== null;/);
-  assert.match(viewSource, /const scrollTop = view\.scrollTop;/);
-  assert.match(viewSource, /const keepScroll = boardScrollToKeep\(\{[\s\S]*?\n  \}\);/);
+  assert.match(viewSource, /let paintedView = null;/);
+  assert.match(viewSource, /function shownViewKey\(\) \{/);
+  assert.match(viewSource, /const previousView = paintedView;/);
+  assert.match(viewSource, /const nextView = shownViewKey\(\);/);
+  assert.match(viewSource, /const keepScroll = viewScrollToKeep\(\{/);
   assert.match(viewSource, /view\.scrollTop = keepScroll;/);
+  assert.match(viewSource, /paintedView = nextView;/);
 });
 
-test('renderView distingue une repeinte d’un vrai changement de vue', () => {
-  assert.match(viewSource, /let renderedRoute = null;/);
+test('l’identité de vue couvre les paramètres, join et la section d’administration', () => {
+  assert.ok(viewSource.includes("return 'settings';"));
+  assert.ok(viewSource.includes("return 'join';"));
   assert.ok(
     viewSource.includes("const section = state.tab === 'admin' ? state.adminTab || '' : '';"),
-    'la section d’administration fait partie de la route',
+    'la section d’administration fait partie de la vue',
   );
   assert.ok(
-    viewSource.includes(
-      "const route = `${state.page}:${state.activeGuildId || ''}:${state.tab}:${section}`;",
-    ),
-    'la route doit couvrir la page, la guilde, l’onglet et la section',
+    viewSource.includes('return `guild:${state.activeGuildId}:${state.tab}:${section}`;'),
+    'la clé de vue couvre la guilde, l’onglet et la section',
   );
-  assert.match(viewSource, /const viewChanged = renderedRoute !== null && renderedRoute !== route;/);
-  assert.match(viewSource, /viewChanged,\r?\n  \}\);/);
 });
 
 test('entrer en sélection peint la board sur place', () => {

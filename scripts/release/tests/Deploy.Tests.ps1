@@ -47,10 +47,46 @@ Test-Case 'Deploy refuses invalid version' {
 Test-Case 'Remote scripts are ASCII only' {
     # Non-ASCII bytes are mangled by the PowerShell -> ssh pipe and by the
     # host's C locale (`.` matches one byte, an e-circumflex is two bytes in UTF-8).
-    foreach ($s in (Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'), (Get-ServerCheckScript -PublicUrl 'https://livechat.example.com')) {
+    foreach ($s in (Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'), (Get-ServerCheckScript -PublicUrl 'https://livechat.example.com'), (Get-ServerPruneScript -Previous 'ghcr.io/quentingimenez/livechat-server:3.5.1' -Image 'ghcr.io/quentingimenez/livechat-server:3.6.0')) {
         Assert-True ($s -notmatch '[^\x00-\x7F]') 'non-ASCII character in a remote script'
     }
     Assert-True ((Get-ServerCheckScript -PublicUrl 'https://livechat.example.com').Contains("grep -c 'Discord pr'")) 'Discord login check'
+}
+
+Test-Case 'Prune script removes the previous image only' {
+    $s = Get-ServerPruneScript -Previous 'ghcr.io/quentingimenez/livechat-server:3.5.1' -Image 'ghcr.io/quentingimenez/livechat-server:3.6.0'
+    Assert-True ($s.Contains("PREV='ghcr.io/quentingimenez/livechat-server:3.5.1'")) 'previous reference'
+    Assert-True ($s.Contains("KEEP='ghcr.io/quentingimenez/livechat-server:3.6.0'")) 'deployed reference'
+    Assert-True ($s.Contains('docker image rm "$PREV"')) 'removes the previous image'
+    Assert-True ($s.Contains('if [ "$PREV" = "$KEEP" ]')) 'never removes the deployed image'
+    Assert-True ($s.Contains('docker image inspect "$PREV"')) 'skips an image the host does not have'
+    Assert-True (-not $s.Contains("`r")) 'no CR'
+    Assert-True ($s.StartsWith("set -u`n")) 'set -u first'
+    Assert-True (-not $s.Contains('docker stop')) 'never disturbs the running container'
+}
+
+Test-Case 'Prune script refuses a reference outside the image grammar' {
+    Assert-Throws { Get-ServerPruneScript -Previous "ghcr.io/x/y:1.0'; rm -rf /" -Image 'ghcr.io/x/y:2.0' } 'invalid image reference'
+    Assert-Throws { Get-ServerPruneScript -Previous 'ghcr.io/x/y:1.0' -Image 'ghcr.io/x/y:2 0' } 'invalid image reference'
+    Assert-Throws { Get-ServerPruneScript -Previous 'ghcr.io/x/y:1.0' -Image '' } 'invalid image reference'
+    Assert-Throws { Get-ServerPruneScript -Previous '' -Image 'ghcr.io/x/y:2.0' } 'invalid image reference'
+}
+
+Test-Case 'Prune only targets an image of the released repository' {
+    Assert-Equal 'ghcr.io/quentingimenez/livechat-server:3.5.1' (Select-ImageToPrune -Previous 'ghcr.io/quentingimenez/livechat-server:3.5.1' -Image 'ghcr.io/quentingimenez/livechat-server:3.6.0') 'same repository'
+    Assert-Equal $null (Select-ImageToPrune -Previous 'ghcr.io/quentingimenez/livechat-server:3.6.0' -Image 'ghcr.io/quentingimenez/livechat-server:3.6.0') 'already the deployed image'
+    Assert-Equal $null (Select-ImageToPrune -Previous 'my-fork/livechat-server:1.0' -Image 'ghcr.io/quentingimenez/livechat-server:3.6.0') 'another repository is kept'
+    Assert-Equal $null (Select-ImageToPrune -Previous '' -Image 'ghcr.io/quentingimenez/livechat-server:3.6.0') 'no previous image'
+    Assert-Equal $null (Select-ImageToPrune -Previous 'ghcr.io/quentingimenez/livechat-server:3.5.1' -Image 'ghcr.io/quentingimenez/livechat-server:bad ref') 'unusable deployed reference'
+}
+
+Test-Case 'Deploy keeps the previous image until the checks pass' {
+    # The host script runs before /health, the Discord login and the admin 403
+    # are verified: it must not delete anything, or a failed deploy would lose
+    # the image it can roll back to.
+    $s = Get-ServerDeployScript -Version '3.6.0' -Stamp '20261117-120000'
+    Assert-True (-not $s.Contains('docker image rm')) 'the deploy script never removes an image'
+    Assert-True (-not $s.Contains('docker rmi')) 'no rmi in the deploy script'
 }
 
 Test-Case 'Deploy error after update restores the template and recreates' {

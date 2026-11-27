@@ -586,6 +586,60 @@ function Get-ServerCheckScript {
         ) -join "`n") + "`n"
 }
 
+# An image reference (repository[:tag][@digest]): only these characters are
+# accepted, so it travels through the `ssh ... bash -s` pipe without escaping
+# or injection.
+function Test-ImageReference {
+    param([string]$Reference)
+    if (-not $Reference) { return $false }
+    return [bool]($Reference -match '^[A-Za-z0-9._\-/:@]+$')
+}
+
+# Image to remove once the deployment is verified: the previous one, when it
+# comes from the same repository, differs from the deployed image and is still
+# a valid reference. An image from another repository (fork, local build) is
+# kept: it is not necessarily re-downloadable from a registry.
+function Select-ImageToPrune {
+    param([string]$Previous, [string]$Image, [string]$ImageName = $script:ImageName)
+    if (-not $Previous) { return $null }
+    if ($Previous -eq $Image) { return $null }
+    if (-not (Test-ImageReference $Image)) { return $null }
+    if ($Previous -notmatch ('^' + [regex]::Escape($ImageName) + ':')) { return $null }
+    if (-not (Test-ImageReference $Previous)) { return $null }
+    return $Previous
+}
+
+# Bash run on the host after the new container passed the health and admin
+# checks: remove the image the template carried before, so a host does not
+# keep one image per release. Only the size is read from `docker image
+# inspect` (never Config.Env). A missing or still referenced image leaves the
+# deployment successful: the script reports it and exits 0.
+function Get-ServerPruneScript {
+    param([string]$Previous, [string]$Image)
+    if (-not (Test-ImageReference $Previous)) { throw "invalid image reference '$Previous'" }
+    if (-not (Test-ImageReference $Image)) { throw "invalid image reference '$Image'" }
+    return (@(
+            'set -u',
+            "PREV='$Previous'",
+            "KEEP='$Image'",
+            'if [ "$PREV" = "$KEEP" ]; then',
+            '  echo "PRUNE skipped (previous image is the deployed one)"',
+            '  exit 0',
+            'fi',
+            'if ! docker image inspect "$PREV" >/dev/null 2>&1; then',
+            '  echo "PRUNE absent $PREV"',
+            '  exit 0',
+            'fi',
+            'SIZE="$(docker image inspect --format ''{{.Size}}'' "$PREV" 2>/dev/null || echo 0)"',
+            'if docker image rm "$PREV" >/dev/null 2>&1; then',
+            '  echo "PRUNE removed $PREV $SIZE"',
+            'else',
+            '  echo "PRUNE failed $PREV"',
+            'fi',
+            'exit 0'
+        ) -join "`n") + "`n"
+}
+
 # Commands that put the previous image and database back, printed when a
 # deploy fails after the host script succeeded (new image unhealthy).
 function Get-ServerRollbackCommand {
@@ -674,10 +728,33 @@ function Invoke-ServerDeploy {
         Write-Host "ROLLBACK (on the host): $(Get-ServerRollbackCommand -Backup $result.Backup)"
         throw
     }
+    $image = "$($script:ImageName):$Version"
+    $prune = Select-ImageToPrune -Previous $result.Previous -Image $image
+    if ($prune) {
+        # Le conteneur tourne sur la nouvelle image et ses verifications sont
+        # passees : l'ancienne ne sert plus qu'a remplir les disques de l'hote.
+        try {
+            $lines = Invoke-RemoteBash (Get-ServerPruneScript -Previous $prune -Image $image)
+            $removed = @($lines | Where-Object { $_ -like 'PRUNE removed *' })
+            if ($removed.Count -gt 0) {
+                $size = ($removed[0] -split ' ')[-1]
+                $megabytes = [math]::Round([double]$size / 1MB, 1)
+                Write-Host "Previous image removed: $prune ($megabytes MB)."
+            } else {
+                Write-Host "Previous image kept: $prune (gone or still referenced); remove it with: docker image rm $prune"
+            }
+        } catch {
+            Write-Host "WARNING: previous image $prune not removed ($($_.Exception.Message)); remove it with: docker image rm $prune"
+        }
+    } elseif ($result.Previous) {
+        Write-Host "Previous image kept: $($result.Previous) (not a $($script:ImageName) image)."
+    }
     Write-Host "Server $Version deployed and checked (backup $($result.Backup))."
 }
 
 Export-ModuleMember -Function Get-ReleaseComponents, Get-ComponentVersionSources, Get-ComponentVersion,
     Get-ServerWorkspaceMembers, Get-VersionLocations, Test-VersionConsistency, Test-ReleaseVersion,
     Compare-SemVer, Get-LastReleaseTag, Get-TagPrefix, Set-ComponentVersion,
-    Get-ComponentChanges, Get-PendingReleaseTags, Get-ServerDeployScript, Get-ServerCheckScript, Get-ServerRollbackCommand, Get-DeployResult, Assert-DeploySettings, Import-DotEnv, Invoke-ServerDeploy
+    Get-ComponentChanges, Get-PendingReleaseTags, Get-ServerDeployScript, Get-ServerCheckScript,
+    Get-ServerRollbackCommand, Get-ServerPruneScript, Select-ImageToPrune, Get-DeployResult,
+    Assert-DeploySettings, Import-DotEnv, Invoke-ServerDeploy

@@ -422,11 +422,41 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
     /// Met à jour le verrou `busy_until` de la guilde
     /// (`max(remaining_ms, 5 s) + 250 ms`) et persiste `remaining_ms` au plus
     /// une fois par seconde et par job.
+    ///
+    /// Le verrou n'est armé que si un job visé est encore `PLAYING` : une trame
+    /// partie avant un arrêt et arrivée après la libération ne doit pas
+    /// relancer le verrou, sinon la guilde reste « occupée » jusqu'à la fin
+    /// nominale du média stoppé et la file suivante attend ce délai.
     pub async fn handle_playback_state(
         &self,
         event: PlaybackStateEvent,
     ) -> PlaybackResult<PlaybackStateOutcome> {
         let now = self.clock.now();
+        let job_ids: Vec<PlaybackJobId> = match event.job_id {
+            Some(job_id) => vec![job_id],
+            None => self
+                .store
+                .playing_jobs(&event.guild_id)
+                .await?
+                .into_iter()
+                .map(|job| job.id)
+                .collect(),
+        };
+
+        let mut playing = Vec::with_capacity(job_ids.len());
+        for job_id in job_ids {
+            let Some(job) = self.db.playback_jobs().get(job_id).await? else {
+                continue;
+            };
+            if job.status != JobStatus::Playing {
+                continue;
+            }
+            playing.push(job.id);
+        }
+        if playing.is_empty() {
+            return Ok(PlaybackStateOutcome::Ignored);
+        }
+
         let remaining_ms = event
             .remaining_ms
             .map(|remaining| remaining.min(MAX_PLAYBACK_REMAINING_MS));
@@ -441,20 +471,10 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
             .set_busy_until(&event.guild_id, Some(busy_until))
             .await?;
 
-        let job_ids: Vec<PlaybackJobId> = match event.job_id {
-            Some(job_id) => vec![job_id],
-            None => self
-                .store
-                .playing_jobs(&event.guild_id)
-                .await?
-                .into_iter()
-                .map(|job| job.id)
-                .collect(),
-        };
         let min_interval = TimeDuration::try_from(self.config.state_persist_min_interval)
             .unwrap_or_else(|_| TimeDuration::milliseconds(0));
         let mut outcome = PlaybackStateOutcome::Ignored;
-        for job_id in job_ids {
+        for job_id in playing {
             let last_persisted = self
                 .inner
                 .lock()
@@ -468,21 +488,15 @@ impl<S: PlaybackSink, C: Clock> PlaybackEngine<S, C> {
                     continue;
                 }
             }
-            let Some(job) = self.db.playback_jobs().get(job_id).await? else {
-                continue;
-            };
-            if job.status != JobStatus::Playing {
-                continue;
-            }
             self.db
                 .playback_jobs()
-                .set_playback_state(job.id, now)
+                .set_playback_state(job_id, now)
                 .await?;
             self.inner
                 .lock()
                 .await
                 .state_persisted_at
-                .insert(job.id, now);
+                .insert(job_id, now);
             outcome = PlaybackStateOutcome::Persisted;
         }
         Ok(outcome)

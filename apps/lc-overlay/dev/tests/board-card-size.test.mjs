@@ -5,9 +5,10 @@
 // grille : la largeur vient de la préférence, jamais de la fenêtre, donc
 // redimensionner ne change que le nombre de colonnes par ligne.
 //
-// Quand la barre devient trop étroite, la rangée se replie en icône et ouvre le
-// curseur horizontalement au survol ou au focus : le mode compact ne recopie
-// jamais le curseur, il réutilise le même contrôle.
+// Le curseur est toujours replié derrière son icône : la rangée ne lui réserve
+// jamais 176 px, et le panneau s'ouvre au survol ou au focus, horizontalement
+// quand la place le permet puis verticalement sous 740 px de barre. Le mode
+// compact ne recopie jamais le curseur, il réutilise le même contrôle.
 //
 // Les vues ont besoin d'un DOM et le harnais n'en a pas : le câblage du
 // curseur et la règle CSS se lisent dans les sources.
@@ -228,48 +229,42 @@ test('la barre d’outils porte le curseur et le câble à la préférence', () 
   );
 });
 
-test('la barre masque le curseur derrière son icône quand la place manque', () => {
+test('le curseur est toujours replié derrière son icône, ouvert au survol', () => {
   const boardCss = read('styles/board.css');
   const toolbar = ruleOf(boardCss, '.board-toolbar');
   assert.ok(toolbar, '.board-toolbar doit exister');
   assert.match(toolbar, /container-type:\s*inline-size/, 'la barre se mesure elle-même, pas la fenêtre');
   assert.match(toolbar, /container-name:\s*board-toolbar/, 'un nom évite les requêtes d’un autre conteneur');
 
-  const at = boardCss.indexOf('@container board-toolbar');
-  assert.notEqual(at, -1, 'il faut une requête de conteneur sur la largeur des outils');
-  const compact = balancedBlock(boardCss.slice(at), '@container board-toolbar', '{', '}');
-  // 900 px : la largeur où la rangée tient encore le curseur horizontal à côté
-  // des actions réduites à leurs icônes (recherche à son plancher, types,
-  // filtres, quatre boutons de 36 px). En dessous, le curseur rend sa place au
-  // lieu d'écraser les types ou de repousser les actions sur une deuxième ligne.
-  assert.match(compact, /^@container board-toolbar \(max-width: 900px\)/);
-
-  const label = ruleOf(compact, '.board-size');
-  assert.ok(label, 'le mode compact redéfinit le contrôle');
+  // La rangée ne réserve jamais la piste : le contrôle est l'icône, à toutes
+  // les largeurs. C'est la seule façon de ne pas reprendre 176 px aux libellés.
+  const label = ruleOf(boardCss, '.board-size');
+  assert.ok(label, 'le contrôle garde sa règle de base');
   assert.match(label, /position:\s*relative/, 'le panneau se pose sous l’icône');
-  assert.match(label, /width:\s*32px/, 'l’icône seule remplace la rangée');
+  assert.match(label, /justify-content:\s*center/, 'l’icône est seule dans le contrôle');
+  assert.match(label, /width:\s*32px/, 'le contrôle occupe la largeur d’un bouton-icône');
 
-  const panel = ruleOf(compact, '.board-size-panel');
-  assert.ok(panel, 'le panneau compact a sa propre règle');
+  const panel = ruleOf(boardCss, '.board-size-panel');
+  assert.ok(panel, 'le panneau a sa règle de base');
   assert.match(panel, /position:\s*absolute/, 'le panneau flotte au-dessus du board');
-  assert.match(panel, /right:\s*0/, 'il pend au bord droit de l’icône et s’ouvre vers la gauche');
-  assert.doesNotMatch(panel, /left:\s*50%/, 'le panneau n’est plus centré sur l’icône');
-  assert.doesNotMatch(panel, /flex-direction:\s*column/, 'la piste reste horizontale dans le panneau');
+  assert.match(panel, /right:\s*0/, 'par défaut il pend au bord droit de l’icône et s’ouvre vers la gauche');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'le panneau horizontal n’est pas centré');
+  assert.doesNotMatch(panel, /flex-direction:\s*column/, 'la piste reste horizontale par défaut');
+  assert.match(panel, /top:\s*calc\(100% \+ 6px\)/, 'il s’ouvre juste sous l’icône');
   assert.match(panel, /opacity:\s*0/, 'il est fermé au repos');
   assert.match(panel, /pointer-events:\s*none/, 'fermé, il ne capte pas la souris');
   assert.doesNotMatch(panel, /visibility:\s*hidden/, 'le curseur reste dans l’ordre de tabulation');
 
-  const open = balancedBlock(compact, '.board-size:hover .board-size-panel', '{', '}');
+  const open = balancedBlock(boardCss, '.board-size:hover .board-size-panel', '{', '}');
   assert.match(open, /opacity:\s*1/, 'le survol ouvre le panneau');
   assert.match(open, /pointer-events:\s*auto/, 'ouvert, il redevient manipulable');
-  assert.match(compact, /\.board-size:focus-within\s+\.board-size-panel/, 'le clavier ouvre aussi le panneau');
-  assert.match(compact, /\.board-size-panel::before/, 'un pont de survol comble l’écart vers l’icône');
+  assert.match(boardCss, /\.board-size:focus-within\s+\.board-size-panel/, 'le clavier ouvre aussi le panneau');
+  assert.match(boardCss, /\.board-size-panel::before/, 'un pont de survol comble l’écart vers l’icône');
 
-  // Le panneau ne redéfinit pas la piste : la règle de base reste horizontale.
-  assert.equal(ruleOf(compact, '.board-size-range'), null, 'le curseur ne passe plus en vertical');
   const baseRange = ruleOf(boardCss, '.board-size-range');
   assert.match(baseRange, /width:\s*104px/, 'la piste garde sa largeur horizontale');
-  assert.doesNotMatch(baseRange, /writing-mode|direction:\s*rtl|height:\s*96px/, 'aucune trace du curseur vertical');
+  assert.doesNotMatch(baseRange, /writing-mode|direction:\s*rtl|height:\s*96px/, 'aucune trace du curseur vertical par défaut');
+  assert.doesNotMatch(boardCss, /@container board-toolbar \(max-width: 900px\)/, 'le seuil 900 a disparu avec la rangée inline');
 
   const slider = balancedBlock(read('views/board.js'), 'function cardSizeSlider', '{', '}');
   const returned = slider.slice(slider.indexOf('return h('));
@@ -278,6 +273,39 @@ test('la barre masque le curseur derrière son icône quand la place manque', ()
     /h\('span', \{ class: 'board-size-panel' \}, input, output\)/,
     'le panneau enveloppe le curseur puis sa valeur, sans les dupliquer',
   );
+});
+
+test('sous 740 px de barre, le curseur passe en vertical et les types ne s’empilent pas', () => {
+  const boardCss = read('styles/board.css');
+  const narrow = balancedBlock(boardCss, '@container board-toolbar (max-width: 740px)', '{', '}');
+
+  const tools = ruleOf(narrow, '.board-tools');
+  assert.match(tools, /display:\s*grid/, 'la barre passe en grille sur deux rangées');
+  assert.match(tools, /'search search search actions'/, 'la recherche et les actions gardent la première rangée');
+  assert.match(tools, /'chips filters size \.'/, 'les types, les filtres et l’icône forment la seconde');
+  for (const [selector, area] of [
+    ['.board-search', 'search'],
+    ['.chips', 'chips'],
+    ['.filters-toggle', 'filters'],
+    ['.board-size', 'size'],
+    ['.board-actions', 'actions'],
+  ]) {
+    const rule = ruleOf(narrow, selector);
+    assert.ok(rule, `${selector} doit être placé dans la grille`);
+    assert.match(rule, new RegExp(`grid-area:\\s*${area}\\b`), `${selector} → ${area}`);
+  }
+
+  // Les types ne se replient jamais : ils changent de rangée, pas de forme.
+  const chips = ruleOf(boardCss, '.chips');
+  assert.match(chips, /flex-wrap:\s*nowrap/, 'les types ne s’empilent ni au large ni au serré');
+
+  const panel = ruleOf(narrow, '.board-size-panel');
+  assert.match(panel, /flex-direction:\s*column/, 'le panneau passe en colonne');
+  assert.match(panel, /left:\s*50%/, 'il se centre sous l’icône');
+  const range = ruleOf(narrow, '.board-size-range');
+  assert.match(range, /writing-mode:\s*vertical-lr/);
+  assert.match(range, /direction:\s*rtl/);
+  assert.match(range, /height:\s*96px/);
 });
 
 test('la préférence est peinte avant le premier rendu de l’app', () => {

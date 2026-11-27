@@ -3,12 +3,15 @@
 // du panneau de filtres au lieu d'une seconde ligne toujours visible.
 //
 // La rangée ne se replie jamais : le champ de recherche cède sa place (son
-// plancher est la largeur exacte de son placeholder), les types s'empilent en
-// interne, puis les libellés des actions laissent la place à leurs icônes —
-// l'action elle-même ne quitte jamais la ligne.
+// plancher est la largeur exacte de son placeholder), les types ne s'empilent
+// ni ne se tassent, puis les libellés des actions laissent la place à leurs
+// icônes — l'action elle-même ne quitte jamais la ligne. Sous le minimum de la
+// fenêtre board, les types passent en groupe horizontal sur une 2e rangée avec
+// les filtres et l'icône du curseur, sans jamais se mettre à la verticale.
 //
 // Ces invariants protègent le retour utilisateur : plus d'actions rejetées sur
-// une deuxième ligne, plus de légende orpheline quand le panneau est fermé.
+// une deuxième ligne, plus de types empilés en 2 × 2, plus de légende orpheline
+// quand le panneau est fermé.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -113,8 +116,7 @@ test('la rangée ne se replie plus : les actions y gardent leur place', () => {
   assert.ok(tools, 'la rangée des outils garde sa règle');
   assert.match(tools, /flex-wrap:\s*nowrap/, 'la rangée ne se replie jamais : les actions restent dessus');
   assert.ok(chips, 'les types gardent leur conteneur');
-  assert.match(chips, /min-width:\s*0/, 'les types peuvent céder leur largeur');
-  assert.match(chips, /flex-wrap:\s*wrap/, '… et s’empilent en interne au lieu de pousser les actions à la ligne');
+  assert.match(chips, /flex-wrap:\s*nowrap/, 'les types ne s’empilent jamais, même quand la place manque');
   assert.match(
     css,
     /\.board-tools > \.filters-toggle,\s*\.board-size\s*\{[^}]*flex:\s*0 0 auto/,
@@ -122,12 +124,32 @@ test('la rangée ne se replie plus : les actions y gardent leur place', () => {
   );
 });
 
+test('sous le minimum de la fenêtre, les types passent en groupe sur une 2e rangée', () => {
+  const css = read('styles/board.css');
+  const narrow = balancedBlock(css, '@container board-toolbar (max-width: 740px)', '{', '}');
+
+  const tools = ruleOf(narrow, '.board-tools');
+  assert.ok(tools, 'la barre serrée a sa grille');
+  assert.match(tools, /display:\s*grid/, 'deux rangées, sans replier la rangée elle-même');
+  assert.match(tools, /'search search search actions'/, 'la recherche et les actions gardent la première rangée');
+  assert.match(tools, /'chips filters size \.'/, 'les types, les filtres et l’icône forment la seconde');
+  assert.match(ruleOf(narrow, '.board-actions'), /grid-area:\s*actions/, 'les actions ne descendent jamais');
+  assert.match(ruleOf(narrow, '.chips'), /grid-area:\s*chips/, 'les types restent un seul groupe horizontal');
+  assert.match(ruleOf(narrow, '.board-search'), /max-width:\s*none/, 'la recherche remplit sa rangée');
+  assert.match(ruleOf(css, '.chips'), /flex-wrap:\s*nowrap/, 'aucune règle ne replie les types en 2 × 2');
+});
+
 test('quand la place manque, les actions passent en icônes sans perdre leur nom', () => {
   const css = read('styles/board.css');
-  const at = css.indexOf('@container board-toolbar (max-width: 1170px)');
+  // 1025 px est la largeur minimale d'une rangée libellée depuis que le
+  // curseur de taille n'occupe plus que son icône : 356 px d'actions,
+  // recherche 260, types 260, filtres 85, icône 32, gouttières 32. À la taille
+  // par défaut du board (1400 px), la barre en fait 1272 : les libellés restent
+  // donc toujours là, et le repli n'arrive qu'en dessous de 1025.
+  const at = css.indexOf('@container board-toolbar (max-width: 1024px)');
   assert.notEqual(at, -1, 'le repli des libellés se mesure sur la barre, pas sur la fenêtre');
 
-  const compact = balancedBlock(css, '@container board-toolbar (max-width: 1170px)', '{', '}');
+  const compact = balancedBlock(css, '@container board-toolbar (max-width: 1024px)', '{', '}');
   const label = ruleOf(compact, '.board-action-label');
   assert.ok(label, 'le mode icônes doit masquer les libellés');
   assert.match(label, /position:\s*absolute/);

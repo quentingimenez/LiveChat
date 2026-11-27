@@ -33,14 +33,17 @@
 
 /* One row: search, type chips, filters, the card-size control, then the
    actions pushed to the right. The tools group never wraps as a whole: the
-   search yields first, the chips stack inside their own group, and the action
-   labels give way to their icons (see the container queries below) so the
-   actions themselves always stay on the line.
+   search yields first, the chips never stack, and the action labels give way
+   to their icons (see the container queries below) so the actions themselves
+   always stay on the line.
 
-   The toolbar is its own query container: the card-size row folds into a hover
-   panel when the tools no longer have room for it, instead of pushing it alone
-   onto a second line. Measuring the toolbar (not the window) keeps the switch
-   right under the app's zoom level and the filters panel. */
+   The toolbar is its own query container. The card-size control is always the
+   icon of the hover panel: the row never spends 176 px on the slider, so the
+   labelled actions and the chips keep their room further down. Under 740 px of
+   tools even one row no longer fits the chips; the chips then move as a group
+   to a second row (still horizontal) while the search and the actions keep the
+   first. Measuring the toolbar (not the window) keeps every switch right under
+   the app's zoom level. */
 .board-toolbar {
   display: flex;
   align-items: center;
@@ -84,39 +87,79 @@
 
 .chips {
   display: flex;
-  flex-wrap: wrap;
-  min-width: 0;
+  flex-wrap: nowrap;
   gap: var(--space-1);
 }
 
-/* The filters button and the card-size control keep their width: when the row
-   runs out of room, the search shrinks and the chips stack, never those two. */
+/* The filters button and the card-size icon keep their width: when the row
+   runs out of room, the search shrinks, never those two. */
 .board-tools > .filters-toggle,
 .board-size {
   flex: 0 0 auto;
 }
 
-/* Card size: the slider of the grid's track width. One line of the toolbar —
-   icon, range, value — with a value column of a fixed width, so the row never
-   reflows while the thumb moves. */
+/* Card size: the slider of the grid's track width, always folded behind the
+   grid icon. The panel opens on hover or keyboard focus, above the board: it
+   fades with opacity rather than `visibility: hidden`, so the range stays in
+   the tab order, and its 8 px `::before` bridge keeps the hover alive while
+   the pointer crosses the gap between the icon and the panel. Horizontally,
+   the panel hangs from the icon's right edge and grows leftwards, over the
+   filters rather than the actions: the buttons keep their end of the row. */
 .board-size {
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
+  justify-content: center;
+  width: 32px;
   height: 32px;
+  border-radius: var(--radius-s);
   color: var(--text-soft);
+  cursor: pointer;
+}
+
+.board-size:hover,
+.board-size:focus-within {
+  background: var(--slate-700);
+  color: var(--text);
 }
 
 .board-size .icon {
   flex: 0 0 auto;
 }
 
-/* The range and its value: inline next to the icon, or beside it in the hover
-   panel of the compact toolbar below. */
 .board-size-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-s);
+  background: var(--slate-700);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.board-size-panel::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  right: 0;
+  left: 0;
+  height: 8px;
+}
+
+.board-size:hover .board-size-panel,
+.board-size:focus-within .board-size-panel {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .board-size-range {
@@ -133,73 +176,82 @@
   text-align: right;
 }
 
-/* Narrow toolbar: the row collapses to the grid icon and the slider opens
-   horizontally under it on hover or keyboard focus. The panel fades with
-   opacity rather than `visibility: hidden`, so the range stays in the tab
-   order; its 8 px `::before` bridge keeps the hover alive while the pointer
-   crosses the gap between the icon and the panel. The panel hangs from the
-   icon's right edge and grows leftwards, over the filters rather than the
-   actions: the buttons keep their end of the row.
-
-   900 px is where the tools still hold the horizontal size next to the
-   hidden-label actions (search at its 168 px floor, chips, filters, four icon
-   buttons), with a margin; below it the row gives the icon its room back
-   instead of squeezing the chips. */
-@container board-toolbar (max-width: 900px) {
-  .board-size {
-    position: relative;
-    justify-content: center;
-    width: 32px;
-    border-radius: var(--radius-s);
-    cursor: pointer;
+/* Under 740 px of tools, one row can no longer hold the chips: the search at
+   its 168 px floor, the chips (260 px), filters, the size icon and the icon
+   actions add up to 741 px. The chips do not stack — they move as one
+   horizontal group to a second row with the filters and the size icon, while
+   the search and the actions keep the first line. The size panel then opens
+   vertically, centred under its icon, since the tools have no room left for
+   the horizontal row. Below the board window's 960 px minimum, this mode is a
+   graceful fallback rather than the everyday layout. */
+@container board-toolbar (max-width: 740px) {
+  .board-tools {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto auto;
+    grid-template-areas:
+      'search search search actions'
+      'chips filters size .';
+    align-items: center;
   }
 
-  .board-size:hover,
-  .board-size:focus-within {
-    background: var(--slate-700);
-    color: var(--text);
+  .board-search {
+    grid-area: search;
+    max-width: none;
+  }
+
+  .chips {
+    grid-area: chips;
+  }
+
+  .filters-toggle {
+    grid-area: filters;
+  }
+
+  .board-size {
+    grid-area: size;
+  }
+
+  .board-actions {
+    grid-area: actions;
   }
 
   .board-size-panel {
-    position: absolute;
-    top: calc(100% + 6px);
-    right: 0;
-    z-index: 20;
-    padding: 8px 10px;
-    border: 1px solid var(--field-line);
-    border-radius: var(--radius-s);
-    background: var(--slate-700);
-    box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-4px);
-    transition: opacity 120ms ease, transform 120ms ease;
-  }
-
-  .board-size-panel::before {
-    content: '';
-    position: absolute;
-    top: -8px;
-    right: 0;
-    left: 0;
-    height: 8px;
+    left: 50%;
+    right: auto;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 6px 8px;
+    transform: translate(-50%, -4px);
   }
 
   .board-size:hover .board-size-panel,
   .board-size:focus-within .board-size-panel {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateY(0);
+    transform: translate(-50%, 0);
+  }
+
+  .board-size-range {
+    width: 24px;
+    height: 96px;
+    writing-mode: vertical-lr;
+    direction: rtl;
+  }
+
+  .board-size-value {
+    min-width: 0;
+    font-size: 11px;
+    text-align: center;
   }
 }
 
 /* Narrower toolbar: the actions keep their place on the line and their labels
    step aside for the icon. The label stays in the DOM, clipped, so the
-   accessible name survives and the `title` carries the tooltip. 1170 px is the
-   width where the labelled row (356 px of actions) still fits with the search
-   at its 260 px reading width; below it the icons take over before the row has
-   to squeeze the chips. */
-@container board-toolbar (max-width: 1170px) {
+   accessible name survives and the `title` carries the tooltip. With the size
+   control reduced to its 32 px icon, a labelled row needs 1025 px: 356 px of
+   actions + search 260 + chips 260 + filters 85 + icon 32 + gaps 32. The
+   compact form starts only below that — at the board's 1400 px default the
+   labels are always there — so the bar does not trade its labels away while
+   the search still has its reading width. */
+@container board-toolbar (max-width: 1024px) {
   .board-actions .btn {
     padding: 0 9px;
   }

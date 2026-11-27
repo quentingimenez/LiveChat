@@ -3,13 +3,14 @@
 // est le plus bas des volumes général et de guilde, sur une échelle absolue
 // 0–100 % (le 100 % de la barre d'aperçu ne reprend jamais le volume des
 // paramètres). Un média audio ne démarre jamais en sourdine : son autoplay
-// attend que le son soit activé. Ce fichier protège ces invariants.
+// attend que le son soit activé. Les deux réglages d'aperçu ne s'appliquent que
+// si l'aperçu au survol est actif. Ce fichier protège ces invariants.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { playbackPlan } from '../../web/app/core/media-playback.js';
+import { playbackPlan, previewPlaybackEnabled } from '../../web/app/core/media-playback.js';
 
 // Minimal DOM stand-ins for the renderer's `instanceof` checks at import time.
 class FakeElement {
@@ -111,6 +112,40 @@ test('the details window applies its own autoplay and sound plan', () => {
   assert.ok(open, 'openDetail is found');
   assert.match(open[1], /playbackPlan\(\{ kind, autoplay: settings\.detailAutoplay, sound: settings\.detailSound \}\)/);
   assert.doesNotMatch(open[1], /A new player starts silent/, 'a new player follows the switches, not a forced mute');
+});
+
+test('the preview switches only apply while the hover preview is on', () => {
+  assert.equal(previewPlaybackEnabled({ hoverPreview: false }), false);
+  assert.equal(previewPlaybackEnabled({ hoverPreview: true }), true);
+  assert.equal(previewPlaybackEnabled({}), true, 'the hover preview is on by default');
+  assert.equal(previewPlaybackEnabled(undefined), true);
+});
+
+test('the settings page disables the preview switches without the hover preview', () => {
+  assert.match(settingsView, /const previewEnabled = previewPlaybackEnabled\(settings\);/);
+  assert.equal(
+    (settingsView.match(/disabled: !previewEnabled/g) || []).length,
+    2,
+    'both hover-preview switches are disabled together',
+  );
+  assert.match(settingsView, /previewNote\.hidden = previewEnabled/, 'the explanation starts hidden when previews work');
+  assert.match(settingsView, /function setPreviewPlaybackEnabled\(enabled\)/);
+  assert.match(
+    settingsView,
+    /setPreviewPlaybackEnabled\(event\.target\.checked\)/,
+    'turning the hover preview off disables the two switches without a re-render',
+  );
+  assert.match(settingsView, /id: 'settings-preview-disabled'/);
+  assert.match(settingsView, /L’aperçu au survol est désactivé/);
+});
+
+test('a switch that cannot apply reads as inactive', () => {
+  const css = read('styles/base.css');
+  assert.match(css, /\.switch input\[type='checkbox'\]:disabled \{[^}]*cursor: not-allowed;[^}]*opacity: 0\.45;/);
+  assert.match(css, /\.switch:has\(input\[type='checkbox'\]:disabled\)/);
+
+  const settingsCss = read('styles/settings.css');
+  assert.match(settingsCss, /\.settings-row:has\(input\[type='checkbox'\]:disabled\) \.settings-label/);
 });
 
 test('the settings page offers the four switches in a Lecture section', () => {

@@ -10,3 +10,9 @@ export function playbackPlan({ kind, autoplay, sound } = {}) {
     muted,
   };
 }
+
+// The two hover-preview switches only apply while the hover preview itself is
+// on: without it there is no preview player to start or unmute.
+export function previewPlaybackEnabled(settings) {
+  return !settings || settings.hoverPreview !== false;
+}

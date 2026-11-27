@@ -185,8 +185,8 @@ handshake réel contre un mock WS (hello reçu, heartbeat reçu, `play` reçu, c
 4. **TLS insecure** : uniquement via `LIVECHAT_INSECURE_TLS` (jamais par défaut).
 5. **Updater** : pubkey minisign encore placeholder → `overlay_check_updates` /
    `overlay_install_update` renvoient une erreur explicite, à remplacer en Phase 9.
-6. **`displayId` Electron** n'est pas résolu (seuls `displayKey`/`displayIndex`/
-   primaire le sont) ; hérité de la Phase 8a.
+6. **`displayId` Electron** n'est pas résolu (seuls `displayHardwareId`/
+   `displayKey`/`displayIndex`/primaire le sont) ; hérité de la Phase 8a.
 7. **Non testé bout-en-bout** contre le vrai serveur v2 (les crates serveur sont
    hors périmètre) : couverture par mock + tests unitaires uniquement.
 8. **Pas de mesure mémoire/CPU refaite** en 8b ; se référer au POC Tauri

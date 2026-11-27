@@ -30,11 +30,12 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 24] = [
+const KNOWN_KEYS: [&str; 25] = [
     "displayId",
     "displayIndex",
     "displayKey",
     "displayLabel",
+    "displayHardwareId",
     "volume",
     "enabled",
     "autoStart",
@@ -279,6 +280,9 @@ pub struct OverlayConfig {
     pub display_index: Option<i64>,
     pub display_key: Option<String>,
     pub display_label: Option<String>,
+    /// Identité matérielle du moniteur (constructeur, produit, numéro de série
+    /// EDID) : la seule que Windows ne réattribue pas au fil des démarrages.
+    pub display_hardware_id: Option<String>,
     pub volume: f64,
     pub enabled: bool,
     pub auto_start: bool,
@@ -319,6 +323,7 @@ impl Default for OverlayConfig {
             display_index: None,
             display_key: None,
             display_label: None,
+            display_hardware_id: None,
             volume: DEFAULT_VOLUME,
             enabled: true,
             auto_start: false,
@@ -381,6 +386,7 @@ impl OverlayConfig {
         config.display_index = int_field(map, "displayIndex", &mut warnings);
         config.display_key = string_field(map, "displayKey", &mut warnings);
         config.display_label = string_field(map, "displayLabel", &mut warnings);
+        config.display_hardware_id = string_field(map, "displayHardwareId", &mut warnings);
         config.volume = volume_field(map, &mut warnings);
         config.enabled = bool_field(map, "enabled", true, &mut warnings);
         config.auto_start = map
@@ -1071,6 +1077,7 @@ mod tests {
         assert_eq!(config.display_index, None);
         assert_eq!(config.display_key, None);
         assert_eq!(config.display_label, None);
+        assert_eq!(config.display_hardware_id, None);
         assert_eq!(config.server_url, None);
         assert_eq!(config.client_token, None);
         assert_eq!(config.client_id, None);
@@ -1081,6 +1088,27 @@ mod tests {
         assert_eq!(config.shortcuts, ShortcutSettings::default());
         assert_eq!(config.layout, OverlayLayout::default());
         assert!(config.extra.is_empty());
+    }
+
+    #[test]
+    fn the_hardware_identity_is_a_known_field() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({
+            "displayHardwareId": "SAM:707A:Z9XK400001"
+        }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert_eq!(
+            config.display_hardware_id.as_deref(),
+            Some("SAM:707A:Z9XK400001")
+        );
+        assert!(
+            !config.extra.contains_key("displayHardwareId"),
+            "l'identité matérielle est un champ à nous, pas un extra conservé tel quel"
+        );
+        let text = config.to_json_string().expect("serialize");
+        assert!(
+            text.contains("\"displayHardwareId\": \"SAM:707A:Z9XK400001\""),
+            "json: {text}"
+        );
     }
 
     #[test]
@@ -1360,6 +1388,7 @@ mod tests {
         config.display_index = Some(1);
         config.display_key = Some("0,0,2560,1440,0".to_string());
         config.display_label = Some("Écran 1".to_string());
+        config.display_hardware_id = Some("SAM:707A:Z9XK400001".to_string());
         config.server_url = Some("http://localhost:3000/".to_string());
         config.media_bindings = BTreeMap::from([("Ctrl+1".to_string(), "id-1".to_string())]);
         config

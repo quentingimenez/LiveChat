@@ -493,6 +493,14 @@ function renderDisplay(settings) {
     },
   });
 
+  // On by default: only an explicit `false` hides the floating button.
+  const backToTop = h('input', {
+    id: 'settings-back-to-top',
+    type: 'checkbox',
+    checked: settings.backToTop !== false,
+    onChange: (event) => applyPatch({ backToTop: event.target.checked }),
+  });
+
   const testButton = h(
     'button',
     { class: 'btn', type: 'button', disabled: testingMedia || placing, onClick: testMedia },
@@ -533,6 +541,12 @@ function renderDisplay(settings) {
       hoverPreview,
       'settings-hover-preview',
       'Désactivé : un clic ouvre les détails, un double-clic joue le média sur les overlays.',
+    ),
+    switchRow(
+      'Bouton « Revenir en haut »',
+      backToTop,
+      'settings-back-to-top',
+      'Désactivé : la board ne montre plus le bouton flottant qui ramène la grille en haut.',
     ),
     controlRow('Média de test', [testButton]),
   );

@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 29] = [
+const KNOWN_KEYS: [&str; 30] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -43,6 +43,7 @@ const KNOWN_KEYS: [&str; 29] = [
     "showText",
     "mediaMuted",
     "hoverPreview",
+    "backToTop",
     "previewAutoplay",
     "detailAutoplay",
     "previewSound",
@@ -296,6 +297,8 @@ pub struct OverlayConfig {
     pub media_muted: bool,
     /// A board card shows its preview when the pointer stays on it.
     pub hover_preview: bool,
+    /// The board shows its floating "back to top" button.
+    pub back_to_top: bool,
     /// The hover preview starts playing its media as soon as it opens.
     pub preview_autoplay: bool,
     /// The details window starts playing its media as soon as it opens.
@@ -344,6 +347,9 @@ impl Default for OverlayConfig {
             media_muted: false,
             // On by default: the preview opens unless the device turns it off.
             hover_preview: true,
+            // On by default: the floating button keeps the board's toolbar in
+            // reach on a long grid.
+            back_to_top: true,
             // Autoplay is on by default, as before it was a setting; the two
             // sound switches start off so no player becomes audible without
             // the user asking for it.
@@ -417,6 +423,7 @@ impl OverlayConfig {
         config.show_text = bool_field(map, "showText", true, &mut warnings);
         config.media_muted = bool_field(map, "mediaMuted", false, &mut warnings);
         config.hover_preview = bool_field(map, "hoverPreview", true, &mut warnings);
+        config.back_to_top = bool_field(map, "backToTop", true, &mut warnings);
         config.preview_autoplay = bool_field(map, "previewAutoplay", true, &mut warnings);
         config.detail_autoplay = bool_field(map, "detailAutoplay", true, &mut warnings);
         config.preview_sound = bool_field(map, "previewSound", false, &mut warnings);
@@ -1096,6 +1103,7 @@ mod tests {
         assert!(!config.guest_mode);
         assert!(config.show_text);
         assert!(config.hover_preview);
+        assert!(config.back_to_top);
         assert!(config.preview_autoplay);
         assert!(config.detail_autoplay);
         assert!(!config.preview_sound);
@@ -1162,6 +1170,24 @@ mod tests {
             !config.extra.contains_key("hoverPreview"),
             "a known field is not kept as an unknown extra"
         );
+    }
+
+    #[test]
+    fn back_to_top_defaults_on_and_round_trips() {
+        let (mut config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.5 }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(config.back_to_top, "the floating button shows by default");
+
+        config.back_to_top = false;
+        let saved = serde_json::to_value(&config).expect("serializable config");
+        assert_eq!(saved["backToTop"], json!(false));
+        assert!(
+            !config.extra.contains_key("backToTop"),
+            "a known field is not kept as an unknown extra"
+        );
+        let (reloaded, warnings) = OverlayConfig::from_json_value(&saved);
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(!reloaded.back_to_top);
     }
 
     #[test]

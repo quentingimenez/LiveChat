@@ -1,7 +1,6 @@
-// Device sound settings seen by the board: the previews play at the same
-// level as the overlay (general volume × guild volume, through the overlay's
-// perceptual curve), and the header shows whether the guild's media sound is
-// cut.
+// Device sound settings seen by the board: the previews and the details
+// players default to the quieter of the general and guild volumes, and the
+// header shows whether the guild's media sound is cut.
 
 import { createOverlayLegacyUtils } from '../../dist/renderer/overlay/legacy-utils.js';
 import { invoke, listen } from './ipc.js';
@@ -9,7 +8,15 @@ import { invoke, listen } from './ipc.js';
 // The overlay renderer's own curve: one implementation for both.
 const { toPerceptualGain } = createOverlayLegacyUtils();
 
-let sound = { volume: 1, mediaMuted: false, guilds: {} };
+let sound = {
+  volume: 1,
+  mediaMuted: false,
+  guilds: {},
+  previewAutoplay: true,
+  detailAutoplay: true,
+  previewSound: true,
+  detailSound: true,
+};
 
 // Both volumes start at 100 %: the shell stores them as 0..1 with a default of
 // 1 (`DEFAULT_VOLUME` in the overlay's config.rs).
@@ -20,6 +27,18 @@ function level(value) {
   return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
 }
 
+// The four playback switches of a SettingsView. Only an explicit `false`
+// turns one off, like the board's hover preview.
+export function playbackSettings(view = sound) {
+  const source = view && typeof view === 'object' ? view : {};
+  return {
+    previewAutoplay: source.previewAutoplay !== false,
+    detailAutoplay: source.detailAutoplay !== false,
+    previewSound: source.previewSound !== false,
+    detailSound: source.detailSound !== false,
+  };
+}
+
 function apply(view) {
   if (!view || typeof view !== 'object') {
     return;
@@ -28,6 +47,7 @@ function apply(view) {
     volume: level(view.volume),
     mediaMuted: view.mediaMuted === true,
     guilds: view.guilds && typeof view.guilds === 'object' ? view.guilds : {},
+    ...playbackSettings(view),
   };
   document.dispatchEvent(new CustomEvent('livechat:sound'));
 }
@@ -65,15 +85,23 @@ export function mediaGain(volume, guildVolume) {
   return toPerceptualGain(level(volume) * (guildVolume === undefined ? 1 : level(guildVolume)));
 }
 
-// Volume (0 to 1) of a preview for this guild.
+// Volume (0 to 1) of the audio preview in the media editor, which reproduces
+// the overlay's gain.
 export function previewVolume(guildId) {
   const guild = guildId ? sound.guilds[guildId] : undefined;
   return mediaGain(sound.volume, guild ? guild.volume : undefined);
 }
 
-// The preview's own level bar trims that gain: 100 % is the overlay's volume,
-// 0 % silence. Keeping it linear preserves the bar as a share of the overlay,
-// instead of giving the preview a second, absolute volume scale.
-export function trimVolume(base, trim) {
-  return level(base) * level(trim);
+// Default level (0 to 1) of the preview and details players: the quieter of
+// the general and guild volumes, on an absolute scale where 100 % is full
+// volume. A guild without a volume only has the general one.
+export function mediaLevelOf(view, guildId) {
+  const general = level(view && view.volume);
+  const guild = view && guildId ? (view.guilds || {})[guildId] : undefined;
+  return guild ? Math.min(general, level(guild.volume)) : general;
+}
+
+// Default level of the players for the guild being watched.
+export function mediaLevel(guildId) {
+  return mediaLevelOf(sound, guildId);
 }

@@ -232,13 +232,21 @@ impl AppState {
             net.client_id = Some(payload.client_id.clone());
             net.session_mode = Some(session_mode_label(payload.session_mode).to_string());
             net.paused = payload.paused;
+            net.paused_remaining_ms = if payload.paused {
+                payload.current_job.as_ref().map(|job| job.remaining_ms)
+            } else {
+                None
+            };
             net.peers.clear();
         });
     }
 
     /// Applique un `pause` partagé reçu du serveur.
-    pub fn set_net_pause(&self, guild_id: &str, paused: bool) {
-        self.with_net(guild_id, |net| net.paused = paused);
+    pub fn set_net_pause(&self, guild_id: &str, paused: bool, remaining_ms: Option<u64>) {
+        self.with_net(guild_id, |net| {
+            net.paused = paused;
+            net.paused_remaining_ms = if paused { remaining_ms } else { None };
+        });
     }
 
     pub fn set_net_peers(&self, guild_id: &str, labels: Vec<String>) {
@@ -784,6 +792,64 @@ mod tests {
         assert_eq!(playing(&state, "222"), serde_json::json!(false));
         state.report_stop(Some("job-a"), true);
         assert_eq!(playing(&state, "111"), serde_json::json!(false));
+    }
+
+    #[test]
+    fn guilds_payload_freezes_the_shared_pause_position() {
+        let (_dir, state) = paired_state(&["111"]);
+        state.set_net_pause("111", true, Some(12_500));
+        let payload = state.guilds_payload();
+        assert_eq!(
+            payload["guilds"][0]["connection"]["paused"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            payload["guilds"][0]["connection"]["pausedRemainingMs"],
+            serde_json::json!(12_500)
+        );
+
+        // La reprise lève la pause et efface la position gelée : la barre de la
+        // board repart de `startedAt`, que le serveur a décalé du temps de pause.
+        state.set_net_pause("111", false, None);
+        let payload = state.guilds_payload();
+        assert_eq!(
+            payload["guilds"][0]["connection"]["paused"],
+            serde_json::json!(false)
+        );
+        assert_eq!(
+            payload["guilds"][0]["connection"]["pausedRemainingMs"],
+            serde_json::Value::Null
+        );
+    }
+
+    #[test]
+    fn welcome_while_paused_carries_the_frozen_remaining_time() {
+        let (_dir, state) = paired_state(&["111"]);
+        let welcome = lc_protocol::WelcomePayload {
+            protocol_version: 2,
+            guild_id: "111".to_string(),
+            guild_name: None,
+            guild_icon_url: None,
+            client_id: "client-1".to_string(),
+            session_mode: lc_protocol::SessionMode::Normal,
+            server_version: "0.1.0-test".to_string(),
+            server_time: 0,
+            config: lc_protocol::WelcomeConfig {
+                show_text_default: true,
+                default_media_time: 10,
+                max_media_time: None,
+            },
+            paused: true,
+            current_job: Some(lc_protocol::CurrentJobPayload {
+                play: lc_protocol::PlayPayload::default(),
+                started_at: 0,
+                remaining_ms: 4_200,
+            }),
+        };
+        state.set_net_welcome("111", &welcome);
+        let snapshot = state.net_snapshot_for("111");
+        assert!(snapshot.paused);
+        assert_eq!(snapshot.paused_remaining_ms, Some(4_200));
     }
 
     #[test]

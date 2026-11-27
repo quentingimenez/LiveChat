@@ -54,7 +54,8 @@ import {
   playTimeline,
 } from '../core/detail-motion.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
-import { trimVolume } from '../core/sound.js';
+import { playbackPlan } from '../core/media-playback.js';
+import { playbackSettings } from '../core/sound.js';
 
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
@@ -275,10 +276,11 @@ export function createMediaDetail(options) {
   let pointerY = -1;
   let holdX = -1;
   let holdY = -1;
-  // Level of the preview's own volume bar, kept across previews: it trims the
-  // overlay gain, so 100 % keeps a preview exactly as loud as the overlay.
-  let previewLevel = 1;
-  let lastAudibleLevel = 1;
+  // Level of the preview's own volume bar, kept across previews. `null` follows
+  // the card's default, the quieter of the general and guild volumes; 100 % is
+  // full volume, independent of the device settings.
+  let previewLevel = null;
+  let lastAudibleLevel = null;
   // A held volume slider keeps a transparent band around the preview: the
   // pointer may finish above or below it without taking the preview away.
   let volumeMargin = null;
@@ -599,6 +601,10 @@ export function createMediaDetail(options) {
   function attachPlayer(el, media, player, card, desc) {
     el.classList.add('is-playable');
     el._player = player;
+    // The bar sets an absolute level: 100 % is full volume. Until the user
+    // moves it, the preview starts at the card's default level.
+    const defaultLevel = clampVolume(desc && desc.volume);
+    const currentLevel = () => (previewLevel === null ? defaultLevel : previewLevel);
     // The tooltip names the action, not a sentence: the preview is paused
     // until its player says otherwise.
     media.title = 'Lecture';
@@ -641,7 +647,7 @@ export function createMediaDetail(options) {
     volume.append(mute, pop);
 
     const refreshVolume = () => {
-      const percent = Math.round(previewLevel * 100);
+      const percent = Math.round(currentLevel() * 100);
       slider.value = String(percent);
       slider.style.setProperty('--hp-volume-level', `${percent}%`);
       slider.setAttribute('aria-valuetext', `${percent} %`);
@@ -651,13 +657,14 @@ export function createMediaDetail(options) {
       mute.setAttribute('title', audible ? 'Couper le son' : 'Activer le son');
       mute.setAttribute('aria-pressed', String(audible));
     };
-    player.volume = trimVolume(desc && desc.volume, previewLevel);
+    player.volume = currentLevel();
+    player.muted = !playbackSettings().previewSound;
     refreshVolume();
 
     slider.addEventListener('input', () => {
       const level = clampVolume(Number(slider.value) / 100);
       previewLevel = level;
-      player.volume = trimVolume(desc && desc.volume, level);
+      player.volume = level;
       if (level > 0) {
         lastAudibleLevel = level;
         player.muted = false;
@@ -676,7 +683,7 @@ export function createMediaDetail(options) {
         if (previewLevel === 0) {
           previewLevel = lastAudibleLevel;
         }
-        player.volume = trimVolume(desc && desc.volume, previewLevel);
+        player.volume = currentLevel();
         player.muted = false;
       }
       refreshVolume();
@@ -894,6 +901,10 @@ export function createMediaDetail(options) {
     media.style.height = `${size.height}px`;
     let player = null;
     let still = null;
+    // The card player starts from the device switches: a video may autoplay
+    // muted, an audio waits until its sound is on.
+    const settings = playbackSettings();
+    const playback = playbackPlan({ kind, autoplay: settings.previewAutoplay, sound: settings.previewSound });
 
     if (kind === 'video' && url) {
       const carried = prefetched && prefetched.kind === 'video' ? prefetched.element : null;
@@ -905,13 +916,17 @@ export function createMediaDetail(options) {
       if (poster) {
         player.poster = poster;
       }
-      player.muted = true;
+      player.muted = playback.muted;
       player.defaultMuted = true;
       player.loop = true;
-      player.autoplay = true;
+      player.autoplay = false;
       player.playsInline = true;
       player.preload = carried ? 'auto' : 'metadata';
-      player.setAttribute('muted', '');
+      if (playback.muted) {
+        player.setAttribute('muted', '');
+      } else {
+        player.removeAttribute('muted');
+      }
       player.setAttribute('playsinline', '');
       player.removeAttribute('aria-hidden');
       player.setAttribute('aria-label', 'Aperçu vidéo');
@@ -929,12 +944,16 @@ export function createMediaDetail(options) {
         if (!player.src) {
           player.src = url;
         }
-        player.muted = true;
+        player.muted = playback.muted;
         player.defaultMuted = true;
         player.loop = true;
-        player.autoplay = true;
+        player.autoplay = false;
         player.preload = carried ? 'auto' : 'metadata';
-        player.setAttribute('muted', '');
+        if (playback.muted) {
+          player.setAttribute('muted', '');
+        } else {
+          player.removeAttribute('muted');
+        }
         player.removeAttribute('aria-hidden');
         player.setAttribute('aria-label', 'Aperçu audio');
         media.insertBefore(player, media.firstChild);
@@ -987,6 +1006,7 @@ export function createMediaDetail(options) {
       media.after(track);
     }
     el._poster = still;
+    el._playback = playback;
     return el;
   }
 
@@ -1032,10 +1052,14 @@ export function createMediaDetail(options) {
     document.body.appendChild(el);
 
     if (el._player) {
-      el._player.muted = true;
-      const attempt = el._player.play();
-      if (attempt && typeof attempt.catch === 'function') {
-        attempt.catch(() => el.classList.add('is-paused'));
+      el._player.muted = el._playback.muted;
+      if (el._playback.autoplay) {
+        const attempt = el._player.play();
+        if (attempt && typeof attempt.catch === 'function') {
+          attempt.catch(() => el.classList.add('is-paused'));
+        }
+      } else {
+        el.classList.add('is-paused');
       }
     }
 
@@ -1199,6 +1223,8 @@ export function createMediaDetail(options) {
   }
 
   function detailVideo(url, poster, volume) {
+    const settings = playbackSettings();
+    const plan = playbackPlan({ kind: 'video', autoplay: settings.detailAutoplay, sound: settings.detailSound });
     const player = document.createElement('video');
     player.className = 'hp-page-video';
     player.src = url;
@@ -1206,27 +1232,33 @@ export function createMediaDetail(options) {
       player.poster = poster;
     }
     player.controls = true;
-    player.autoplay = true;
-    player.muted = true;
-    player.defaultMuted = true;
+    player.autoplay = plan.autoplay;
+    player.muted = plan.muted;
+    player.defaultMuted = plan.muted;
     player.loop = true;
     player.playsInline = true;
     player.setAttribute('playsinline', '');
-    player.setAttribute('muted', '');
+    if (plan.muted) {
+      player.setAttribute('muted', '');
+    }
     player.setAttribute('aria-label', 'Média en grand');
     player.volume = volume;
     return player;
   }
 
   function detailAudio(url, volume) {
+    const settings = playbackSettings();
+    const plan = playbackPlan({ kind: 'audio', autoplay: settings.detailAutoplay, sound: settings.detailSound });
     const player = document.createElement('audio');
     player.src = url;
     player.controls = true;
-    player.muted = true;
-    player.defaultMuted = true;
-    player.autoplay = true;
+    player.muted = plan.muted;
+    player.defaultMuted = plan.muted;
+    player.autoplay = plan.autoplay;
     player.preload = 'metadata';
-    player.setAttribute('muted', '');
+    if (plan.muted) {
+      player.setAttribute('muted', '');
+    }
     player.setAttribute('aria-label', 'Média audio');
     player.volume = volume;
     return player;
@@ -1255,7 +1287,7 @@ export function createMediaDetail(options) {
           prefetchedVideo.className = 'hp-page-video';
           prefetchedVideo.controls = true;
           prefetchedVideo.loop = true;
-          prefetchedVideo.autoplay = true;
+          prefetchedVideo.autoplay = false;
           prefetchedVideo.muted = true;
           if (poster) {
             prefetchedVideo.poster = poster;
@@ -1776,14 +1808,28 @@ export function createMediaDetail(options) {
     detailId = id;
     page._unwatch = watchShell(page);
 
-    const prefetchedPlayer = prefetched && player === prefetched.element ? player : null;
-    if (player && (prefetchedPlayer || (player !== carriedVideo && player !== carriedPlayer))) {
-      // A new player starts silent; the carried one keeps its state.
-      player.muted = true;
+    // The details player follows the detail switches, whatever element it is:
+    // a player carried from the preview joins the window under its rules, and
+    // a carried one would otherwise keep the preview's pause or sound state.
+    const settings = playbackSettings();
+    const plan = playbackPlan({ kind, autoplay: settings.detailAutoplay, sound: settings.detailSound });
+    if (player) {
+      player.autoplay = plan.autoplay;
+      player.muted = plan.muted;
+      player.defaultMuted = plan.muted;
+      if (plan.muted) {
+        player.setAttribute('muted', '');
+      } else {
+        player.removeAttribute('muted');
+      }
       player.volume = clampVolume(desc.volume);
-      const attempt = player.play();
-      if (attempt && typeof attempt.catch === 'function') {
-        attempt.catch(() => {});
+      if (plan.autoplay) {
+        const attempt = player.play();
+        if (attempt && typeof attempt.catch === 'function') {
+          attempt.catch(() => {});
+        }
+      } else {
+        player.pause();
       }
     }
 
@@ -1961,7 +2007,7 @@ export function createMediaDetail(options) {
     closeDetail() {
       closeDetail();
     },
-    // Follows the device's preview level, like the board's other previews: the
+    // Follows the device's default level, like the board's other players: the
     // media keeps its own mute state, only its volume follows the sliders.
     setVolume(volume) {
       const page = detailPage;

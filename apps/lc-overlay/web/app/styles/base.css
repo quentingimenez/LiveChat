@@ -300,6 +300,16 @@ textarea {
   transform: translateX(16px);
 }
 
+/* A switch whose feature is currently off stays readable but cannot be used. */
+.switch input[type='checkbox']:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.switch:has(input[type='checkbox']:disabled) {
+  cursor: not-allowed;
+}
+
 .btn svg,
 .icon {
   width: 16px;

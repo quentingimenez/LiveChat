@@ -86,7 +86,9 @@ listen('overlay://queue-hint', (payload) => {
   // earlier is now redundant.
   clearQueueEndTimer();
   clearTimeout(queueHintTimer);
-  queueHintTimer = setTimeout(refreshQueueAutomatically, 500);
+  // Short coalescing window: the overlay starts the next media immediately, so
+  // the board must not stay on the previous card for half a second.
+  queueHintTimer = setTimeout(refreshQueueAutomatically, 150);
 });
 
 // A media was added, edited or deleted on the active guild's board (by anyone,
@@ -215,13 +217,15 @@ window.addEventListener('focus', () => {
   loadQueueOnFocus();
   reloadItemsWhenVisible();
 });
+// 250 ms: the overlay countdown refreshes every 200 ms, so the queue clock must
+// not wait a whole second to show the same second as the overlay.
 setInterval(() => {
   if (state.page === 'guild' && state.tab === 'queue' && state.queue.playing && !document.hidden) {
     // Only the clock moves: rebuilding the view here closed the history and
-    // dropped focus every second.
+    // dropped keyboard focus on every tick.
     tickQueueClock();
   }
-}, 1000);
+}, 250);
 document.addEventListener('visibilitychange', () => {
   if (!document.hidden) {
     loadQueueOnFocus();

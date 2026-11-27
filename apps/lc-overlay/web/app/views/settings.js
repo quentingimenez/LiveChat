@@ -18,6 +18,7 @@ import { acceleratorFromEvent, ALTGR_HINT, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UN
 import { resizeAvatar } from '../core/avatar.js';
 import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleClick, settingsControlActive, settingsFormDirty, SLIDER_RESET_HINT } from '../core/dom.js';
 import { invoke, listen } from '../core/ipc.js';
+import { previewPlaybackEnabled } from '../core/media-playback.js';
 import { forgetFollower, PROFILE_SYNCED_EVENT } from '../core/profile-sync.js';
 import { settingsBackInMargin } from '../core/settings-back.js';
 import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
@@ -486,7 +487,10 @@ function renderDisplay(settings) {
     id: 'settings-hover-preview',
     type: 'checkbox',
     checked: settings.hoverPreview !== false,
-    onChange: (event) => applyPatch({ hoverPreview: event.target.checked }),
+    onChange: (event) => {
+      setPreviewPlaybackEnabled(event.target.checked);
+      applyPatch({ hoverPreview: event.target.checked });
+    },
   });
 
   const testButton = h(
@@ -531,6 +535,95 @@ function renderDisplay(settings) {
       'Désactivé : un clic ouvre les détails, un double-clic joue le média sur les overlays.',
     ),
     controlRow('Média de test', [testButton]),
+  );
+}
+
+// Keeps the two preview switches in step with the hover-preview switch without
+// re-rendering the page: the clicked control keeps the focus, which makes
+// applyPatch skip the re-render.
+function setPreviewPlaybackEnabled(enabled) {
+  for (const id of ['settings-preview-autoplay', 'settings-preview-sound']) {
+    const input = document.getElementById(id);
+    if (input) {
+      input.disabled = !enabled;
+    }
+  }
+  const note = document.getElementById('settings-preview-disabled');
+  if (note) {
+    note.hidden = enabled;
+  }
+}
+
+function renderPlayback(settings) {
+  // Without the hover preview there is no preview player, so its two switches
+  // stay visible (with their saved values) but cannot be used.
+  const previewEnabled = previewPlaybackEnabled(settings);
+  const previewAutoplay = h('input', {
+    id: 'settings-preview-autoplay',
+    type: 'checkbox',
+    checked: settings.previewAutoplay !== false,
+    disabled: !previewEnabled,
+    onChange: (event) => applyPatch({ previewAutoplay: event.target.checked }),
+  });
+  const previewSound = h('input', {
+    id: 'settings-preview-sound',
+    type: 'checkbox',
+    checked: settings.previewSound !== false,
+    disabled: !previewEnabled,
+    onChange: (event) => applyPatch({ previewSound: event.target.checked }),
+  });
+  const detailAutoplay = h('input', {
+    id: 'settings-detail-autoplay',
+    type: 'checkbox',
+    checked: settings.detailAutoplay !== false,
+    onChange: (event) => applyPatch({ detailAutoplay: event.target.checked }),
+  });
+  const detailSound = h('input', {
+    id: 'settings-detail-sound',
+    type: 'checkbox',
+    checked: settings.detailSound !== false,
+    onChange: (event) => applyPatch({ detailSound: event.target.checked }),
+  });
+  const previewNote = h(
+    'div',
+    { class: 'settings-hint-wrap', id: 'settings-preview-disabled' },
+    h(
+      'p',
+      { class: 'settings-hint' },
+      'L’aperçu au survol est désactivé : ces deux réglages ne s’appliquent pas. Active « Ouvrir l’aperçu au survol » pour les utiliser.',
+    ),
+  );
+  previewNote.hidden = previewEnabled;
+  return section(
+    'Lecture',
+    previewNote,
+    switchRow(
+      'Lancer les aperçus automatiquement',
+      previewAutoplay,
+      'settings-preview-autoplay',
+      'Désactivé : les aperçus restent sur leur première image ; un clic lance la lecture.',
+    ),
+    switchRow(
+      'Son des aperçus',
+      previewSound,
+      'settings-preview-sound',
+      'Désactivé : les aperçus démarrent en silence ; un audio attend qu’on active le son.',
+    ),
+    switchRow(
+      'Lancer les détails automatiquement',
+      detailAutoplay,
+      'settings-detail-autoplay',
+      'Désactivé : les détails s’ouvrent en pause ; la lecture démarre avec le bouton du lecteur.',
+    ),
+    switchRow(
+      'Son des détails',
+      detailSound,
+      'settings-detail-sound',
+      'Désactivé : les détails s’ouvrent en silence. Un audio ne démarre pas seul tant que ce son est coupé.',
+    ),
+    hint(
+      'Les lecteurs démarrent au plus bas des volumes général et de la guilde, sur une échelle de 0 à 100 %.',
+    ),
   );
 }
 
@@ -885,6 +978,7 @@ export function renderSettings() {
   // Apparence and À propos): Apparence stays between the two.
   return settingsPage(
     renderDisplay(settings),
+    renderPlayback(settings),
     renderSound(settings),
     renderShortcuts(settings),
     renderProfile(settings),

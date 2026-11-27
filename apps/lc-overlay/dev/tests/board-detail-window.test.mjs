@@ -62,7 +62,7 @@ test('a card opens the window and refreshes only its information column', () => 
   assert.match(board, /mediaDetail\.cancelPrefetch\(event\.currentTarget\)/);
   assert.match(board, /mediaDetail\.refreshDetail\(\)/, 'a board refresh rebuilds the information column');
   assert.match(board, /mediaDetail\.closeDetail\(\)/, 'a media that left the board closes the window');
-  assert.match(board, /mediaDetail\.setVolume\(previewVolume\(state\.activeGuildId\)\)/, 'the sound setting reaches the window player');
+  assert.match(board, /mediaDetail\.setVolume\(mediaLevel\(state\.activeGuildId\)\)/, 'the sound setting reaches the window player');
 });
 
 test('a card warms its media before the hover preview delay', () => {

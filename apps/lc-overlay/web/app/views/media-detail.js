@@ -53,6 +53,8 @@ import {
   returnRadius,
   playTimeline,
 } from '../core/detail-motion.js';
+import { formatDuration } from '../core/format.js';
+import { ratioAt, seekBy, seekToRatio } from '../core/media-controls.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
 import { playbackPlan } from '../core/media-playback.js';
 import { createPreviewProgress } from '../core/preview-progress.js';
@@ -217,6 +219,16 @@ const speakerIcon = (muted) => glyph([
 ], { strokeWidth: '1.7' });
 
 const playIcon = () => glyph(['M7 4.5v15l12-7.5z'], { fill: 'currentColor', stroke: 'none' });
+
+const pauseIcon = () => glyph(['M9 5v14M15 5v14'], { strokeWidth: '2.4' });
+
+const fullscreenIcon = () => glyph([
+  'M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5',
+], { strokeWidth: '1.7' });
+
+const fullscreenExitIcon = () => glyph([
+  'M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5',
+], { strokeWidth: '1.7' });
 
 const backIcon = () => glyph(['M19 12H5', 'M11 6l-6 6 6 6']);
 
@@ -1229,7 +1241,7 @@ export function createMediaDetail(options) {
     if (poster) {
       player.poster = poster;
     }
-    player.controls = true;
+    player.controls = false;
     player.autoplay = plan.autoplay;
     player.muted = plan.muted;
     player.defaultMuted = plan.muted;
@@ -1249,7 +1261,7 @@ export function createMediaDetail(options) {
     const plan = playbackPlan({ kind: 'audio', autoplay: settings.detailAutoplay, sound: settings.detailSound });
     const player = document.createElement('audio');
     player.src = url;
-    player.controls = true;
+    player.controls = false;
     player.muted = plan.muted;
     player.defaultMuted = plan.muted;
     player.autoplay = plan.autoplay;
@@ -1260,6 +1272,298 @@ export function createMediaDetail(options) {
     player.setAttribute('aria-label', 'Média audio');
     player.volume = mediaPlaybackGain(volume);
     return player;
+  }
+
+  // Chromium's native bar lives in a closed shadow tree: its fill cannot be
+  // animated linearly, and it is the last stepped bar of the overlay. This bar
+  // keeps the media element for playback and replaces only its chrome, with the
+  // same compositor-driven fill as the hover preview. It is attached to the
+  // stage, never to a still: an image has no player and gets no bar.
+  function attachPlayerControls(stage, player, kind, initialLevel) {
+    player.controls = false;
+    let level = clampVolume(initialLevel);
+
+    const root = h('div', {
+      class: 'hp-controls',
+      role: 'group',
+      'aria-label': 'Contrôles du média',
+    });
+    const playButton = h('button', {
+      type: 'button',
+      class: 'hp-ctl-button hp-ctl-play',
+      'aria-label': 'Lire',
+      title: 'Lire',
+      onClick: () => togglePlay(),
+    });
+    const currentTime = h('span', { class: 'hp-ctl-clock' }, '0:00');
+    const totalTime = h('span', { class: 'hp-ctl-clock' }, '0:00');
+    const clock = h('span', { class: 'hp-ctl-time' }, currentTime, ' / ', totalTime);
+    const fill = h('span', { class: 'hp-ctl-fill' });
+    const track = h('div', {
+      class: 'hp-ctl-track',
+      role: 'slider',
+      tabindex: '0',
+      'aria-label': 'Progression',
+      'aria-orientation': 'horizontal',
+      'aria-valuemin': '0',
+      'aria-valuemax': '0',
+      'aria-valuenow': '0',
+      'aria-valuetext': '0:00 sur 0:00',
+    }, fill);
+    const muteButton = h('button', {
+      type: 'button',
+      class: 'hp-ctl-button hp-ctl-mute',
+      'aria-label': 'Couper le son',
+      title: 'Couper le son',
+      onClick: () => toggleMute(),
+    });
+    const volume = h('input', {
+      type: 'range',
+      class: 'hp-ctl-volume',
+      min: '0',
+      max: '100',
+      step: '1',
+      'aria-label': 'Volume',
+      onInput: () => applyVolume(),
+    });
+    const fullscreen = kind === 'video' && typeof stage.requestFullscreen === 'function'
+      ? h('button', {
+        type: 'button',
+        class: 'hp-ctl-button hp-ctl-fullscreen',
+        'aria-label': 'Plein écran',
+        title: 'Plein écran',
+        onClick: () => toggleFullscreen(),
+      })
+      : null;
+
+    root.append(playButton, clock, track, muteButton, volume);
+    if (fullscreen) {
+      root.append(fullscreen);
+    }
+
+    // The same linear fill as the hover preview: the media clock only says
+    // where to start, the compositor moves it between two frames.
+    const progress = createPreviewProgress({ player, fill });
+    let dragging = false;
+    let destroyed = false;
+    const bindings = [];
+
+    const bind = (target, type, handler, options) => {
+      target.addEventListener(type, handler, options);
+      bindings.push([target, type, handler, options]);
+    };
+
+    const mediaDuration = () => (
+      Number.isFinite(player.duration) && player.duration > 0 ? player.duration : 0
+    );
+    const clockOf = (seconds) => formatDuration(seconds) || '0:00';
+
+    const syncPlay = () => {
+      const paused = player.paused || player.ended;
+      playButton.replaceChildren(paused ? playIcon() : pauseIcon());
+      const label = paused ? 'Lire' : 'Mettre en pause';
+      playButton.setAttribute('aria-label', label);
+      playButton.title = label;
+    };
+
+    const syncTime = () => {
+      const duration = mediaDuration();
+      const position = Math.min(duration, Math.max(0, Number(player.currentTime) || 0));
+      currentTime.textContent = clockOf(position);
+      totalTime.textContent = clockOf(duration);
+      track.setAttribute('aria-valuemax', String(Math.round(duration)));
+      track.setAttribute('aria-valuenow', String(Math.floor(position)));
+      track.setAttribute('aria-valuetext', `${clockOf(position)} sur ${clockOf(duration)}`);
+    };
+
+    const syncVolume = () => {
+      const muted = player.muted || level === 0;
+      muteButton.replaceChildren(speakerIcon(muted));
+      const label = muted ? 'Activer le son' : 'Couper le son';
+      muteButton.setAttribute('aria-label', label);
+      muteButton.title = label;
+      const percent = Math.round(level * 100);
+      volume.value = String(percent);
+      volume.setAttribute('aria-valuetext', `${percent} %`);
+    };
+
+    const syncFullscreen = () => {
+      if (!fullscreen) {
+        return;
+      }
+      const active = document.fullscreenElement === stage;
+      fullscreen.replaceChildren(active ? fullscreenExitIcon() : fullscreenIcon());
+      const label = active ? 'Quitter le plein écran' : 'Plein écran';
+      fullscreen.setAttribute('aria-label', label);
+      fullscreen.title = label;
+    };
+
+    const togglePlay = () => {
+      if (player.paused || player.ended) {
+        if (player.ended) {
+          player.currentTime = 0;
+          progress.paint();
+          syncTime();
+        }
+        const attempt = player.play();
+        if (attempt && typeof attempt.catch === 'function') {
+          attempt.catch(() => {});
+        }
+      } else {
+        player.pause();
+      }
+      syncPlay();
+    };
+
+    const applyVolume = () => {
+      level = clampVolume(Number(volume.value) / 100);
+      player.volume = mediaPlaybackGain(level);
+      player.muted = level === 0;
+      syncVolume();
+    };
+
+    const toggleMute = () => {
+      if (player.muted || level === 0) {
+        player.muted = false;
+        if (level === 0) {
+          level = 0.5;
+          player.volume = mediaPlaybackGain(level);
+        }
+      } else {
+        player.muted = true;
+      }
+      syncVolume();
+    };
+
+    const seekToPointer = (event) => {
+      const duration = mediaDuration();
+      if (!duration) {
+        return;
+      }
+      player.currentTime = seekToRatio(ratioAt(event.clientX, track.getBoundingClientRect()), duration);
+      progress.paint();
+      syncTime();
+    };
+
+    const onPointerDown = (event) => {
+      if (event.button !== undefined && event.button !== 0) {
+        return;
+      }
+      dragging = true;
+      if (typeof track.setPointerCapture === 'function' && event.pointerId !== undefined) {
+        track.setPointerCapture(event.pointerId);
+      }
+      if (typeof track.focus === 'function') {
+        track.focus({ preventScroll: true });
+      }
+      event.preventDefault();
+      seekToPointer(event);
+    };
+
+    const onPointerMove = (event) => {
+      if (!dragging) {
+        return;
+      }
+      event.preventDefault();
+      seekToPointer(event);
+    };
+
+    const onPointerUp = (event) => {
+      if (!dragging) {
+        return;
+      }
+      dragging = false;
+      if (typeof track.releasePointerCapture === 'function' && event.pointerId !== undefined) {
+        track.releasePointerCapture(event.pointerId);
+      }
+    };
+
+    const seekByKey = (event) => {
+      const duration = mediaDuration();
+      if (!duration) {
+        return;
+      }
+      let next = null;
+      if (event.key === 'ArrowLeft') {
+        next = seekBy(player.currentTime, duration, -5);
+      } else if (event.key === 'ArrowRight') {
+        next = seekBy(player.currentTime, duration, 5);
+      } else if (event.key === 'PageDown') {
+        next = seekBy(player.currentTime, duration, -10);
+      } else if (event.key === 'PageUp') {
+        next = seekBy(player.currentTime, duration, 10);
+      } else if (event.key === 'Home') {
+        next = 0;
+      } else if (event.key === 'End') {
+        next = duration;
+      }
+      if (next === null) {
+        return;
+      }
+      event.preventDefault();
+      player.currentTime = next;
+      progress.paint();
+      syncTime();
+    };
+
+    const toggleFullscreen = () => {
+      if (!document.fullscreenElement) {
+        const attempt = stage.requestFullscreen();
+        if (attempt && typeof attempt.catch === 'function') {
+          attempt.catch(() => {});
+        }
+      } else if (typeof document.exitFullscreen === 'function') {
+        const attempt = document.exitFullscreen();
+        if (attempt && typeof attempt.catch === 'function') {
+          attempt.catch(() => {});
+        }
+      }
+    };
+
+    bind(player, 'play', syncPlay);
+    bind(player, 'playing', syncPlay);
+    bind(player, 'pause', syncPlay);
+    bind(player, 'ended', syncPlay);
+    bind(player, 'timeupdate', syncTime);
+    bind(player, 'durationchange', syncTime);
+    bind(player, 'loadedmetadata', syncTime);
+    bind(player, 'seeking', syncTime);
+    bind(player, 'seeked', syncTime);
+    bind(player, 'emptied', () => {
+      syncTime();
+      syncPlay();
+    });
+    bind(player, 'volumechange', syncVolume);
+    bind(track, 'pointerdown', onPointerDown);
+    bind(track, 'pointermove', onPointerMove);
+    bind(track, 'pointerup', onPointerUp);
+    bind(track, 'pointercancel', onPointerUp);
+    bind(track, 'keydown', seekByKey);
+    if (fullscreen) {
+      bind(document, 'fullscreenchange', syncFullscreen);
+    }
+
+    syncPlay();
+    syncTime();
+    syncVolume();
+    syncFullscreen();
+    stage.appendChild(root);
+
+    return {
+      root,
+      destroy() {
+        if (destroyed) {
+          return;
+        }
+        destroyed = true;
+        for (const [target, type, handler, options] of bindings) {
+          target.removeEventListener(type, handler, options);
+        }
+        bindings.length = 0;
+        progress.destroy();
+        root.remove();
+      },
+    };
   }
 
   function buildStage(desc, carriedVisual, carriedPlayer, prefetched) {
@@ -1283,7 +1587,7 @@ export function createMediaDetail(options) {
           // The prefetched element was created detached: it joins the stage
           // before the flight, which then only carries the page itself.
           prefetchedVideo.className = 'hp-page-video';
-          prefetchedVideo.controls = true;
+          prefetchedVideo.controls = false;
           prefetchedVideo.loop = true;
           prefetchedVideo.autoplay = false;
           prefetchedVideo.muted = true;
@@ -1307,13 +1611,13 @@ export function createMediaDetail(options) {
         // The same element keeps playing across the move.
         player = carriedPlayer;
         player.className = '';
-        player.controls = true;
+        player.controls = false;
         player.setAttribute('aria-label', 'Média audio');
         audioBox.appendChild(player);
       } else if (prefetched && prefetched.kind === 'audio') {
         player = prefetched.element;
         player.className = '';
-        player.controls = true;
+        player.controls = false;
         player.muted = true;
         player.removeAttribute('aria-hidden');
         player.setAttribute('aria-label', 'Média audio');
@@ -1337,7 +1641,11 @@ export function createMediaDetail(options) {
       stage.appendChild(stageGlyph(kind));
     }
 
-    return { stage, player, kind, poster };
+    if (player) {
+      player.controls = false;
+    }
+    const controls = player ? attachPlayerControls(stage, player, kind, volume) : null;
+    return { stage, player, kind, poster, controls };
   }
 
   function transitionOut(page, card, thumb) {
@@ -1472,6 +1780,10 @@ export function createMediaDetail(options) {
         return;
       }
       finished = true;
+      if (page._controls) {
+        page._controls.destroy();
+        page._controls = null;
+      }
       if (page._player) {
         page._player.pause();
       }
@@ -1495,6 +1807,10 @@ export function createMediaDetail(options) {
 
   function fadeOut(page) {
     const shell = page._shell;
+    if (page._controls) {
+      page._controls.destroy();
+      page._controls = null;
+    }
     if (page._player) {
       page._player.pause();
     }
@@ -1555,6 +1871,12 @@ export function createMediaDetail(options) {
       flight?.remove();
       surface?.remove();
       if (carry && carry.source) {
+        // The preview is removed without going through its close(): its fill
+        // would otherwise keep listening to the player now owned by the page.
+        if (carry.source._progress) {
+          carry.source._progress.destroy();
+          carry.source._progress = null;
+        }
         carry.source.remove();
       }
       for (const animation of animations) {
@@ -1791,6 +2113,7 @@ export function createMediaDetail(options) {
     page._backdrop = backdrop;
     page._shell = shell;
     page._openedAt = performance.now();
+    page._controls = built.controls;
     page._player = player;
     page._id = id;
     page._desc = desc;
@@ -1856,7 +2179,7 @@ export function createMediaDetail(options) {
         }
         if (flyVisual === carriedVideo) {
           flyVisual.className = 'hp-page-video';
-          flyVisual.controls = true;
+          flyVisual.controls = false;
           flyVisual.setAttribute('aria-label', 'Média en grand');
         } else {
           flyVisual.className = '';
@@ -1940,6 +2263,10 @@ export function createMediaDetail(options) {
       // The card was deleted or is out of view: a simple fade.
       fadeOut(page);
     } else {
+      if (page._controls) {
+        page._controls.destroy();
+        page._controls = null;
+      }
       if (page._player) {
         page._player.pause();
       }

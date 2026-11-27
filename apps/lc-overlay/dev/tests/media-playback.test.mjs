@@ -115,7 +115,7 @@ test('the preview bar sets an absolute level, played through the perceptual curv
 test('every player volume assignment goes through the overlay curve', () => {
   assert.match(mediaDetail, /import \{ mediaPlaybackGain, playbackSettings \} from '\.\.\/core\/sound\.js';/);
   const assignments = [...mediaDetail.matchAll(/\b_?player\.volume = ([^;]+);/g)];
-  assert.equal(assignments.length, 7, 'the seven player volume sites stay pinned');
+  assert.equal(assignments.length, 9, 'the nine player volume sites stay pinned');
   for (const [, value] of assignments) {
     assert.match(value, /^mediaPlaybackGain\(/, 'a linear level would be louder than the overlay');
   }

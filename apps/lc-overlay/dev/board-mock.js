@@ -1073,6 +1073,40 @@
     queue.pending.push(Object.assign(job, { status: 'pending' }));
     return { ok: true, outcome: 'queued', position: queue.pending.length, jobId: job.id };
   }
+  // Shared pause (`media_board_pause`): the server freezes every overlay and
+  // shifts `startedAt` by the paused duration on resume. The mock does the
+  // same so the board's queue bar can be exercised from its own button.
+  const pauseStartedAt = new Map();
+  function setGuildPause(guildId, paused) {
+    const entry = guilds.guilds.find((guild) => guild.membership.guildId === guildId);
+    if (!entry) {
+      return { ok: false, reason: 'no_active_guild' };
+    }
+    if (paused) {
+      if (!queue.playing) {
+        return { ok: false, reason: 'nothing_playing' };
+      }
+      if (entry.connection.paused) {
+        return { ok: true };
+      }
+      const started = new Date(queue.playing.startedAt).getTime();
+      const remaining = Number(queue.playing.durationSec) * 1000 - (Date.now() - started);
+      entry.connection.paused = true;
+      entry.connection.pausedRemainingMs = Math.max(0, Math.round(remaining));
+      pauseStartedAt.set(guildId, Date.now());
+    } else {
+      const pausedAt = pauseStartedAt.get(guildId);
+      if (pausedAt && queue.playing) {
+        queue.playing.startedAt = new Date(new Date(queue.playing.startedAt).getTime() + (Date.now() - pausedAt)).toISOString();
+      }
+      pauseStartedAt.delete(guildId);
+      entry.connection.paused = false;
+      delete entry.connection.pausedRemainingMs;
+    }
+    emit('overlay://guilds', guildsCopy());
+    return { ok: true };
+  }
+
   // Job stopped on this device only (`media_board_stop_local`).
   let locallyStoppedJobId = null;
   function finishPlaying() {
@@ -1523,6 +1557,8 @@
           }
           locallyStoppedJobId = queue.playing.id;
           return Promise.resolve({ ok: true });
+        case 'media_board_pause':
+          return Promise.resolve(setGuildPause(payload.guildId || guilds.activeGuildId, Boolean(payload.paused)));
         case 'guild_select':
           guilds.activeGuildId = payload.guildId;
           guilds.guilds.forEach((guild) => {

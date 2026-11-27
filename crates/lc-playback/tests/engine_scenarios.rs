@@ -124,6 +124,88 @@ async fn watchdog_libere_un_job_sans_keepalive_depuis_quinze_secondes() {
 }
 
 #[tokio::test]
+async fn etat_de_lecture_apres_liberation_ne_rearme_pas_le_verrou() {
+    let h = harness(1).await;
+    let guild = h.guild_id.clone();
+
+    let stopped = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&stopped).await.unwrap();
+    assert_eq!(h.sink.play_calls().len(), 1);
+
+    // Arrêt utilisateur : le job est libéré et le verrou de guilde effacé.
+    h.advance(1_000);
+    h.engine
+        .stop(&guild, Some(stopped.id), StopRequestSource::User)
+        .await
+        .unwrap();
+    assert_eq!(h.stored_job(stopped.id).await.status, JobStatus::Done);
+    assert!(
+        h.db.guilds()
+            .get(&guild)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until
+            .is_none(),
+        "l'arrêt libère le verrou de guilde"
+    );
+
+    // Trame partie pendant la lecture et arrivée après l'arrêt : le média ne
+    // joue plus, elle ne doit donc réarmer aucun verrou.
+    let late = h
+        .engine
+        .handle_playback_state(PlaybackStateEvent::new(
+            guild.clone(),
+            Some(stopped.id),
+            PlaybackState::Playing,
+            Some(4_000),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(late, PlaybackStateOutcome::Ignored);
+    assert!(
+        h.db.guilds()
+            .get(&guild)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until
+            .is_none(),
+        "un état de lecture arrivé après la libération ne réarme pas busy_until"
+    );
+
+    // Le média suivant démarre au tick suivant, pas à la fin théorique du
+    // média stoppé (ici 4 s plus tard).
+    let next = sample_job(guild.clone(), h.clock.now());
+    h.engine.enqueue(&next).await.unwrap();
+    assert_eq!(h.stored_job(next.id).await.status, JobStatus::Playing);
+    assert_eq!(h.sink.play_calls().len(), 2);
+
+    // Contrepartie : pour un job réellement en lecture, la trame arme le verrou
+    // sur `max(restant, 5 s) + 250 ms`.
+    let outcome = h
+        .engine
+        .handle_playback_state(PlaybackStateEvent::new(
+            guild.clone(),
+            Some(next.id),
+            PlaybackState::Playing,
+            Some(4_000),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(outcome, PlaybackStateOutcome::Persisted);
+    let busy =
+        h.db.guilds()
+            .get(&guild)
+            .await
+            .unwrap()
+            .unwrap()
+            .busy_until
+            .unwrap();
+    assert_eq!(datetime_to_ms(busy), datetime_to_ms(h.clock.now()) + 5_250);
+}
+
+#[tokio::test]
 async fn ordre_de_soumission() {
     let h = harness(1).await;
     let guild = h.guild_id.clone();

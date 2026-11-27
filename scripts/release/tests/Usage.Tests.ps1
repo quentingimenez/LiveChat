@@ -25,7 +25,15 @@ function Invoke-ReleaseCli {
     foreach ($file in @($stdout, $stderr)) {
         if (Test-Path -LiteralPath $file) { $text += (Get-Content -LiteralPath $file -Raw) }
     }
-    return [pscustomobject]@{ ExitCode = $process.ExitCode; Text = ($text -join "`n") }
+    # pwsh decorates an unhandled error with ANSI sequences and puts the wrapped
+    # continuation of a long message behind a `   | ` gutter; Windows PowerShell
+    # colours nothing and keeps one line. Strip the presentation so the
+    # assertions state the message, not the terminal that rendered it.
+    $ansi = [string][char]27 + '\[[0-9;]*[A-Za-z]'
+    $plain = ($text -join "`n") -replace $ansi, ''
+    $plain = $plain -replace '(?m)^[^\S\r\n]*\|[ ]?', ''
+    $plain = $plain -replace '\s+', ' '
+    return [pscustomobject]@{ ExitCode = $process.ExitCode; Text = $plain }
 }
 
 Test-Case 'deploy-server names the arguments it received' {

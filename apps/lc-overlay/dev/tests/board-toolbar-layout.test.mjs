@@ -2,6 +2,10 @@
 // types, les filtres et les actions ; l'occupation du board devient l'en-tête
 // du panneau de filtres au lieu d'une seconde ligne toujours visible.
 //
+// Le champ de recherche cède sa place avant les autres contrôles : son plancher
+// est la largeur exacte de son placeholder, pas celle que l'input s'attribue
+// tout seul.
+//
 // Ces invariants protègent le retour utilisateur : plus d'actions rejetées sur
 // une deuxième ligne, plus de légende orpheline quand le panneau est fermé.
 
@@ -77,6 +81,27 @@ test('the usage legend only exists at the head of the filter panel', () => {
   assert.match(filters, /shelf-usage/, 'the usage line must be the shelf header');
   assert.doesNotMatch(filters, /filters-title/, 'the panel no longer needs a redundant title');
   assert.ok(filters.indexOf('shelf-usage') < filters.indexOf('shelf-controls'), 'the usage header comes before the controls');
+});
+
+test('le champ de recherche rétrécit jusqu’à la largeur de son texte', () => {
+  const css = read('styles/board.css');
+  const search = ruleOf(css, '.board-search');
+
+  assert.ok(search, 'le champ garde sa règle dans la barre');
+  const min = /min-width:\s*(\d+)px/.exec(search);
+  const basis = /flex:\s*1 1 (\d+)px/.exec(search);
+  assert.ok(min, 'le champ fixe une largeur minimale explicite');
+  assert.ok(basis, 'sa base flex est cette même largeur : il cède avant les autres contrôles');
+  assert.equal(min[1], basis[1], 'base et plancher sont la même valeur');
+
+  // 168 px : « Rechercher un média » à 14 px mesure 130 px, plus 2 × 10 px de
+  // padding et 2 × 1 px de bordure, plus les ~14 px que Chrome réserve au
+  // bouton d’effacement natif de `type="search"` (à 153 px le placeholder est
+  // tronqué). C’est la largeur exacte du texte, pas l’ancien plancher
+  // intrinsèque de l’input (≈ 228 px). Un test Node ne mesure pas la police :
+  // la vérification dans le navigateur prouve que le placeholder tient.
+  assert.equal(min[1], '168', 'largeur du placeholder, paddings et bordures comprises');
+  assert.match(search, /max-width:\s*320px/, 'il retrouve sa largeur de lecture quand la place revient');
 });
 
 test('a role without options keeps the panel usable', () => {

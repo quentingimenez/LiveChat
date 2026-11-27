@@ -33,11 +33,18 @@
 
 /* One row: search, type chips, filters, then the actions pushed to the right.
    The tools group wraps as a whole at narrow widths, so the actions never
-   squeeze the search field down to nothing. */
+   squeeze the search field down to nothing.
+
+   The toolbar is its own query container: the card-size row folds into a hover
+   panel when the tools no longer have room for it, instead of pushing it alone
+   onto a second line. Measuring the toolbar (not the window) keeps the switch
+   right under the app's zoom level and the filters panel. */
 .board-toolbar {
   display: flex;
   align-items: center;
   margin-bottom: var(--space-4);
+  container-type: inline-size;
+  container-name: board-toolbar;
 }
 
 .board-tools {
@@ -57,8 +64,15 @@
   margin-left: auto;
 }
 
+/* The field yields before the other controls: its base and its floor are the
+   placeholder's own width, so a shrinking toolbar takes room from the search
+   first instead of wrapping the card-size row. 168 px = « Rechercher un média »
+   at 14 px (130 px) + 2 × 10 px padding + 2 × 1 px border, plus the ~14 px
+   Chrome keeps inside a `type="search"` for its native clear button: at 153 px
+   the placeholder is cut after « Rechercher un méc ». */
 .board-search {
-  flex: 1 1 220px;
+  flex: 1 1 168px;
+  min-width: 168px;
   max-width: 320px;
 }
 
@@ -87,6 +101,14 @@
   flex: 0 0 auto;
 }
 
+/* The range and its value: inline next to the icon, or stacked in the hover
+   panel of the compact toolbar below. */
+.board-size-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .board-size-range {
   width: 104px;
   margin: 0;
@@ -99,6 +121,78 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   text-align: right;
+}
+
+/* Narrow toolbar: the row collapses to the grid icon and a vertical range
+   opens under it on hover or keyboard focus. The panel fades with opacity
+   rather than `visibility: hidden`, so the range stays in the tab order; its
+   8 px `::before` bridge keeps the hover alive while the pointer crosses the
+   gap between the icon and the panel.
+
+   840 px is the tools width at the board window's 960 px minimum: below it the
+   toolbar is already wrapping its actions, so the card-size row gives its room
+   back instead of landing alone on a second line. */
+@container board-toolbar (max-width: 840px) {
+  .board-size {
+    position: relative;
+    justify-content: center;
+    width: 32px;
+    border-radius: var(--radius-s);
+    cursor: pointer;
+  }
+
+  .board-size:hover,
+  .board-size:focus-within {
+    background: var(--slate-700);
+    color: var(--text);
+  }
+
+  .board-size-panel {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%;
+    z-index: 20;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 6px 8px;
+    border: 1px solid var(--field-line);
+    border-radius: var(--radius-s);
+    background: var(--slate-700);
+    box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
+    opacity: 0;
+    pointer-events: none;
+    transform: translate(-50%, -4px);
+    transition: opacity 120ms ease, transform 120ms ease;
+  }
+
+  .board-size-panel::before {
+    content: '';
+    position: absolute;
+    top: -8px;
+    right: 0;
+    left: 0;
+    height: 8px;
+  }
+
+  .board-size:hover .board-size-panel,
+  .board-size:focus-within .board-size-panel {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+  }
+
+  .board-size-range {
+    width: 24px;
+    height: 96px;
+    writing-mode: vertical-lr;
+    direction: rtl;
+  }
+
+  .board-size-value {
+    min-width: 0;
+    font-size: 11px;
+    text-align: center;
+  }
 }
 
 /* Chips are 32 px targets. Every chip keeps the same 600 weight so that

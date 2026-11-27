@@ -350,6 +350,58 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
   }
 
   // --- pointer ------------------------------------------------------------
+  // Re-applies the held gesture from the last pointer offset. The view can
+  // change under a captured pointer (stage pan) without a pointermove:
+  // replaying here keeps the grabbed drawing under the cursor.
+  function applyDrag() {
+    if (!drag) {
+      return;
+    }
+    const point = toSource({ offsetX: drag.pointerX, offsetY: drag.pointerY });
+    const object = list().find((candidate) => candidate.id === drag.id);
+    if (!object) {
+      return;
+    }
+    if (drag.kind === 'create') {
+      if (object.type === 'stroke') {
+        const points = object.points;
+        if (Math.hypot(point.x - points[points.length - 2], point.y - points[points.length - 1]) >= point.per) {
+          points.push(point.x, point.y);
+        }
+      } else {
+        object.x2 = point.x;
+        object.y2 = point.y;
+        if (object.type === 'mask') {
+          const { width, height } = bounds();
+          Object.assign(object, clampedMask(object, width, height));
+        }
+      }
+      syncMasks();
+      paint();
+    } else if (drag.kind === 'move') {
+      drag.moved = true;
+      const dx = point.x - drag.start.x;
+      const dy = point.y - drag.start.y;
+      const delta = object.type === 'mask'
+        ? clampedDelta(boundsOf(drag.origin), bounds().width, bounds().height, dx, dy)
+        : { dx, dy };
+      replaceObject(translated(drag.origin, delta.dx, delta.dy));
+      syncMasks();
+      paint();
+    } else {
+      drag.moved = true;
+      const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
+      const next = resized(drag.origin, drag.anchor, point, factor, 8 * point.per);
+      replaceObject(next.type === 'mask' ? clampedMask(next, bounds().width, bounds().height) : next);
+      syncMasks();
+      paint();
+    }
+  }
+
+  function replay() {
+    applyDrag();
+  }
+
   surface.addEventListener('pointerdown', (event) => {
     if (event.button !== 0) {
       return;
@@ -390,6 +442,10 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
         drag = hit ? { kind: 'move', id: hit.id, origin: structuredClone(hit), start: point, moved: false } : null;
       }
     }
+    if (drag) {
+      drag.pointerX = event.offsetX;
+      drag.pointerY = event.offsetY;
+    }
     paint();
   });
 
@@ -397,45 +453,9 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     if (!drag) {
       return;
     }
-    const point = toSource(event);
-    const object = list().find((candidate) => candidate.id === drag.id);
-    if (!object) {
-      return;
-    }
-    if (drag.kind === 'create') {
-      if (object.type === 'stroke') {
-        const points = object.points;
-        if (Math.hypot(point.x - points[points.length - 2], point.y - points[points.length - 1]) >= point.per) {
-          points.push(point.x, point.y);
-        }
-      } else {
-        object.x2 = point.x;
-        object.y2 = point.y;
-        if (object.type === 'mask') {
-          const { width, height } = bounds();
-          Object.assign(object, clampedMask(object, width, height));
-        }
-      }
-      syncMasks();
-      paint();
-    } else if (drag.kind === 'move') {
-      drag.moved = true;
-      const dx = point.x - drag.start.x;
-      const dy = point.y - drag.start.y;
-      const delta = object.type === 'mask'
-        ? clampedDelta(boundsOf(drag.origin), bounds().width, bounds().height, dx, dy)
-        : { dx, dy };
-      replaceObject(translated(drag.origin, delta.dx, delta.dy));
-      syncMasks();
-      paint();
-    } else {
-      drag.moved = true;
-      const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
-      const next = resized(drag.origin, drag.anchor, point, factor, 8 * point.per);
-      replaceObject(next.type === 'mask' ? clampedMask(next, bounds().width, bounds().height) : next);
-      syncMasks();
-      paint();
-    }
+    drag.pointerX = event.offsetX;
+    drag.pointerY = event.offsetY;
+    applyDrag();
   });
 
   function endDrag(event) {
@@ -864,6 +884,7 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     interactive: () => interactive,
     layout,
     place,
+    replay,
     paint,
     paintMasks,
     paintInto,

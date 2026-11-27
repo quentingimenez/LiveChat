@@ -403,14 +403,25 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     frameLayer.style.width = `${videoWidth * scale}px`;
     frameLayer.style.height = `${videoHeight * scale}px`;
     viewOrigin = { x: box.x, y: box.y };
-    if (!annotations) {
-      return;
+    if (annotations) {
+      if (resized) {
+        annotations.layout();
+        annotations.applyPreviewFilter();
+      } else {
+        annotations.place();
+      }
     }
-    if (resized) {
-      annotations.layout();
-      annotations.applyPreviewFilter();
-    } else {
-      annotations.place();
+    // A pan happens under a captured pointer without a pointermove: replaying
+    // the held gesture keeps the grabbed drawing or crop edge under the
+    // cursor. A resize (zoom) changes the surface's local coordinates, so the
+    // saved pointer offsets cannot be replayed there.
+    if (!resized) {
+      if (annotations) {
+        annotations.replay();
+      }
+      if (cropOverlay) {
+        cropOverlay.replay();
+      }
     }
   }
 
@@ -469,6 +480,9 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
   // The visible slice of the media. Wheel + Ctrl zooms around the pointer;
   // without zoom it is the whole media, exactly as before.
   let timelineView = defaultTimelineView(duration);
+  // The held gesture remembers the pointer, not the track rectangle: the view
+  // can scroll or zoom under the pointer while the edge is held.
+  let timelineDrag = null;
   const timelineSpan = () => Math.max(1e-6, timelineView.end - timelineView.start);
   const timeToX = (time, width) => ((time - timelineView.start) / timelineSpan()) * width;
   const xToTime = (x, width) => clamp(timelineView.start + (x / width) * timelineSpan(), 0, duration);
@@ -490,9 +504,51 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     }
     timelineView = clamped;
     syncZoomButton();
+    replayTimelineDrag();
     paintTimeline(true);
   }
   syncZoomButton();
+
+  // Replays the held gesture with the last pointer position, against the
+  // track's current rectangle. Called for every frame the timeline scrolls or
+  // zooms under the pointer, and after a layout change.
+  function applyTimelineDrag() {
+    if (!timelineDrag || !timelineDrag.moved) {
+      return;
+    }
+    const box = track.getBoundingClientRect();
+    if (!(box.width > 0)) {
+      return;
+    }
+    const x = clamp(timelineDrag.clientX - box.left, 0, box.width);
+    const time = xToTime(x, box.width);
+    const target = timelineDrag.target;
+    if (target.kind === 'edge') {
+      const segments = edit.segments;
+      const segment = segments[target.index];
+      if (target.side === 0) {
+        const floor = target.index > 0 ? segments[target.index - 1][1] : 0;
+        segment[0] = clamp(time, floor, segment[1] - MIN_KEEP_SEC);
+      } else {
+        const ceiling = target.index < segments.length - 1 ? segments[target.index + 1][0] : duration;
+        segment[1] = clamp(time, segment[0] + MIN_KEEP_SEC, ceiling);
+      }
+      seek(segment[target.side]);
+    } else if (target.kind === 'selection') {
+      const other = selection[1 - target.side];
+      selection = target.side === 0 ? [Math.min(time, other - 0.02), other] : [other, Math.max(time, other + 0.02)];
+      updateCutControls();
+      seek(time);
+    } else {
+      selection = [Math.min(timelineDrag.startTime, time), Math.max(timelineDrag.startTime, time)];
+      updateCutControls();
+      seek(time);
+    }
+  }
+
+  function replayTimelineDrag() {
+    applyTimelineDrag();
+  }
 
   // The track is a canvas: its colours are the tokens of the active theme, so
   // the light board gets a light track instead of the dark canvas literals.
@@ -950,51 +1006,44 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
     frame.node.focus();
     const box = track.getBoundingClientRect();
     const startX = event.clientX - box.left;
-    const target = grabTarget(startX, box.width);
-    const startTime = xToTime(startX, box.width);
-    let moved = false;
+    timelineDrag = {
+      target: grabTarget(startX, box.width),
+      startTime: xToTime(startX, box.width),
+      startClientX: event.clientX,
+      clientX: event.clientX,
+      moved: false,
+    };
     track.setPointerCapture(event.pointerId);
     const move = (moveEvent) => {
-      const x = clamp(moveEvent.clientX - box.left, 0, box.width);
-      const time = xToTime(x, box.width);
-      if (!moved && Math.abs(x - startX) < DRAG_START) {
+      if (!timelineDrag) {
         return;
       }
-      moved = true;
-      if (target.kind === 'edge') {
-        const segments = edit.segments;
-        const segment = segments[target.index];
-        if (target.side === 0) {
-          const floor = target.index > 0 ? segments[target.index - 1][1] : 0;
-          segment[0] = clamp(time, floor, segment[1] - MIN_KEEP_SEC);
-        } else {
-          const ceiling = target.index < segments.length - 1 ? segments[target.index + 1][0] : duration;
-          segment[1] = clamp(time, segment[0] + MIN_KEEP_SEC, ceiling);
+      timelineDrag.clientX = moveEvent.clientX;
+      if (!timelineDrag.moved) {
+        if (Math.abs(moveEvent.clientX - timelineDrag.startClientX) < DRAG_START) {
+          return;
         }
-        seek(segment[target.side]);
-      } else if (target.kind === 'selection') {
-        const other = selection[1 - target.side];
-        selection = target.side === 0 ? [Math.min(time, other - 0.02), other] : [other, Math.max(time, other + 0.02)];
-        updateCutControls();
-        seek(time);
-      } else {
-        selection = [Math.min(startTime, time), Math.max(startTime, time)];
-        updateCutControls();
-        seek(time);
+        timelineDrag.moved = true;
       }
+      applyTimelineDrag();
       paintTimeline(true);
     };
     const up = () => {
       track.removeEventListener('pointermove', move);
       track.removeEventListener('pointerup', up);
       track.removeEventListener('pointercancel', up);
-      if (!moved) {
+      const finished = timelineDrag;
+      timelineDrag = null;
+      if (!finished) {
+        return;
+      }
+      if (!finished.moved) {
         // A plain click moves the playhead and drops the selection.
-        seek(startTime);
+        seek(finished.startTime);
         setSelection(null);
         return;
       }
-      if (target.kind === 'edge') {
+      if (finished.target.kind === 'edge') {
         commit();
       } else {
         setSelection(selection);

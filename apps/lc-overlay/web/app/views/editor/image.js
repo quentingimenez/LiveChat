@@ -99,6 +99,7 @@ export async function createImageEditor({
   let tool = 'select';
   let selectedId = null;
   let drag = null;
+  let cropOverlay = null;
   let cropRatio = 'free';
   let paintQueued = false;
   // Display scale is a setting of the board item, not a pixel edit: it stays
@@ -116,7 +117,7 @@ export async function createImageEditor({
   const view = h('canvas', { class: 'img-canvas' });
   const selBox = h('div', { class: 'sel-box', hidden: true }, h('span', { class: 'sel-handle' }));
   const wrap = h('div', { class: 'img-wrap' }, view, selBox);
-  const stageZoom = createStageZoom({ content: wrap, onResize: () => layout() });
+  const stageZoom = createStageZoom({ content: wrap, onResize: () => layout(), onPan: replayGesture });
 
   // --- live preview of the display size ---
   // The overlay draws the picture at `natural size × scale`, capped by the
@@ -321,6 +322,7 @@ export async function createImageEditor({
     wrap.style.width = `${cssWidth}px`;
     wrap.style.height = `${cssHeight}px`;
     stageZoom.fit({ width: cssWidth, height: cssHeight });
+    replayGesture();
     const ratio = Math.min(window.devicePixelRatio || 1, 2);
     // Le tampon suit le zoom sans dépasser les pixels de l'image : agrandir
     // ne peut pas inventer de détail, et rester au natif économise la mémoire.
@@ -413,6 +415,48 @@ export async function createImageEditor({
     }
   }
 
+  // Re-applies the held gesture from the last pointer position. The stage can
+  // scroll or zoom under a captured pointer without sending a pointermove:
+  // replaying here keeps the grabbed object under the cursor.
+  function applyDrag() {
+    if (!drag) {
+      return;
+    }
+    const point = toBase({ clientX: drag.clientX, clientY: drag.clientY });
+    const object = doc.objects.find((candidate) => candidate.id === drag.id);
+    if (!object) {
+      return;
+    }
+    if (drag.kind === 'create') {
+      if (object.type === 'stroke') {
+        const points = object.points;
+        if (Math.hypot(point.x - points[points.length - 2], point.y - points[points.length - 1]) >= point.per) {
+          points.push(point.x, point.y);
+        }
+      } else {
+        object.x2 = point.x;
+        object.y2 = point.y;
+      }
+    } else if (drag.kind === 'move') {
+      drag.moved = true;
+      replaceObject(translated(drag.origin, point.x - drag.start.x, point.y - drag.start.y));
+    } else {
+      drag.moved = true;
+      const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
+      replaceObject(resized(drag.origin, drag.anchor, point, factor, 8 * point.per));
+    }
+    repaint();
+  }
+
+  function replayGesture() {
+    if (drag) {
+      applyDrag();
+    }
+    if (cropOverlay) {
+      cropOverlay.replay();
+    }
+  }
+
   wrap.addEventListener('pointerdown', (event) => {
     if (event.button !== 0 || tool === 'crop') {
       return;
@@ -450,6 +494,10 @@ export async function createImageEditor({
         drag = hit ? { kind: 'move', id: hit.id, origin: structuredClone(hit), start: point, moved: false } : null;
       }
     }
+    if (drag) {
+      drag.clientX = event.clientX;
+      drag.clientY = event.clientY;
+    }
     repaint();
   });
 
@@ -457,30 +505,9 @@ export async function createImageEditor({
     if (!drag) {
       return;
     }
-    const point = toBase(event);
-    const object = doc.objects.find((candidate) => candidate.id === drag.id);
-    if (!object) {
-      return;
-    }
-    if (drag.kind === 'create') {
-      if (object.type === 'stroke') {
-        const points = object.points;
-        if (Math.hypot(point.x - points[points.length - 2], point.y - points[points.length - 1]) >= point.per) {
-          points.push(point.x, point.y);
-        }
-      } else {
-        object.x2 = point.x;
-        object.y2 = point.y;
-      }
-    } else if (drag.kind === 'move') {
-      drag.moved = true;
-      replaceObject(translated(drag.origin, point.x - drag.start.x, point.y - drag.start.y));
-    } else {
-      drag.moved = true;
-      const factor = clamp(Math.hypot(point.x - drag.anchor.x, point.y - drag.anchor.y) / Math.max(1, drag.reach), 0.05, 40);
-      replaceObject(resized(drag.origin, drag.anchor, point, factor, 8 * point.per));
-    }
-    repaint();
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
+    applyDrag();
   });
 
   function endDrag(event) {
@@ -522,8 +549,6 @@ export async function createImageEditor({
   });
 
   // --- crop, rotation, flips (bake the objects into a new base) ---
-  let cropOverlay = null;
-
   function startCrop() {
     if (!cropOverlay) {
       cropOverlay = createCropOverlay({

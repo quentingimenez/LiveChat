@@ -53,6 +53,26 @@ powershell -NoProfile -File scripts/release.ps1 deploy-server 3.6.0
 Ne jamais committer ces valeurs ni les afficher (hôte = information
 d'infrastructure, et le template du conteneur contient des secrets).
 
+## Pièges d'invocation (Windows)
+
+- **Suite complète du workspace** : un seul passage, sortie redirigée, puis le
+  vrai code de sortie.
+
+  ```powershell
+  cmd /c "cargo test --workspace --offline > .tmp\workspace-test.log 2>&1"
+  "exit=$LASTEXITCODE"
+  ```
+
+  Un code de sortie douteux se tranche dans le log (chercher `test result:
+  FAILED`, `failures:`). Relancer une suite déjà verte « pour vérifier » coûte
+  plusieurs minutes et jette la seule preuve disponible ; c'est arrivé une fois
+  sur une release et a coûté ~4 min sur le chemin critique.
+- **`deploy-server` sous `cmd.exe`** : `*>` est une redirection PowerShell, pas
+  une syntaxe cmd. `powershell -NoProfile -File scripts\release.ps1 deploy-server
+  3.19.2 *> deploy.log` fait arriver `*>`, `deploy.log`, `2>&1` comme arguments
+  positionnels ; le script refuse quand la liste d'arguments est inattendue et
+  nomme ce qu'il a reçu. Utiliser `> deploy.log 2>&1`.
+
 ## 1. Plan
 
 1. `git fetch --tags origin`, puis `release.ps1 plan` sur `origin/main` à jour

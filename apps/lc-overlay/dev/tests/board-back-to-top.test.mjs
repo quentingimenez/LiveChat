@@ -143,7 +143,11 @@ test('la board seule porte le bouton', () => {
   const render = balancedBlock(board, 'export function renderBoard()', '{', '}');
   assert.match(render, /backToTopButton\(\)/);
   for (const view of ['views/queue.js', 'views/settings.js', 'views/admin.js', 'views/view.js']) {
-    assert.doesNotMatch(read(view), /back-to-top/, `${view} ne doit pas ajouter le bouton`);
+    assert.doesNotMatch(
+      read(view),
+      /class: 'back-to-top'/,
+      `${view} ne doit pas ajouter le bouton`,
+    );
   }
 });
 
@@ -164,7 +168,7 @@ test('le bouton est accessible et démarre caché', () => {
   assert.match(builder, /type: 'button'/);
   assert.match(builder, /'aria-label': 'Revenir en haut'/);
   assert.match(builder, /icon\('up'\)/);
-  assert.match(builder, /hidden: !view \|\| !showsBackToTop\(view\.scrollTop\)/);
+  assert.match(builder, /hidden: !backToTop \|\| !view \|\| !showsBackToTop\(view\.scrollTop\)/);
 });
 
 test('le défilement de la vue met le bouton à jour', () => {
@@ -173,7 +177,25 @@ test('le défilement de la vue met le bouton à jour', () => {
   const viewNode = balancedBlock(board, 'const viewNode = document.getElementById', '{', '}');
   assert.match(viewNode, /viewNode\.addEventListener\('scroll', syncBackToTop, \{ passive: true \}\)/);
   const sync = balancedBlock(board, 'function syncBackToTop()', '{', '}');
-  assert.match(sync, /button\.hidden = !showsBackToTop\(view\.scrollTop\)/);
+  assert.match(sync, /button\.hidden = !backToTop \|\| !showsBackToTop\(view\.scrollTop\)/);
+});
+
+test('le réglage « Bouton Revenir en haut » pilote le bouton', () => {
+  const settings = read('views/settings.js');
+  assert.match(settings, /id: 'settings-back-to-top'/);
+  assert.match(settings, /checked: settings\.backToTop !== false/);
+  assert.match(settings, /applyPatch\(\{ backToTop: event\.target\.checked \}\)/);
+  assert.match(settings, /Bouton « Revenir en haut »/);
+
+  const apply = balancedBlock(board, 'function applyBackToTop(view)', '{', '}');
+  assert.match(apply, /backToTop = view\.backToTop !== false/);
+  assert.match(apply, /syncBackToTop\(\)/);
+
+  const device = balancedBlock(board, 'function applyDeviceSettings(view)', '{', '}');
+  assert.match(device, /applyHoverPreview\(view\)/);
+  assert.match(device, /applyBackToTop\(view\)/);
+  assert.match(board, /invoke\('settings_get'\)\.then\(applyDeviceSettings\)/);
+  assert.match(board, /listen\('overlay:\/\/device-settings', applyDeviceSettings\)/);
 });
 
 test('le clic ramène la vue en haut', () => {

@@ -2,9 +2,10 @@
 // un média démarre seul et avec son, et le niveau par défaut des deux lecteurs
 // est le plus bas des volumes général et de guilde, sur une échelle absolue
 // 0–100 % (le 100 % de la barre d'aperçu ne reprend jamais le volume des
-// paramètres). Un média audio ne démarre jamais en sourdine : son autoplay
-// attend que le son soit activé. Les deux réglages d'aperçu ne s'appliquent que
-// si l'aperçu au survol est actif. Ce fichier protège ces invariants.
+// paramètres). Les deux sons démarrent coupés ; un média audio ne démarre
+// jamais en sourdine, son autoplay attend donc que le son soit activé. Les
+// deux réglages d'aperçu ne s'appliquent que si l'aperçu au survol est actif.
+// Ce fichier protège ces invariants.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -38,15 +39,15 @@ const mediaDetail = read('views/media-detail.js');
 const board = read('views/board.js');
 const settingsView = read('views/settings.js');
 
-test('the four playback switches default to on and only an explicit false turns one off', () => {
+test('autoplay is on by default, the sound needs an explicit true', () => {
   assert.deepEqual(playbackSettings({}), {
     previewAutoplay: true,
     detailAutoplay: true,
-    previewSound: true,
-    detailSound: true,
+    previewSound: false,
+    detailSound: false,
   });
   assert.deepEqual(
-    playbackSettings({ previewAutoplay: false, detailSound: false }),
+    playbackSettings({ previewAutoplay: false, previewSound: true }),
     {
       previewAutoplay: false,
       detailAutoplay: true,
@@ -56,9 +57,9 @@ test('the four playback switches default to on and only an explicit false turns 
     'a switch left out keeps its default',
   );
   assert.equal(
-    playbackSettings({ previewSound: 'false' }).previewSound,
-    true,
-    'only the boolean false disables a switch',
+    playbackSettings({ previewSound: 'true' }).previewSound,
+    false,
+    'only the boolean true enables a sound',
   );
   assert.equal(playbackSettings({ detailAutoplay: 0 }).detailAutoplay, true);
 });
@@ -150,15 +151,15 @@ test('a switch that cannot apply reads as inactive', () => {
 
 test('the settings page offers the four switches in a Lecture section', () => {
   const rows = [
-    ['settings-preview-autoplay', 'previewAutoplay'],
-    ['settings-preview-sound', 'previewSound'],
-    ['settings-detail-autoplay', 'detailAutoplay'],
-    ['settings-detail-sound', 'detailSound'],
+    ['settings-preview-autoplay', 'previewAutoplay', 'settings.previewAutoplay !== false'],
+    ['settings-preview-sound', 'previewSound', 'settings.previewSound === true'],
+    ['settings-detail-autoplay', 'detailAutoplay', 'settings.detailAutoplay !== false'],
+    ['settings-detail-sound', 'detailSound', 'settings.detailSound === true'],
   ];
   assert.match(settingsView, /function renderPlayback\(settings\)/);
-  for (const [id, key] of rows) {
+  for (const [id, key, checked] of rows) {
     assert.match(settingsView, new RegExp(`id: '${id}'`));
-    assert.match(settingsView, new RegExp(`checked: settings\\.${key} !== false`));
+    assert.ok(settingsView.includes(`checked: ${checked}`), `${key} starts from its own default`);
     assert.match(
       settingsView,
       new RegExp(`applyPatch\\(\\{ ${key}: event\\.target\\.checked \\}\\)`),

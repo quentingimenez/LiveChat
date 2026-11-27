@@ -53,6 +53,8 @@ pub struct SettingsView {
     pub show_text: bool,
     /// A board card shows its preview when the pointer stays on it.
     pub hover_preview: bool,
+    /// The board shows its floating "back to top" button.
+    pub back_to_top: bool,
     /// The hover preview starts playing as soon as it opens.
     pub preview_autoplay: bool,
     /// The details window starts playing as soon as it opens.
@@ -219,6 +221,7 @@ pub fn build_settings_view(
         media_muted: config.media_muted,
         show_text: config.show_text,
         hover_preview: config.hover_preview,
+        back_to_top: config.back_to_top,
         preview_autoplay: config.preview_autoplay,
         detail_autoplay: config.detail_autoplay,
         preview_sound: config.preview_sound,
@@ -628,6 +631,9 @@ pub fn apply_settings_patch(
     if let Some(hover_preview) = bool_value(object, "hoverPreview")? {
         config.hover_preview = hover_preview;
     }
+    if let Some(back_to_top) = bool_value(object, "backToTop")? {
+        config.back_to_top = back_to_top;
+    }
     if let Some(preview_autoplay) = bool_value(object, "previewAutoplay")? {
         config.preview_autoplay = preview_autoplay;
     }
@@ -799,56 +805,104 @@ mod tests {
     }
 
     #[test]
+    fn settings_set_round_trips_back_to_top_from_an_old_config() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.6 }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(config.back_to_top, "the floating button is on by default");
+
+        let view = build_settings_view(&config, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        assert_eq!(value["backToTop"], json!(true));
+
+        let patched =
+            apply_settings_patch(&config, &json!({ "backToTop": false }), &sample_displays())
+                .expect("valid payload");
+        assert!(!patched.back_to_top);
+        let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        assert_eq!(value["backToTop"], json!(false));
+
+        let error =
+            apply_settings_patch(&config, &json!({ "backToTop": "off" }), &sample_displays())
+                .expect_err("boolean only");
+        assert_eq!(error.field, "backToTop");
+    }
+
+    #[test]
     fn settings_set_round_trips_media_playback_from_an_old_config() {
         let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.6 }));
         assert!(warnings.is_empty(), "warnings: {warnings:?}");
 
         let view = build_settings_view(&config, &sample_displays(), Some(0), true, idle_update());
         let value = serde_json::to_value(view).expect("serializable view");
-        for key in [
-            "previewAutoplay",
-            "detailAutoplay",
-            "previewSound",
-            "detailSound",
-        ] {
-            assert_eq!(value[key], json!(true), "{key} is on by default");
-        }
+        assert_eq!(
+            value["previewAutoplay"],
+            json!(true),
+            "the previews play by default"
+        );
+        assert_eq!(
+            value["detailAutoplay"],
+            json!(true),
+            "the window plays by default"
+        );
+        assert_eq!(
+            value["previewSound"],
+            json!(false),
+            "the previews stay silent by default"
+        );
+        assert_eq!(
+            value["detailSound"],
+            json!(false),
+            "the window stays silent by default"
+        );
 
         let patched = apply_settings_patch(
             &config,
             &json!({
                 "previewAutoplay": false,
                 "detailAutoplay": false,
-                "previewSound": false,
-                "detailSound": false,
+                "previewSound": true,
+                "detailSound": true,
             }),
             &sample_displays(),
         )
         .expect("valid payload");
         assert!(!patched.preview_autoplay);
         assert!(!patched.detail_autoplay);
-        assert!(!patched.preview_sound);
-        assert!(!patched.detail_sound);
+        assert!(patched.preview_sound);
+        assert!(patched.detail_sound);
         let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
         let value = serde_json::to_value(view).expect("serializable view");
-        for key in [
-            "previewAutoplay",
-            "detailAutoplay",
-            "previewSound",
-            "detailSound",
-        ] {
-            assert_eq!(value[key], json!(false), "{key} follows the patch");
-        }
+        assert_eq!(
+            value["previewAutoplay"],
+            json!(false),
+            "previewAutoplay follows the patch"
+        );
+        assert_eq!(
+            value["detailAutoplay"],
+            json!(false),
+            "detailAutoplay follows the patch"
+        );
+        assert_eq!(
+            value["previewSound"],
+            json!(true),
+            "previewSound follows the patch"
+        );
+        assert_eq!(
+            value["detailSound"],
+            json!(true),
+            "detailSound follows the patch"
+        );
 
         // A partial patch only moves the field it names.
         let partial = apply_settings_patch(
             &patched,
-            &json!({ "previewSound": true }),
+            &json!({ "previewSound": false }),
             &sample_displays(),
         )
         .expect("valid payload");
-        assert!(partial.preview_sound);
-        assert!(!partial.detail_sound);
+        assert!(!partial.preview_sound);
+        assert!(partial.detail_sound);
         assert!(!partial.preview_autoplay);
 
         let error = apply_settings_patch(

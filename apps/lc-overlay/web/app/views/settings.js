@@ -493,6 +493,14 @@ function renderDisplay(settings) {
     },
   });
 
+  // On by default: only an explicit `false` hides the floating button.
+  const backToTop = h('input', {
+    id: 'settings-back-to-top',
+    type: 'checkbox',
+    checked: settings.backToTop !== false,
+    onChange: (event) => applyPatch({ backToTop: event.target.checked }),
+  });
+
   const testButton = h(
     'button',
     { class: 'btn', type: 'button', disabled: testingMedia || placing, onClick: testMedia },
@@ -528,12 +536,8 @@ function renderDisplay(settings) {
     screenRow,
     h('div', { class: 'settings-zone-group' }, zoneRow, alignmentRow),
     switchRow('Texte des médias', showText, 'settings-show-text'),
-    switchRow(
-      'Ouvrir l’aperçu au survol',
-      hoverPreview,
-      'settings-hover-preview',
-      'Désactivé : un clic ouvre les détails, un double-clic joue le média sur les overlays.',
-    ),
+    switchRow('Ouvrir l’aperçu au survol', hoverPreview, 'settings-hover-preview'),
+    switchRow('Bouton « Revenir en haut »', backToTop, 'settings-back-to-top'),
     controlRow('Média de test', [testButton]),
   );
 }
@@ -568,7 +572,7 @@ function renderPlayback(settings) {
   const previewSound = h('input', {
     id: 'settings-preview-sound',
     type: 'checkbox',
-    checked: settings.previewSound !== false,
+    checked: settings.previewSound === true,
     disabled: !previewEnabled,
     onChange: (event) => applyPatch({ previewSound: event.target.checked }),
   });
@@ -581,7 +585,7 @@ function renderPlayback(settings) {
   const detailSound = h('input', {
     id: 'settings-detail-sound',
     type: 'checkbox',
-    checked: settings.detailSound !== false,
+    checked: settings.detailSound === true,
     onChange: (event) => applyPatch({ detailSound: event.target.checked }),
   });
   const previewNote = h(
@@ -597,30 +601,10 @@ function renderPlayback(settings) {
   return section(
     'Lecture',
     previewNote,
-    switchRow(
-      'Lancer les aperçus automatiquement',
-      previewAutoplay,
-      'settings-preview-autoplay',
-      'Désactivé : les aperçus restent sur leur première image ; un clic lance la lecture.',
-    ),
-    switchRow(
-      'Son des aperçus',
-      previewSound,
-      'settings-preview-sound',
-      'Désactivé : les aperçus démarrent en silence ; un audio attend qu’on active le son.',
-    ),
-    switchRow(
-      'Lancer les détails automatiquement',
-      detailAutoplay,
-      'settings-detail-autoplay',
-      'Désactivé : les détails s’ouvrent en pause ; la lecture démarre avec le bouton du lecteur.',
-    ),
-    switchRow(
-      'Son des détails',
-      detailSound,
-      'settings-detail-sound',
-      'Désactivé : les détails s’ouvrent en silence. Un audio ne démarre pas seul tant que ce son est coupé.',
-    ),
+    switchRow('Lancer les aperçus automatiquement', previewAutoplay, 'settings-preview-autoplay'),
+    switchRow('Son des aperçus', previewSound, 'settings-preview-sound'),
+    switchRow('Lancer les détails automatiquement', detailAutoplay, 'settings-detail-autoplay'),
+    switchRow('Son des détails', detailSound, 'settings-detail-sound'),
     hint(
       'Les lecteurs démarrent au plus bas des volumes général et de la guilde, sur une échelle de 0 à 100 %.',
     ),

@@ -873,7 +873,7 @@ function backToTopButton() {
       type: 'button',
       title: 'Revenir en haut',
       'aria-label': 'Revenir en haut',
-      hidden: !view || !showsBackToTop(view.scrollTop),
+      hidden: !backToTop || !view || !showsBackToTop(view.scrollTop),
       onClick: () => {
         const node = document.getElementById('view');
         if (node) {
@@ -892,7 +892,7 @@ function syncBackToTop() {
   const view = document.getElementById('view');
   const button = view ? view.querySelector('.back-to-top') : null;
   if (button) {
-    button.hidden = !showsBackToTop(view.scrollTop);
+    button.hidden = !backToTop || !showsBackToTop(view.scrollTop);
   }
 }
 
@@ -1287,6 +1287,9 @@ function setKind(kind) {
 // core/sound.js does for the sound settings. On by default: the shell may turn
 // it off, and the value stays on until it says otherwise.
 let hoverPreview = true;
+// The floating "back to top" button is a device setting too (Paramètres ›
+// Affichage). On by default, like the hover preview.
+let backToTop = true;
 
 // The card whose menu is open, if any. The preview stays off that one card —
 // it covers its card whole and would hide the menu it just opened — while the
@@ -1362,10 +1365,26 @@ function applyHoverPreview(view) {
   }
 }
 
-// The shell keeps the device settings: read them once (the board's preview is
-// on until the shell says otherwise) and follow every change without a restart.
-invoke('settings_get').then(applyHoverPreview).catch(() => {});
-listen('overlay://device-settings', applyHoverPreview);
+// The shell keeps the device settings: read them once (the board's preview and
+// its floating button are on until the shell says otherwise) and follow every
+// change without a restart.
+function applyBackToTop(view) {
+  if (!view || typeof view !== 'object') {
+    return;
+  }
+  backToTop = view.backToTop !== false;
+  // A hidden button keeps its place in the tree: turning the setting back on
+  // needs no re-render, the next scroll or render shows it again.
+  syncBackToTop();
+}
+
+function applyDeviceSettings(view) {
+  applyHoverPreview(view);
+  applyBackToTop(view);
+}
+
+invoke('settings_get').then(applyDeviceSettings).catch(() => {});
+listen('overlay://device-settings', applyDeviceSettings);
 
 // Opens the detail window at once. Its callers ask on a single click (with the
 // hover preview off), a keyboard click, the context menu or the shortcut

@@ -14,8 +14,8 @@ let sound = {
   guilds: {},
   previewAutoplay: true,
   detailAutoplay: true,
-  previewSound: true,
-  detailSound: true,
+  previewSound: false,
+  detailSound: false,
 };
 
 // Both volumes start at 100 %: the shell stores them as 0..1 with a default of
@@ -27,15 +27,16 @@ function level(value) {
   return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : 1;
 }
 
-// The four playback switches of a SettingsView. Only an explicit `false`
-// turns one off, like the board's hover preview.
+// The four playback switches of a SettingsView. Autoplay is on unless it was
+// explicitly turned off; the sound needs an explicit `true` so no player
+// becomes audible without the user asking for it.
 export function playbackSettings(view = sound) {
   const source = view && typeof view === 'object' ? view : {};
   return {
     previewAutoplay: source.previewAutoplay !== false,
     detailAutoplay: source.detailAutoplay !== false,
-    previewSound: source.previewSound !== false,
-    detailSound: source.detailSound !== false,
+    previewSound: source.previewSound === true,
+    detailSound: source.detailSound === true,
   };
 }
 

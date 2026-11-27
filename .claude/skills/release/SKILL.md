@@ -78,10 +78,22 @@ d'infrastructure, et le template du conteneur contient des secrets).
 1. `git fetch --tags origin`, puis `release.ps1 plan` sur `origin/main` à jour
    (dans un worktree propre sur `origin/main` si l'arbre courant est sur une autre
    branche ou a des modifications).
-2. Lire les commits listés pour chaque composant, et les diffs quand le titre ne
+2. Vérifier que l'image de `main` se construit : le job `image (build + smoke)`
+   ne tourne pas sur les PR, c'est donc le run de `main` qui prouve que l'image
+   de la prochaine release se construit.
+
+   ```powershell
+   gh run list --workflow rust.yml --branch main --limit 1
+   gh run view <id>        # « image (build + smoke) » doit être ✓ dans la liste des jobs
+   ```
+
+   Rouge, en cours, ou run sans ce job : **ne pas proposer de version** ; d'abord
+   corriger (ou attendre un run vert) sur `main`. Un job `skipped` ne prouve rien :
+   il n'est sauté que sur les PR.
+3. Lire les commits listés pour chaque composant, et les diffs quand le titre ne
    suffit pas à classer le changement. Ignorer un commit qui ne fait que changer
    la version d'un autre composant.
-3. Composant sans commit depuis son dernier tag : pas de release.
+4. Composant sans commit depuis son dernier tag : pas de release.
 
 ## 2. Choisir le numéro
 

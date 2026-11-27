@@ -774,34 +774,38 @@ export function renderBoard() {
       }),
       h(
         'div',
-        { class: 'chips', role: 'group', 'aria-label': 'Filtrer par type de média' },
-        Object.entries(KIND_LABELS).map(([id, label]) =>
-          h(
-            'button',
-            {
-              class: `chip${state.kind === id ? ' is-active' : ''}`,
-              'data-kind': id,
-              'aria-pressed': String(state.kind === id),
-              onClick: () => setKind(id),
-            },
-            label,
+        { class: 'board-tools-secondary' },
+        h(
+          'div',
+          { class: 'chips', role: 'group', 'aria-label': 'Filtrer par type de média' },
+          Object.entries(KIND_LABELS).map(([id, label]) =>
+            h(
+              'button',
+              {
+                class: `chip${state.kind === id ? ' is-active' : ''}`,
+                'data-kind': id,
+                'aria-pressed': String(state.kind === id),
+                onClick: () => setKind(id),
+              },
+              label,
+            ),
           ),
         ),
-      ),
-      h(
-        'button',
-        {
-          class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
-          'aria-expanded': String(state.filtersOpen),
-          onClick: () => {
-            state.filtersOpen = !state.filtersOpen;
-            renderView();
+        h(
+          'button',
+          {
+            class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
+            'aria-expanded': String(state.filtersOpen),
+            onClick: () => {
+              state.filtersOpen = !state.filtersOpen;
+              renderView();
+            },
           },
-        },
-        icon('filter'),
-        filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
+          icon('filter'),
+          filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
+        ),
+        cardSizeSlider(),
       ),
-      cardSizeSlider(),
       h(
         'div',
         { class: 'board-actions' },

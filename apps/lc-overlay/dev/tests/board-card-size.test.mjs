@@ -279,21 +279,20 @@ test('sous 740 px de barre, le curseur passe en vertical et les types ne s’emp
   const boardCss = read('styles/board.css');
   const narrow = balancedBlock(boardCss, '@container board-toolbar (max-width: 740px)', '{', '}');
 
-  const tools = ruleOf(narrow, '.board-tools');
-  assert.match(tools, /display:\s*grid/, 'la barre passe en grille sur deux rangées');
-  assert.match(tools, /'search search search actions'/, 'la recherche et les actions gardent la première rangée');
-  assert.match(tools, /'chips filters size \.'/, 'les types, les filtres et l’icône forment la seconde');
-  for (const [selector, area] of [
-    ['.board-search', 'search'],
-    ['.chips', 'chips'],
-    ['.filters-toggle', 'filters'],
-    ['.board-size', 'size'],
-    ['.board-actions', 'actions'],
-  ]) {
-    const rule = ruleOf(narrow, selector);
-    assert.ok(rule, `${selector} doit être placé dans la grille`);
-    assert.match(rule, new RegExp(`grid-area:\\s*${area}\\b`), `${selector} → ${area}`);
-  }
+  assert.match(ruleOf(narrow, '.board-tools'), /flex-wrap:\s*wrap/, 'la barre passe à deux rangées');
+  const group = ruleOf(narrow, '.board-tools-secondary');
+  assert.ok(group, 'les types, les filtres et l’icône forment la seconde rangée');
+  assert.match(group, /display:\s*flex/, 'la seconde rangée est une ligne flex');
+  assert.match(group, /flex:\s*1 1 100%/, 'elle occupe toute la largeur');
+  assert.match(group, /order:\s*3/);
+  assert.match(ruleOf(narrow, '.board-tools > .board-search'), /order:\s*1/);
+  assert.match(ruleOf(narrow, '.board-tools > .board-search'), /max-width:\s*none/, 'la recherche remplit sa rangée');
+  assert.match(ruleOf(narrow, '.board-actions'), /order:\s*2/);
+  assert.match(
+    ruleOf(narrow, '.board-tools-secondary > .filters-toggle'),
+    /margin-left:\s*auto/,
+    'les filtres et l’icône collent au bord droit',
+  );
 
   // Les types ne se replient jamais : ils changent de rangée, pas de forme.
   const chips = ruleOf(boardCss, '.chips');
@@ -301,7 +300,7 @@ test('sous 740 px de barre, le curseur passe en vertical et les types ne s’emp
 
   const panel = ruleOf(narrow, '.board-size-panel');
   assert.match(panel, /flex-direction:\s*column/, 'le panneau passe en colonne');
-  assert.match(panel, /left:\s*50%/, 'il se centre sous l’icône');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste accroché au bord droit de l’icône, plus centré sous elle');
   const range = ruleOf(narrow, '.board-size-range');
   assert.match(range, /writing-mode:\s*vertical-lr/);
   assert.match(range, /direction:\s*rtl/);

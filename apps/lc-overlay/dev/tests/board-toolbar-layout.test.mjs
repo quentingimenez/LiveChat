@@ -2,16 +2,19 @@
 // types, les filtres et les actions ; l'occupation du board devient l'en-tête
 // du panneau de filtres au lieu d'une seconde ligne toujours visible.
 //
-// La rangée ne se replie jamais : le champ de recherche cède sa place (son
-// plancher est la largeur exacte de son placeholder), les types ne s'empilent
-// ni ne se tassent, puis les libellés des actions laissent la place à leurs
-// icônes — l'action elle-même ne quitte jamais la ligne. Sous le minimum de la
-// fenêtre board, les types passent en groupe horizontal sur une 2e rangée avec
-// les filtres et l'icône du curseur, sans jamais se mettre à la verticale.
+// La rangée ne se replie jamais : le champ de recherche prend la place
+// disponible (son plancher est la largeur exacte de son placeholder, sans
+// palier de fenêtre), les types ne s'empilent ni ne se tassent, puis les
+// libellés des actions s'effacent en largeur au profit de leurs icônes —
+// l'action elle-même ne quitte jamais la ligne. Sous le minimum de la fenêtre
+// board, les types passent en groupe horizontal sur une 2e rangée avec les
+// filtres et l'icône du curseur (qui s'ouvre alors à la verticale), sans
+// jamais se mettre à la verticale.
 //
 // Ces invariants protègent le retour utilisateur : plus d'actions rejetées sur
-// une deuxième ligne, plus de types empilés en 2 × 2, plus de légende orpheline
-// quand le panneau est fermé.
+// une deuxième ligne, plus de types empilés en 2 × 2, plus de saut de la
+// recherche quand un seuil bascule, plus de légende orpheline quand le panneau
+// est fermé.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -72,6 +75,11 @@ test('the toolbar keeps its actions on the tools row', () => {
   const toolsCall = toolbar.lastIndexOf('h(', toolsAt);
   const tools = balancedBlock(toolbar.slice(toolsCall), 'h', '(', ')');
   assert.match(tools, /class: 'board-actions'/, 'the actions must live inside the tools row');
+  assert.match(tools, /class: 'board-tools-secondary'/, 'les types, les filtres et le curseur voyagent dans leur propre groupe');
+  assert.ok(
+    tools.indexOf("class: 'board-tools-secondary'") < tools.indexOf("class: 'board-actions'"),
+    'le groupe secondaire précède les actions : il passera sous elles quand la rangée manquera de place',
+  );
   assert.doesNotMatch(toolbar, /board-usage/, 'the usage line must leave the toolbar');
   assert.match(board, /state\.filtersOpen \? renderFilters\(boardUsage\) : null/, 'the panel must receive the usage text');
 });
@@ -115,27 +123,57 @@ test('la rangée ne se replie plus : les actions y gardent leur place', () => {
 
   assert.ok(tools, 'la rangée des outils garde sa règle');
   assert.match(tools, /flex-wrap:\s*nowrap/, 'la rangée ne se replie jamais : les actions restent dessus');
+  assert.match(ruleOf(css, '.board-tools-secondary'), /display:\s*contents/, 'le groupe secondaire reste transparent sur une rangée');
   assert.ok(chips, 'les types gardent leur conteneur');
   assert.match(chips, /flex-wrap:\s*nowrap/, 'les types ne s’empilent jamais, même quand la place manque');
   assert.match(
     css,
-    /\.board-tools > \.filters-toggle,\s*\.board-size\s*\{[^}]*flex:\s*0 0 auto/,
+    /\.board-tools \.filters-toggle,\s*\.board-size\s*\{[^}]*flex:\s*0 0 auto/,
     'Filtres et curseur ne se compriment pas : la recherche cède avant eux',
   );
 });
+
+test('la recherche n’a plus de palier de fenêtre : elle ne saute pas à 1025 px', () => {
+  const css = read('styles/board.css');
+
+  assert.doesNotMatch(
+    css,
+    /@media \(max-width: 1024px\)\s*\{\s*\.board-search/,
+    'la largeur de la recherche se décide sur la barre (container query), pas sur la fenêtre',
+  );
+  assert.match(ruleOf(css, '.board-search'), /max-width:\s*320px/, 'sa largeur de lecture reste 320 px');
+  const compact = balancedBlock(css, '@container board-toolbar (max-width: 1024px)', '{', '}');
+  assert.match(
+    ruleOf(compact, '.board-search'),
+    /max-width:\s*260px/,
+    'le mode icônes garde la même largeur qu’au bord libellé : aucun saut au passage de 1153 à 1152 px',
+  );
+});
+
 
 test('sous le minimum de la fenêtre, les types passent en groupe sur une 2e rangée', () => {
   const css = read('styles/board.css');
   const narrow = balancedBlock(css, '@container board-toolbar (max-width: 740px)', '{', '}');
 
-  const tools = ruleOf(narrow, '.board-tools');
-  assert.ok(tools, 'la barre serrée a sa grille');
-  assert.match(tools, /display:\s*grid/, 'deux rangées, sans replier la rangée elle-même');
-  assert.match(tools, /'search search search actions'/, 'la recherche et les actions gardent la première rangée');
-  assert.match(tools, /'chips filters size \.'/, 'les types, les filtres et l’icône forment la seconde');
-  assert.match(ruleOf(narrow, '.board-actions'), /grid-area:\s*actions/, 'les actions ne descendent jamais');
-  assert.match(ruleOf(narrow, '.chips'), /grid-area:\s*chips/, 'les types restent un seul groupe horizontal');
-  assert.match(ruleOf(narrow, '.board-search'), /max-width:\s*none/, 'la recherche remplit sa rangée');
+  assert.match(ruleOf(narrow, '.board-tools'), /flex-wrap:\s*wrap/, 'la barre serrée passe à deux rangées');
+  const group = ruleOf(narrow, '.board-tools-secondary');
+  assert.ok(group, 'les types, les filtres et le curseur forment la 2e rangée');
+  assert.match(group, /display:\s*flex/, 'le groupe secondaire devient une vraie rangée flex');
+  assert.match(group, /flex:\s*1 1 100%/, 'il occupe toute la largeur de sa rangée');
+  assert.match(group, /order:\s*3/, 'il passe après la recherche et les actions');
+  const search = ruleOf(narrow, '.board-tools > .board-search');
+  assert.match(search, /order:\s*1/, 'la recherche garde la première place');
+  assert.match(search, /max-width:\s*none/, 'la recherche remplit sa rangée : plus de vide à droite');
+  assert.match(ruleOf(narrow, '.board-actions'), /order:\s*2/, 'les actions restent sur la première rangée');
+  assert.match(
+    ruleOf(narrow, '.board-tools-secondary > .filters-toggle'),
+    /margin-left:\s*auto/,
+    'les filtres et le curseur collent au bord droit de la 2e rangée',
+  );
+  const panel = ruleOf(narrow, '.board-size-panel');
+  assert.match(panel, /flex-direction:\s*column/, 'le panneau du curseur passe en vertical');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste accroché au bord droit de son icône, plus centré sous elle');
+  assert.doesNotMatch(narrow, /grid-template-areas/, 'plus de grille : la 2e rangée est une simple ligne flex');
   assert.match(ruleOf(css, '.chips'), /flex-wrap:\s*nowrap/, 'aucune règle ne replie les types en 2 × 2');
 });
 
@@ -151,13 +189,18 @@ test('quand la place manque, les actions passent en icônes sans perdre leur nom
 
   const compact = balancedBlock(css, '@container board-toolbar (max-width: 1024px)', '{', '}');
   const label = ruleOf(compact, '.board-action-label');
-  assert.ok(label, 'le mode icônes doit masquer les libellés');
-  assert.match(label, /position:\s*absolute/);
-  assert.match(label, /width:\s*1px/);
-  assert.match(label, /clip-path:\s*inset\(50%\)/);
+  assert.ok(label, 'le mode icônes doit effacer les libellés');
+  assert.match(label, /max-width:\s*0/, 'la largeur du libellé tombe à zéro : il quitte le flux au lieu d’être découpé');
+  assert.match(label, /min-width:\s*0/, 'un libellé flex ne garde pas sa largeur minimale');
+  assert.match(label, /opacity:\s*0/);
   assert.doesNotMatch(label, /display:\s*none/, 'le libellé reste dans le DOM, il porte le nom accessible');
   assert.doesNotMatch(label, /visibility:\s*hidden/, 'le libellé reste dans le DOM, il porte le nom accessible');
+  const base = ruleOf(css, '.board-action-label');
+  assert.match(base, /max-width:\s*120px/, 'le libellé part de sa largeur naturelle');
+  assert.match(base, /transition:[^;]*max-width/, 'sa largeur s’anime : le passage libellé → icône ne casse pas la rangée');
+  assert.match(ruleOf(css, '.board-actions .btn'), /transition:[^;]*padding/, 'les boutons accompagnent le mouvement');
   assert.match(ruleOf(compact, '.board-actions .btn'), /padding:\s*0 9px/);
+  assert.match(ruleOf(compact, '.board-actions .btn'), /gap:\s*0/, 'le libellé à largeur nulle ne laisse pas de gouttière');
 
   const board = read('views/board.js');
   const full = balancedBlock(board, 'const toolbar = h', '(', ')');
@@ -173,6 +216,7 @@ test('quand la place manque, les actions passent en icônes sans perdre leur nom
     assert.ok(full.includes(`title: '${title}'`), `infobulle manquante : ${title}`);
   }
 });
+
 
 test('a role without options keeps the panel usable', () => {
   const filters = balancedBlock(read('views/board.js'), 'function renderFilters', '{', '}');

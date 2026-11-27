@@ -72,6 +72,35 @@
   gap: var(--space-1);
 }
 
+/* Card size: the slider of the grid's track width. One line of the toolbar —
+   icon, range, value — with a value column of a fixed width, so the row never
+   reflows while the thumb moves. */
+.board-size {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  color: var(--text-soft);
+}
+
+.board-size .icon {
+  flex: 0 0 auto;
+}
+
+.board-size-range {
+  width: 104px;
+  margin: 0;
+  accent-color: var(--blue);
+}
+
+.board-size-value {
+  min-width: 40px;
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 /* Chips are 32 px targets. Every chip keeps the same 600 weight so that
    pressing one only changes colours (the transparent border is already
    reserved): the row never reflows when the active chip changes. */
@@ -198,9 +227,11 @@
 }
 
 /* Regular grid, like the validated V1: one card shape whatever the media's own
-   shape. The cards keep one normalised width (232px) at every window size, so
-   resizing the window never resizes a card: only the number of columns per row
-   follows the available width (three at 960, four at 1120, five at 1400). The
+   shape. The cards keep one normalised width at every window size, so resizing
+   the window never resizes a card: only the number of columns per row follows
+   the available width (three at 960, four at 1120, five at 1400). The width is
+   the toolbar's card-size slider (`--board-card-width`), and the 232 px
+   fallback keeps a page that never loaded the preference at the V1 size. The
    tracks start at the content's left edge instead of being centred: a centred
    row shifts the whole grid by a fraction of a pixel at every width, which
    makes the cards shimmer while the window is being dragged. Every card of a
@@ -208,7 +239,7 @@
    centre; the whole frame stays in the detail window. */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 232px);
+  grid-template-columns: repeat(auto-fill, var(--board-card-width, 232px));
   justify-content: start;
   gap: 22px 18px;
   align-items: stretch;

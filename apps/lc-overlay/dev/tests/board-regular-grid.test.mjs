@@ -1,16 +1,18 @@
 // The board lays its cards out as the regular V1 grid: one card shape whatever
 // the media's own shape. This file used to pin the masonry helpers
 // (core/masonry.js, the per-card row span); it now pins the regular grid in the
-// same spirit: the CSS and the card builders must keep one fixed width, one
-// height, a 16 / 10 thumbnail and the title + meta body. The width is fixed
-// (232px) so that resizing the window only changes the number of columns per
-// row, never the size of the cards.
+// same spirit: the CSS and the card builders must keep one width, one height, a
+// 16 / 10 thumbnail and the title + meta body. The width is one custom property
+// (`--board-card-width`, 232px by default and the fallback of the grid), which
+// the toolbar's slider moves; resizing the window only changes the number of
+// columns per row, never the size of the cards.
 //
 // The views need a DOM and the harness has none: these checks read the source.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { DEFAULT_BOARD_CARD_WIDTH } from '../../web/app/core/board-card-size.js';
 
 const read = (path) => readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8');
 const board = read('views/board.js');
@@ -39,15 +41,24 @@ function functionBody(source, name) {
 test('the board keeps one card width and only the column count follows the window', () => {
   const grid = ruleOf(boardCss, '.grid');
   assert.ok(grid, '.grid must exist in board.css');
-  // A fixed 232px track: resizing the window only adds or removes a column
-  // (three at 960, four at 1120, five at 1400), the cards themselves keep
-  // their width. The tracks stay anchored to the content's left edge: a
-  // centred row would move every card by a sub-pixel step on each width and
-  // shimmer while the window is dragged.
+  // One track width, driven by the toolbar's slider: resizing the window only
+  // adds or removes a column (three at 960, four at 1120, five at 1400), the
+  // cards themselves keep the width the slider shows. The fallback is the
+  // module's default, so a page that never loaded the preference is still the
+  // V1 size. The tracks stay anchored to the content's left edge: a centred
+  // row would move every card by a sub-pixel step on each width and shimmer
+  // while the window is dragged.
   assert.match(
     grid,
-    /grid-template-columns:\s*repeat\(auto-fill,\s*232px\)/,
-    'the track is fixed at 232px, never a share of the available width',
+    new RegExp(
+      `grid-template-columns:\\s*repeat\\(auto-fill,\\s*var\\(--board-card-width,\\s*${DEFAULT_BOARD_CARD_WIDTH}px\\)\\)`,
+    ),
+    'the track follows --board-card-width, with the default as its fallback',
+  );
+  assert.doesNotMatch(
+    grid,
+    /repeat\(auto-fill,\s*\d+px\)/,
+    'no hard-coded track width outside the custom property',
   );
   assert.match(grid, /justify-content:\s*start/, 'the fixed tracks stay anchored, not centred');
   assert.doesNotMatch(grid, /\b1fr\b/, 'no fractional track: a card never stretches with the window');

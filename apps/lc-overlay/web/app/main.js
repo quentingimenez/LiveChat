@@ -16,6 +16,7 @@ import { settingsControlActive, settingsFormDirty } from './core/dom.js';
 import { initProfileSync } from './core/profile-sync.js';
 import { initSound } from './core/sound.js';
 import { initTheme } from './core/theme.js';
+import { initBoardCardSize } from './core/board-card-size.js';
 import { initSingleLineDescriptions } from './core/measure.js';
 import { invoke, listen } from './core/ipc.js';
 import { activeGuild, state } from './core/state.js';
@@ -42,6 +43,9 @@ import { renderView } from './views/view.js';
 // Theme before the first paint: the stored preference (dark by default) is a
 // local display setting, applied on <html> and kept in step with Windows.
 initTheme();
+// Board card size before the first render too: the skeleton grid of the first
+// load already has the width the slider shows.
+initBoardCardSize();
 
 // No WebView menu (reload, print, save as): the board opens its own menus
 // on the rail, the media cards and the queue, and fields keep theirs.

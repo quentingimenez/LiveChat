@@ -1,12 +1,14 @@
 // The hover preview's mute button reveals a vertical level bar styled like the
 // card's playback line. These checks pin the control: the bar sets an absolute
 // 0–100 % level (100 % is full volume, independent of the device settings, and
-// the preview starts at the card's default level), the mute button stays
-// visible while the bar opens below it, the bar borrows the playback line's
-// thickness, rail and glow, it fills its whole height at 100 % and still fits
-// the shortest preview, it is built with the player and never with a still, it
-// only answers once the preview is open, a drag keeps a height margin around
-// the preview, and a press on it never toggles playback.
+// the preview starts at the card's default level), that level reaches the
+// player through the overlay's perceptual curve so 30 % sounds like the
+// overlay's 30 %, the mute button stays visible while the bar opens below it,
+// the bar borrows the playback line's thickness, rail and glow, it fills its
+// whole height at 100 % and still fits the shortest preview, it is built with
+// the player and never with a still, it only answers once the preview is open,
+// a drag keeps a height margin around the preview, and a press on it never
+// toggles playback.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -51,12 +53,18 @@ test('the mute button owns a vertical volume bar, built with the player', () => 
   assert.match(attachBody, /aria-orientation', 'vertical'/);
 });
 
-test('the bar sets an absolute level instead of trimming the overlay gain', () => {
+test('the bar sets an absolute level, applied through the overlay curve', () => {
   assert.doesNotMatch(attachBody, /trimVolume/);
   assert.match(attachBody, /const defaultLevel = clampVolume\(desc && desc\.volume\)/);
   assert.match(attachBody, /const level = clampVolume\(Number\(slider\.value\) \/ 100\)/);
-  assert.match(attachBody, /player\.volume = level;/, 'a move sets that exact level');
-  assert.match(attachBody, /player\.volume = currentLevel\(\);/, 'before any move, the card default applies');
+  assert.match(attachBody, /player\.volume = mediaPlaybackGain\(level\);/, 'a move sets that exact level');
+  assert.match(
+    attachBody,
+    /player\.volume = mediaPlaybackGain\(currentLevel\(\)\);/,
+    'before any move, the card default applies',
+  );
+  assert.doesNotMatch(attachBody, /player\.volume = level;/, 'a linear level would be louder than the overlay');
+  assert.doesNotMatch(attachBody, /player\.volume = currentLevel\(\);/);
   assert.doesNotMatch(attachBody, /player\.volume = Number\(slider\.value\)/);
 });
 

@@ -2,10 +2,12 @@
 // un média démarre seul et avec son, et le niveau par défaut des deux lecteurs
 // est le plus bas des volumes général et de guilde, sur une échelle absolue
 // 0–100 % (le 100 % de la barre d'aperçu ne reprend jamais le volume des
-// paramètres). Les deux sons démarrent coupés ; un média audio ne démarre
-// jamais en sourdine, son autoplay attend donc que le son soit activé. Les
-// deux réglages d'aperçu ne s'appliquent que si l'aperçu au survol est actif.
-// Ce fichier protège ces invariants.
+// paramètres). Ce niveau est converti en volume de l'élément par la courbe
+// perceptuelle de l'overlay, pas linéairement : à 30 %, le lecteur doit sonner
+// comme l'overlay à 30 % et non 4,25 fois plus fort. Les deux sons démarrent
+// coupés ; un média audio ne démarre jamais en sourdine, son autoplay attend
+// donc que le son soit activé. Les deux réglages d'aperçu ne s'appliquent que
+// si l'aperçu au survol est actif. Ce fichier protège ces invariants.
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -31,7 +33,8 @@ globalThis.HTMLElement = FakeElement;
 globalThis.HTMLMediaElement = FakeMediaElement;
 globalThis.window = {};
 
-const { mediaLevelOf, playbackSettings } = await import('../../web/app/core/sound.js');
+const sound = await import('../../web/app/core/sound.js');
+const { mediaGain, mediaLevelOf, playbackSettings } = sound;
 
 const read = (path) =>
   readFileSync(new URL(`../../web/app/${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
@@ -75,6 +78,22 @@ test('the players default to the quieter of the general and guild volumes', () =
   assert.equal(mediaLevelOf({ volume: 0.3, guilds: { g1: { volume: 'x' } } }, 'g1'), 0.3);
 });
 
+test('the players apply the overlay perceptual curve, not a linear level', () => {
+  const gain = (value) => sound.mediaPlaybackGain(value);
+  assert.equal(gain(1), 1);
+  assert.equal(gain(0), 0);
+  assert.equal(gain(-1), 0, 'below the scale, silence');
+  assert.equal(gain(2), 1, 'above the scale, full volume');
+  assert.equal(gain(undefined), 1, 'a missing level is full volume, like mediaLevelOf');
+  assert.ok(Math.abs(gain(0.3) - 0.0705) < 0.001, '30 % gives the overlay gain (0.3^2.2), not 0.3');
+  assert.ok(gain(0.3) < 0.3, 'a linear assignment would be louder than the overlay');
+  assert.equal(
+    gain(mediaLevelOf({ volume: 0.3, guilds: { g1: { volume: 1 } } }, 'g1')),
+    mediaGain(0.3, 1),
+    'in the reported setup, the default level sounds exactly like the overlay',
+  );
+});
+
 test('a video may autoplay muted, an audio waits for its sound setting', () => {
   assert.deepEqual(playbackPlan({ kind: 'video', autoplay: true, sound: true }), { autoplay: true, muted: false });
   assert.deepEqual(playbackPlan({ kind: 'video', autoplay: true, sound: false }), { autoplay: true, muted: true });
@@ -85,12 +104,21 @@ test('a video may autoplay muted, an audio waits for its sound setting', () => {
   assert.deepEqual(playbackPlan({ kind: 'image', autoplay: true, sound: true }), { autoplay: true, muted: false });
 });
 
-test('the preview bar sets an absolute level, no longer a trim of the settings gain', () => {
+test('the preview bar sets an absolute level, played through the perceptual curve', () => {
   assert.doesNotMatch(mediaDetail, /trimVolume/, 'the perceptual trim is gone from the preview player');
   assert.match(mediaDetail, /let previewLevel = null;/, 'null follows the card default');
   assert.match(mediaDetail, /const level = clampVolume\(Number\(slider\.value\) \/ 100\)/);
-  assert.match(mediaDetail, /player\.volume = level;/);
+  assert.match(mediaDetail, /player\.volume = mediaPlaybackGain\(level\);/);
   assert.match(mediaDetail, /slider\.max = '100'/, 'the bar is a plain 0..100 scale');
+});
+
+test('every player volume assignment goes through the overlay curve', () => {
+  assert.match(mediaDetail, /import \{ mediaPlaybackGain, playbackSettings \} from '\.\.\/core\/sound\.js';/);
+  const assignments = [...mediaDetail.matchAll(/\b_?player\.volume = ([^;]+);/g)];
+  assert.equal(assignments.length, 7, 'the seven player volume sites stay pinned');
+  for (const [, value] of assignments) {
+    assert.match(value, /^mediaPlaybackGain\(/, 'a linear level would be louder than the overlay');
+  }
 });
 
 test('the preview follows the device autoplay and sound switches', () => {

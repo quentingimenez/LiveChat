@@ -1,10 +1,11 @@
 // The media editor's audio preview must sound exactly like the overlay: both
 // turn the general and guild volume settings into the same media element
 // volume, through the overlay's perceptual curve. (The board's own preview and
-// details players use an absolute 0–100 % level instead; media-playback.test.mjs
-// covers them.) The overlay also has to re-apply that volume to the media
-// already playing when a setting changes (general volume, guild volume, media
-// mute).
+// details players use an absolute 0–100 % level, converted to the element
+// volume by that same curve so a level sounds like the overlay's matching
+// setting; media-playback.test.mjs covers them.) The overlay also has to
+// re-apply that volume to the media already playing when a setting changes
+// (general volume, guild volume, media mute).
 
 import assert from 'node:assert/strict';
 import test from 'node:test';

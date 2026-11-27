@@ -1,6 +1,7 @@
 // Device sound settings seen by the board: the previews and the details
-// players default to the quieter of the general and guild volumes, and the
-// header shows whether the guild's media sound is cut.
+// players default to the quieter of the general and guild volumes, played
+// through the overlay's perceptual curve, and the header shows whether the
+// guild's media sound is cut.
 
 import { createOverlayLegacyUtils } from '../../dist/renderer/overlay/legacy-utils.js';
 import { invoke, listen } from './ipc.js';
@@ -84,6 +85,13 @@ export async function setGuildMediaMuted(guildId, muted) {
 // louder than the overlay (50 % gave 0.5 instead of 0.22).
 export function mediaGain(volume, guildVolume) {
   return toPerceptualGain(level(volume) * (guildVolume === undefined ? 1 : level(guildVolume)));
+}
+
+// Media element volume (0 to 1) for the players' absolute level: the same
+// perceptual curve as the overlay, so a 30 % level sounds as quiet as the
+// overlay at 30 % instead of 4.25 times louder. 100 % stays full volume.
+export function mediaPlaybackGain(value) {
+  return toPerceptualGain(level(value));
 }
 
 // Volume (0 to 1) of the audio preview in the media editor, which reproduces

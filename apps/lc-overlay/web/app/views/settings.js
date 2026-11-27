@@ -601,30 +601,10 @@ function renderPlayback(settings) {
   return section(
     'Lecture',
     previewNote,
-    switchRow(
-      'Lancer les aperçus automatiquement',
-      previewAutoplay,
-      'settings-preview-autoplay',
-      'Désactivé : les aperçus restent sur leur première image ; un clic lance la lecture.',
-    ),
-    switchRow(
-      'Son des aperçus',
-      previewSound,
-      'settings-preview-sound',
-      'Désactivé : les aperçus démarrent en silence ; un audio attend qu’on active le son.',
-    ),
-    switchRow(
-      'Lancer les détails automatiquement',
-      detailAutoplay,
-      'settings-detail-autoplay',
-      'Désactivé : les détails s’ouvrent en pause ; la lecture démarre avec le bouton du lecteur.',
-    ),
-    switchRow(
-      'Son des détails',
-      detailSound,
-      'settings-detail-sound',
-      'Désactivé : les détails s’ouvrent en silence. Un audio ne démarre pas seul tant que ce son est coupé.',
-    ),
+    switchRow('Lancer les aperçus automatiquement', previewAutoplay, 'settings-preview-autoplay'),
+    switchRow('Son des aperçus', previewSound, 'settings-preview-sound'),
+    switchRow('Lancer les détails automatiquement', detailAutoplay, 'settings-detail-autoplay'),
+    switchRow('Son des détails', detailSound, 'settings-detail-sound'),
     hint(
       'Les lecteurs démarrent au plus bas des volumes général et de la guilde, sur une échelle de 0 à 100 %.',
     ),

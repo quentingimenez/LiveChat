@@ -7,8 +7,9 @@
 //
 // Le curseur est toujours replié derrière son icône : la rangée ne lui réserve
 // jamais 176 px, et le panneau s'ouvre au survol ou au focus, horizontalement
-// quand la place le permet puis verticalement sous 740 px de barre. Le mode
-// compact ne recopie jamais le curseur, il réutilise le même contrôle.
+// à droite de l'icône puis verticalement à sa gauche sous 740 px de barre, où
+// la fenêtre n'a plus la place de l'accueillir à droite. Le mode compact ne
+// recopie jamais le curseur, il réutilise le même contrôle.
 //
 // Les vues ont besoin d'un DOM et le harnais n'en a pas : le câblage du
 // curseur et la règle CSS se lisent dans les sources.
@@ -247,9 +248,10 @@ test('le curseur est toujours replié derrière son icône, ouvert au survol', (
   const panel = ruleOf(boardCss, '.board-size-panel');
   assert.ok(panel, 'le panneau a sa règle de base');
   assert.match(panel, /position:\s*absolute/, 'le panneau flotte au-dessus du board');
-  assert.match(panel, /right:\s*calc\(100% \+ 8px\)/, 'il s’ouvre à gauche de l’icône');
+  assert.match(panel, /left:\s*calc\(100% \+ 8px\)/, 'il s’ouvre à droite de l’icône');
+  assert.doesNotMatch(panel, /right:\s*calc\(100% \+ 8px\)/, 'il ne s’ouvre plus à gauche');
   assert.match(panel, /top:\s*50%/, 'il est centré verticalement sur l’icône');
-  assert.match(panel, /transform:\s*translate\(4px, -50%\)/, 'fermé, il est décalé de 4 px vers l’icône');
+  assert.match(panel, /transform:\s*translate\(-4px, -50%\)/, 'fermé, il est décalé de 4 px vers l’icône');
   assert.doesNotMatch(panel, /left:\s*50%/, 'le panneau horizontal n’est pas centré sous l’icône');
   assert.doesNotMatch(panel, /flex-direction:\s*column/, 'la piste reste horizontale par défaut');
   assert.match(panel, /opacity:\s*0/, 'il est fermé au repos');
@@ -262,8 +264,9 @@ test('le curseur est toujours replié derrière son icône, ouvert au survol', (
   assert.match(open, /transform:\s*translate\(0, -50%\)/, 'ouvert, il revient à hauteur de l’icône');
   assert.match(boardCss, /\.board-size:focus-within\s+\.board-size-panel/, 'le clavier ouvre aussi le panneau');
   const bridge = balancedBlock(boardCss, '.board-size-panel::before', '{', '}');
-  assert.match(bridge, /right:\s*-8px/, 'un pont de survol comble l’écart vers l’icône');
+  assert.match(bridge, /left:\s*-8px/, 'un pont de survol comble l’écart vers l’icône');
   assert.match(bridge, /width:\s*8px/, 'le pont fait la largeur de l’écart');
+  assert.doesNotMatch(bridge, /right:\s*-8px/, 'le pont est du côté de l’icône, à gauche du panneau');
 
   const baseRange = ruleOf(boardCss, '.board-size-range');
   assert.match(baseRange, /width:\s*104px/, 'la piste garde sa largeur horizontale');
@@ -304,7 +307,13 @@ test('sous 740 px de barre, le curseur passe en vertical et les types ne s’emp
 
   const panel = ruleOf(narrow, '.board-size-panel');
   assert.match(panel, /flex-direction:\s*column/, 'le panneau passe en colonne');
-  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste à gauche de l’icône, centré sur sa hauteur');
+  assert.match(panel, /left:\s*auto/, 'l’ouverture à droite est annulée');
+  assert.match(panel, /right:\s*calc\(100% \+ 8px\)/, 'il repasse à gauche : à droite il déborderait de la fenêtre');
+  assert.match(panel, /transform:\s*translate\(4px, -50%\)/, 'fermé, il revient vers son icône');
+  const bridge = ruleOf(narrow, '.board-size-panel::before');
+  assert.ok(bridge, 'le pont du repli vertical a sa règle');
+  assert.match(bridge, /left:\s*auto/, 'le pont quitte le côté gauche du panneau');
+  assert.match(bridge, /right:\s*-8px/, 'il passe à droite, entre le panneau et l’icône');
   const range = ruleOf(narrow, '.board-size-range');
   assert.match(range, /writing-mode:\s*vertical-lr/);
   assert.match(range, /direction:\s*rtl/);

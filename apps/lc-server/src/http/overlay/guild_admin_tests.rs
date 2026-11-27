@@ -850,6 +850,83 @@ async fn queue_origin_and_history_are_guild_bounded() {
     }
 }
 
+/// Un retrait de file n'est pas un échec de lecture : la route le passe
+/// `FAILED` (seule transition admise) mais le marque `removedAt`/`removedBy`,
+/// et l'historique le dit — un vrai échec reste sans marqueur.
+#[tokio::test]
+async fn un_retrait_de_file_est_marque_dans_l_historique() {
+    let harness = Harness::new().await;
+    let admin = harness
+        .join(&harness.server_invite(GuildRole::Admin).await, "Alice")
+        .await;
+    let admin_token = token(&admin);
+    let (asset, _) = seed_asset(&harness, "retire.bin", 1024).await;
+
+    let removed = playback_job(&harness.guild_id, JobStatus::Pending, Some(asset.id), None);
+    seed_job(&harness, &removed).await;
+    let kept = playback_job(&harness.guild_id, JobStatus::Pending, None, None);
+    seed_job(&harness, &kept).await;
+    // Un échec de lecture antérieur, sans retrait : il doit rester un échec.
+    let failed = playback_job(
+        &harness.guild_id,
+        JobStatus::Failed,
+        None,
+        Some(fixed_now() - Duration::minutes(2)),
+    );
+    seed_job(&harness, &failed).await;
+
+    let (status, body) = harness
+        .call(
+            Method::DELETE,
+            &format!("/overlay/queue/{}", removed.id.to_canonical()),
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["removed"], true);
+
+    // Seul le job visé quitte la file.
+    let (status, body) = harness
+        .call(Method::GET, "/overlay/queue", Some(&admin_token), None)
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let pending = body["pending"].as_array().unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0]["id"], kept.id.to_canonical());
+
+    let (status, body) = harness
+        .call(
+            Method::GET,
+            "/overlay/queue/history?limit=30",
+            Some(&admin_token),
+            None,
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let items = body["items"].as_array().unwrap();
+    assert_eq!(items.len(), 2);
+
+    // Le retrait, le plus récent, porte le marqueur ; le statut reste `failed`
+    // (la base n'a pas d'autre transition vers un état terminal).
+    let head = &items[0];
+    assert_eq!(head["id"], removed.id.to_canonical());
+    assert_eq!(head["status"], "failed");
+    assert_eq!(head["removedBy"], "Alice");
+    assert_eq!(
+        head["removedAt"], head["finishedAt"],
+        "le retrait est daté à la fin du job : {head}"
+    );
+    assert!(head["removedAt"].as_str().is_some(), "{head}");
+
+    // Un échec de lecture n'a pas de marqueur : l'overlay doit encore dire
+    // « Échec ».
+    let tail = &items[1];
+    assert_eq!(tail["id"], failed.id.to_canonical());
+    assert!(tail["removedAt"].is_null(), "{tail}");
+    assert!(tail["removedBy"].is_null(), "{tail}");
+}
+
 #[tokio::test]
 async fn guild_reorders_pending_queue() {
     let harness = Harness::new().await;

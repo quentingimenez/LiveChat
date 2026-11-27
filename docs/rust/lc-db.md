@@ -193,6 +193,16 @@ Un job `PLAYING` orphelin (crash du serveur) reste en base au redémarrage ; le
 watchdog du moteur le libère (`DONE`) après la grâce de 10 s, il n'y a **pas**
 de recovery de masse au boot.
 
+### Retrait de file
+
+Retirer un job en attente (`DELETE /overlay/queue/{jobId}`, vidage de la file)
+le passe `FAILED` — seule transition `PENDING → terminal` admise par
+`JobStatus::can_transition_to` — et renseigne `removed_at`/`removed_by`
+(migration `0024`) : sans ce marqueur, l'historique ne distinguait pas un média
+retiré volontairement d'un média qui n'a pas pu jouer, et l'overlay affichait
+« Échec » dans les deux cas. Un `FAILED` sans `removed_at` reste un vrai échec.
+`requeue` efface les deux colonnes : un job relancé repart de zéro.
+
 ### Exemple : appairage atomique
 
 ```rust
@@ -293,7 +303,8 @@ tous les chemins). Les plans des deux sélections, des deux suppressions et de
 - `playback_jobs.rs` — ordre de la file (`queue_position`), `scheduled_at`, un seul
   `PLAYING` par guilde, `busy_until`, claims concurrents (2 tasks tokio), retry
   `SQLITE_BUSY` de `claim_next` (verrou externe relâché), `set_status(Playing)`
-  refusé par l'index unique partiel, `finish`/purge/`requeue`/état de lecture ;
+  refusé par l'index unique partiel, `finish`/purge/`requeue`/état de lecture,
+  marqueur de retrait `removed_at`/`removed_by` effacé par `requeue` ;
 - `guilds.rs` — upsert complet, mises à jour partielles qui créent la ligne ;
 - `clients.rs` — overlay + ingest : CRUD, auth par hash, révocation idempotente,
   unicité du hash ;

@@ -23,8 +23,13 @@
 //!
 //! Retirer un job en attente le passe `FAILED` : c'est la seule transition
 //! `PENDING → terminal` admise par la machine d'état
-//! (`JobStatus::can_transition_to`). Le job en cours ne se retire pas ici : il
-//! s'arrête par `stop.request` (WS), qui libère proprement la lecture.
+//! (`JobStatus::can_transition_to`). Le retrait est en plus marqué par
+//! `removed_at`/`removed_by` (migration 0024) : sans ce marqueur, la base et
+//! l'historique ne savaient pas distinguer un média retiré volontairement d'un
+//! média qui n'a pas pu jouer, et l'overlay affichait « Échec » dans les deux
+//! cas. Un `FAILED` sans `removed_at` reste un vrai échec de lecture.
+//! Le job en cours ne se retire pas ici : il s'arrête par `stop.request` (WS),
+//! qui libère proprement la lecture.
 
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, Query, State};
@@ -69,7 +74,7 @@ fn iso_ms(millis: Option<i64>) -> Value {
 /// titre de la source.
 const JOB_SELECT: &str = "SELECT j.id, j.status, j.text, j.author_name, \
         j.author_image, j.duration_sec, j.submission_date, j.started_at, \
-        j.finished_at, j.media_asset_id, \
+        j.finished_at, j.removed_at, j.removed_by, j.media_asset_id, \
         b.id AS board_item_id, b.title AS title, \
         a.kind AS media_kind, a.source_title, a.mime, \
         a.duration_sec AS media_duration_sec, a.width, a.height, \
@@ -138,6 +143,8 @@ fn job_payload(row: &SqliteRow) -> Result<Value, sqlx::Error> {
         "submittedAt": iso_ms(Some(row.try_get::<i64, _>("submission_date")?)),
         "startedAt": iso_ms(row.try_get::<Option<i64>, _>("started_at")?),
         "finishedAt": iso_ms(row.try_get::<Option<i64>, _>("finished_at")?),
+        "removedAt": iso_ms(row.try_get::<Option<i64>, _>("removed_at")?),
+        "removedBy": row.try_get::<Option<String>, _>("removed_by")?,
     }))
 }
 
@@ -277,21 +284,30 @@ pub async fn reorder_queue(
     }
 }
 
-/// Removes one pending job of the guild.
+/// Retire un job en attente de la guilde et le marque comme retiré.
+///
+/// Le job passe `FAILED` (seule transition `PENDING → terminal` admise) mais
+/// `removed_at`/`removed_by` disent qu'un opérateur l'a retiré : l'historique
+/// l'affiche « Retiré » au lieu d'« Échec ».
 pub(crate) async fn remove_job_payload(
     state: &AppState,
     guild_id: &GuildId,
     job_id_raw: &str,
+    actor: &str,
 ) -> Result<Value, Response> {
     let Ok(job_id) = job_id_raw.trim().parse::<PlaybackJobId>() else {
         return Ok(json!({"removed": false}));
     };
     let db = db(state)?;
+    let now_ms = lc_domain::datetime_to_ms(now(state));
     let result = sqlx::query(
-        "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
+        "UPDATE playback_jobs \
+         SET status = 'FAILED', finished_at = ?, removed_at = ?, removed_by = ? \
          WHERE id = ? AND guild_id = ? AND status = 'PENDING'",
     )
-    .bind(lc_domain::datetime_to_ms(now(state)))
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(actor)
     .bind(job_id.to_canonical())
     .bind(guild_id.as_str())
     .execute(db.pool())
@@ -300,17 +316,22 @@ pub(crate) async fn remove_job_payload(
     Ok(json!({"removed": result.rows_affected() > 0}))
 }
 
-/// Fails every pending job of the guild.
+/// Retire tous les jobs en attente de la guilde, marqués comme retirés.
 pub(crate) async fn clear_queue_payload(
     state: &AppState,
     guild_id: &GuildId,
+    actor: &str,
 ) -> Result<Value, Response> {
     let db = db(state)?;
+    let now_ms = lc_domain::datetime_to_ms(now(state));
     let result = sqlx::query(
-        "UPDATE playback_jobs SET status = 'FAILED', finished_at = ? \
+        "UPDATE playback_jobs \
+         SET status = 'FAILED', finished_at = ?, removed_at = ?, removed_by = ? \
          WHERE guild_id = ? AND status = 'PENDING'",
     )
-    .bind(lc_domain::datetime_to_ms(now(state)))
+    .bind(now_ms)
+    .bind(now_ms)
+    .bind(actor)
     .bind(guild_id.as_str())
     .execute(db.pool())
     .await
@@ -406,7 +427,8 @@ pub async fn remove_job(
     if let Err(response) = require(&state, &auth, Permission::ModerateQueue) {
         return response;
     }
-    match remove_job_payload(&state, auth.guild_id(), &job_id_raw).await {
+    let actor = overlay_audit::actor_name(&auth).to_owned();
+    match remove_job_payload(&state, auth.guild_id(), &job_id_raw, &actor).await {
         Ok(payload) => {
             if payload.get("removed").and_then(Value::as_bool) == Some(true) {
                 overlay_audit::record_queue_action(
@@ -428,7 +450,8 @@ pub async fn clear_queue(State(state): State<AppState>, auth: AuthedOverlayClien
     if let Err(response) = require(&state, &auth, Permission::ModerateQueue) {
         return response;
     }
-    match clear_queue_payload(&state, auth.guild_id()).await {
+    let actor = overlay_audit::actor_name(&auth).to_owned();
+    match clear_queue_payload(&state, auth.guild_id(), &actor).await {
         Ok(payload) => {
             if payload
                 .get("removedCount")

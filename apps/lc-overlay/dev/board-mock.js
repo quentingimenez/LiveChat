@@ -228,6 +228,8 @@
   const queueHistory = [
     { id: 'h0', status: 'done', title: null, sourceTitle: 'Clip envoyé une fois', text: null, authorName: 'Max', durationSec: 12, kind: 'video', origin: 'once', media: { id: 'a-once', kind: 'video', mime: 'video/mp4', durationSec: 95, width: 1920, height: 1080, isVertical: false, sizeBytes: 8 * 1024 * 1024, sourceUrl: 'https://youtu.be/dQw4w9WgXcQ' }, finishedAt: new Date(now - 6 * 60000).toISOString() },
     { id: 'h1', status: 'done', title: 'Bruh', sourceTitle: null, text: null, authorName: 'Léa', durationSec: 4, kind: 'image', origin: 'board', media: items[1].media, finishedAt: new Date(now - 12 * 60000).toISOString() },
+    // Un média retiré de la file : `FAILED` en base, marqué `removedAt`.
+    { id: 'h1b', status: 'failed', title: null, sourceTitle: null, text: '« mdr »', authorName: 'Max', durationSec: 5, kind: null, origin: 'direct', media: null, removedAt: new Date(now - 20 * 60000).toISOString(), removedBy: 'Quentin', finishedAt: new Date(now - 20 * 60000).toISOString() },
     { id: 'h2', status: 'failed', title: null, sourceTitle: null, text: 'gg les gars', authorName: 'Max', durationSec: 5, kind: null, origin: 'direct', media: null, finishedAt: new Date(now - 48 * 60000).toISOString() },
     { id: 'h3', status: 'done', title: 'Vine boom', sourceTitle: null, text: null, authorName: 'Quentin', durationSec: 3, kind: 'audio', origin: 'board', media: items[2].media, finishedAt: new Date(now - 3 * 3600000).toISOString() },
   ];

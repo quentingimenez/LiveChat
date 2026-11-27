@@ -324,13 +324,15 @@ impl PlaybackJobsRepository {
     /// Remet un job en attente de lecture (`PENDING`), avec une nouvelle date
     /// d'éligibilité.
     ///
-    /// Efface `started_at`/`finished_at` ; conserve les données auteur et
-    /// l'offset de départ. Utile pour relancer un job échoué ou rejouer le
-    /// dernier média.
+    /// Efface `started_at`/`finished_at` et le marqueur de retrait
+    /// (`removed_at`/`removed_by`, migration 0024) ; conserve les données
+    /// auteur et l'offset de départ. Utile pour relancer un job échoué ou
+    /// rejouer le dernier média.
     pub async fn requeue(&self, id: PlaybackJobId, scheduled_at: UtcDateTime) -> DbResult<bool> {
         let result = sqlx::query(
             "UPDATE playback_jobs \
-             SET status = 'PENDING', started_at = NULL, finished_at = NULL, scheduled_at = ? \
+             SET status = 'PENDING', started_at = NULL, finished_at = NULL, \
+                 removed_at = NULL, removed_by = NULL, scheduled_at = ? \
              WHERE id = ?",
         )
         .bind(to_ms(scheduled_at))

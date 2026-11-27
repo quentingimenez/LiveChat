@@ -379,12 +379,30 @@ async fn requeue_et_set_status() {
         .await
         .unwrap());
 
+    // Un job retiré de la file par un opérateur porte un marqueur
+    // (`removed_at`/`removed_by`, migration 0024).
+    sqlx::query("UPDATE playback_jobs SET removed_at = ?, removed_by = ? WHERE id = ?")
+        .bind(lc_domain::datetime_to_ms(now))
+        .bind("Alice")
+        .bind(claimed.id.to_canonical())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
     let retry_at = now + Duration::seconds(60);
     assert!(repo.requeue(claimed.id, retry_at).await.unwrap());
     let requeued = repo.get(claimed.id).await.unwrap().unwrap();
     assert_eq!(requeued.status, JobStatus::Pending);
     assert_eq!(requeued.started_at, None);
     assert_eq!(requeued.finished_at, None);
+    // Relancer un job efface le marqueur : il n'est plus « retiré ».
+    let marker: (Option<i64>, Option<String>) =
+        sqlx::query_as("SELECT removed_at, removed_by FROM playback_jobs WHERE id = ?")
+            .bind(claimed.id.to_canonical())
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(marker, (None, None));
     assert_eq!(requeued.scheduled_at, retry_at);
     assert!(repo
         .claim_next(now + Duration::seconds(59))

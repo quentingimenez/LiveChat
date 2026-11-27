@@ -172,7 +172,7 @@ test('sous le minimum de la fenêtre, les types passent en groupe sur une 2e ran
   );
   const panel = ruleOf(narrow, '.board-size-panel');
   assert.match(panel, /flex-direction:\s*column/, 'le panneau du curseur passe en vertical');
-  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste accroché au bord droit de son icône, plus centré sous elle');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste à gauche de son icône, centré sur sa hauteur');
   assert.doesNotMatch(narrow, /grid-template-areas/, 'plus de grille : la 2e rangée est une simple ligne flex');
   assert.match(ruleOf(css, '.chips'), /flex-wrap:\s*nowrap/, 'aucune règle ne replie les types en 2 × 2');
 });

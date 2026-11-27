@@ -109,12 +109,12 @@
 }
 
 /* Card size: the slider of the grid's track width, always folded behind the
-   grid icon. The panel opens on hover or keyboard focus, above the board: it
-   fades with opacity rather than `visibility: hidden`, so the range stays in
-   the tab order, and its 8 px `::before` bridge keeps the hover alive while
-   the pointer crosses the gap between the icon and the panel. Horizontally,
-   the panel hangs from the icon's right edge and grows leftwards, over the
-   filters rather than the actions: the buttons keep their end of the row. */
+   grid icon. The panel opens on hover or keyboard focus, to the left of the
+   icon and centred on its height: it fades with opacity rather than
+   `visibility: hidden`, so the range stays in the tab order, and its 8 px
+   `::before` bridge keeps the hover alive while the pointer crosses the gap
+   between the icon and the panel. It grows leftwards, over the filters rather
+   than the actions: the buttons keep their end of the row. */
 .board-size {
   position: relative;
   display: flex;
@@ -139,8 +139,8 @@
 
 .board-size-panel {
   position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  top: 50%;
+  right: calc(100% + 8px);
   z-index: 20;
   display: flex;
   align-items: center;
@@ -152,24 +152,24 @@
   box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
   opacity: 0;
   pointer-events: none;
-  transform: translateY(-4px);
+  transform: translate(4px, -50%);
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
 .board-size-panel::before {
   content: '';
   position: absolute;
-  top: -8px;
-  right: 0;
-  left: 0;
-  height: 8px;
+  top: 0;
+  right: -8px;
+  bottom: 0;
+  width: 8px;
 }
 
 .board-size:hover .board-size-panel,
 .board-size:focus-within .board-size-panel {
   opacity: 1;
   pointer-events: auto;
-  transform: translateY(0);
+  transform: translate(0, -50%);
 }
 
 .board-size-range {

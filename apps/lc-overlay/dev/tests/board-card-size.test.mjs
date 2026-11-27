@@ -240,17 +240,18 @@ test('le curseur est toujours replié derrière son icône, ouvert au survol', (
   // les largeurs. C'est la seule façon de ne pas reprendre 176 px aux libellés.
   const label = ruleOf(boardCss, '.board-size');
   assert.ok(label, 'le contrôle garde sa règle de base');
-  assert.match(label, /position:\s*relative/, 'le panneau se pose sous l’icône');
+  assert.match(label, /position:\s*relative/, 'le panneau se pose à côté de l’icône');
   assert.match(label, /justify-content:\s*center/, 'l’icône est seule dans le contrôle');
   assert.match(label, /width:\s*32px/, 'le contrôle occupe la largeur d’un bouton-icône');
 
   const panel = ruleOf(boardCss, '.board-size-panel');
   assert.ok(panel, 'le panneau a sa règle de base');
   assert.match(panel, /position:\s*absolute/, 'le panneau flotte au-dessus du board');
-  assert.match(panel, /right:\s*0/, 'par défaut il pend au bord droit de l’icône et s’ouvre vers la gauche');
-  assert.doesNotMatch(panel, /left:\s*50%/, 'le panneau horizontal n’est pas centré');
+  assert.match(panel, /right:\s*calc\(100% \+ 8px\)/, 'il s’ouvre à gauche de l’icône');
+  assert.match(panel, /top:\s*50%/, 'il est centré verticalement sur l’icône');
+  assert.match(panel, /transform:\s*translate\(4px, -50%\)/, 'fermé, il est décalé de 4 px vers l’icône');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'le panneau horizontal n’est pas centré sous l’icône');
   assert.doesNotMatch(panel, /flex-direction:\s*column/, 'la piste reste horizontale par défaut');
-  assert.match(panel, /top:\s*calc\(100% \+ 6px\)/, 'il s’ouvre juste sous l’icône');
   assert.match(panel, /opacity:\s*0/, 'il est fermé au repos');
   assert.match(panel, /pointer-events:\s*none/, 'fermé, il ne capte pas la souris');
   assert.doesNotMatch(panel, /visibility:\s*hidden/, 'le curseur reste dans l’ordre de tabulation');
@@ -258,8 +259,11 @@ test('le curseur est toujours replié derrière son icône, ouvert au survol', (
   const open = balancedBlock(boardCss, '.board-size:hover .board-size-panel', '{', '}');
   assert.match(open, /opacity:\s*1/, 'le survol ouvre le panneau');
   assert.match(open, /pointer-events:\s*auto/, 'ouvert, il redevient manipulable');
+  assert.match(open, /transform:\s*translate\(0, -50%\)/, 'ouvert, il revient à hauteur de l’icône');
   assert.match(boardCss, /\.board-size:focus-within\s+\.board-size-panel/, 'le clavier ouvre aussi le panneau');
-  assert.match(boardCss, /\.board-size-panel::before/, 'un pont de survol comble l’écart vers l’icône');
+  const bridge = balancedBlock(boardCss, '.board-size-panel::before', '{', '}');
+  assert.match(bridge, /right:\s*-8px/, 'un pont de survol comble l’écart vers l’icône');
+  assert.match(bridge, /width:\s*8px/, 'le pont fait la largeur de l’écart');
 
   const baseRange = ruleOf(boardCss, '.board-size-range');
   assert.match(baseRange, /width:\s*104px/, 'la piste garde sa largeur horizontale');
@@ -300,7 +304,7 @@ test('sous 740 px de barre, le curseur passe en vertical et les types ne s’emp
 
   const panel = ruleOf(narrow, '.board-size-panel');
   assert.match(panel, /flex-direction:\s*column/, 'le panneau passe en colonne');
-  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste accroché au bord droit de l’icône, plus centré sous elle');
+  assert.doesNotMatch(panel, /left:\s*50%/, 'il reste à gauche de l’icône, centré sur sa hauteur');
   const range = ruleOf(narrow, '.board-size-range');
   assert.match(range, /writing-mode:\s*vertical-lr/);
   assert.match(range, /direction:\s*rtl/);

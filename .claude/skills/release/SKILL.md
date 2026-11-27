@@ -53,15 +53,47 @@ powershell -NoProfile -File scripts/release.ps1 deploy-server 3.6.0
 Ne jamais committer ces valeurs ni les afficher (hôte = information
 d'infrastructure, et le template du conteneur contient des secrets).
 
+## Pièges d'invocation (Windows)
+
+- **Suite complète du workspace** : un seul passage, sortie redirigée, puis le
+  vrai code de sortie.
+
+  ```powershell
+  cmd /c "cargo test --workspace --offline > .tmp\workspace-test.log 2>&1"
+  "exit=$LASTEXITCODE"
+  ```
+
+  Un code de sortie douteux se tranche dans le log (chercher `test result:
+  FAILED`, `failures:`). Relancer une suite déjà verte « pour vérifier » coûte
+  plusieurs minutes et jette la seule preuve disponible ; c'est arrivé une fois
+  sur une release et a coûté ~4 min sur le chemin critique.
+- **`deploy-server` sous `cmd.exe`** : `*>` est une redirection PowerShell, pas
+  une syntaxe cmd. `powershell -NoProfile -File scripts\release.ps1 deploy-server
+  3.19.2 *> deploy.log` fait arriver `*>`, `deploy.log`, `2>&1` comme arguments
+  positionnels ; le script refuse quand la liste d'arguments est inattendue et
+  nomme ce qu'il a reçu. Utiliser `> deploy.log 2>&1`.
+
 ## 1. Plan
 
 1. `git fetch --tags origin`, puis `release.ps1 plan` sur `origin/main` à jour
    (dans un worktree propre sur `origin/main` si l'arbre courant est sur une autre
    branche ou a des modifications).
-2. Lire les commits listés pour chaque composant, et les diffs quand le titre ne
+2. Vérifier que l'image de `main` se construit : le job `image (build + smoke)`
+   ne tourne pas sur les PR, c'est donc le run de `main` qui prouve que l'image
+   de la prochaine release se construit.
+
+   ```powershell
+   gh run list --workflow rust.yml --branch main --limit 1
+   gh run view <id>        # « image (build + smoke) » doit être ✓ dans la liste des jobs
+   ```
+
+   Rouge, en cours, ou run sans ce job : **ne pas proposer de version** ; d'abord
+   corriger (ou attendre un run vert) sur `main`. Un job `skipped` ne prouve rien :
+   il n'est sauté que sur les PR.
+3. Lire les commits listés pour chaque composant, et les diffs quand le titre ne
    suffit pas à classer le changement. Ignorer un commit qui ne fait que changer
    la version d'un autre composant.
-3. Composant sans commit depuis son dernier tag : pas de release.
+4. Composant sans commit depuis son dernier tag : pas de release.
 
 ## 2. Choisir le numéro
 

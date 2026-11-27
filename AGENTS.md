@@ -181,6 +181,11 @@ Lancer ce qui couvre le changement et le dire dans `## Tests` :
 | Extension | `npm --prefix extension run ci:check` |
 | Console admin | `npm test` dans `apps/lc-admin-web` |
 
+Une suite se lance **une fois** : sortie complète redirigée
+(`cargo test … > .tmp\tests.log 2>&1`), puis lecture du vrai code de sortie. Un
+run vert ne se relance pas « pour vérifier » : un code de sortie douteux se
+tranche dans le log, jamais en repayant la suite et en jetant la preuve.
+
 Le poste est partagé : cibler les crates, éviter deux compilations globales en
 parallèle, laisser les commandes globales au Lead quand plusieurs agents tournent.
 

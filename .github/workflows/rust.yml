@@ -298,11 +298,16 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Builds the production image on every change (without publishing it) so a
-  # broken Dockerfile shows up before the release tag, then checks that the
-  # container serves the embedded admin console and accepts a login.
+  # Builds the production image on `main` (without publishing it) so a broken
+  # Dockerfile shows up before the release tag, then checks that the container
+  # serves the embedded admin console and accepts a login.
+  #
+  # Pull requests skip it: the release skill reads this `main` run before
+  # proposing a version, and the tag build (`server-image.yml`) stays the last
+  # gate before a deploy. `ci-gate` takes the `skipped` check as not failing.
   image:
     name: image (build + smoke)
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

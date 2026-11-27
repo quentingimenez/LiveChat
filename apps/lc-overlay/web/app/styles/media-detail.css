@@ -823,6 +823,11 @@
   background: linear-gradient(to top, rgba(8, 10, 16, 0.84), transparent);
   color: #fff;
   user-select: none;
+  /* The shared pill, recoloured for the black player chrome: a white dot on
+     the white fill needs a dark ring to stay visible at 100 %. */
+  --range-accent: #fff;
+  --range-rest: rgb(255 255 255 / 26%);
+  --range-ring: rgb(8 10 16 / 90%);
 }
 
 .hp-ctl-button {
@@ -902,9 +907,6 @@
 .hp-ctl-volume {
   flex: none;
   width: 82px;
-  height: 16px;
-  accent-color: #fff;
-  cursor: pointer;
 }
 
 .hp-page-stage:fullscreen {

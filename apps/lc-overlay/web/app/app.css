@@ -20,6 +20,7 @@
 @import url('./styles/dialog.css');
 @import url('./styles/say.css');
 @import url('./styles/editor.css');
+@import url('./styles/sliders.css');
 @import url('./styles/toast.css');
 @import url('./styles/contextmenu.css');
 /* Barre de défilement Atelier : dessinée par l'app, tokens des deux thèmes. */

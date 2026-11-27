@@ -39,6 +39,13 @@ export function clearSettingsDirty() {
   }
 }
 
+// The shell follows the OS "reduce motion" setting: scrolling animates unless
+// the user asked for less motion (the same check CSS does with its media
+// query).
+export function prefersReducedMotion() {
+  return Boolean(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+}
+
 export function h(tag, props, ...children) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props || {})) {

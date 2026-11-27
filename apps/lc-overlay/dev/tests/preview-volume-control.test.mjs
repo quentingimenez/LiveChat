@@ -236,8 +236,13 @@ test('a level drag keeps a height margin around the preview', () => {
   );
   assert.match(mediaDetail, /function close\(immediate\) \{[\s\S]*?clearVolumeDragMargin\(\)/, 'closing drops the margin');
   const band = ruleOf(detailCss, '.hp-volume-drag-margin');
+  const preview = ruleOf(detailCss, '.hp-overlay');
+  const bandZ = Number(/(?:^|\s)z-index:\s*(-?\d+)/.exec(band)?.[1]);
+  const previewZ = Number(/(?:^|\s)z-index:\s*(-?\d+)/.exec(preview)?.[1]);
   assert.match(band, /position:\s*fixed/);
-  assert.match(band, /z-index:\s*89/);
+  assert.ok(Number.isInteger(bandZ) && Number.isInteger(previewZ), 'the band and the preview have a level');
+  assert.ok(bandZ > 0, 'the band stays above the board');
+  assert.ok(bandZ < previewZ, 'the band sits under the preview');
   assert.match(band, /background:\s*transparent/);
   assert.match(band, /pointer-events:\s*auto/);
 });

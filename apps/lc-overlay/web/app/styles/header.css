@@ -1,7 +1,14 @@
 /* ------------------------------------------------------------------- header */
+/* The header does not scroll with the view. It paints above the hover preview,
+   which starts on a card that may be scrolled under the header: without its
+   own level and opaque background, the preview's first frame showed through
+   the header during the opening transition. */
 .header {
+  position: relative;
+  z-index: 4;
   padding: 16px 24px 0;
   border-bottom: 1px solid var(--line);
+  background: var(--slate-800);
 }
 
 .header-top {

@@ -58,12 +58,17 @@ jobs:
         run: node --test scripts/ci/tests/*.test.mjs
 
       - name: Wait for all PR check runs
+        # La fenêtre de stabilité n'existe que pour rattraper un check run créé
+        # quelques secondes après le dernier : GitHub crée les check runs dans
+        # la seconde de l'événement, et un job en file d'attente est déjà visible
+        # (`queued`). 20 s couvrent deux cycles de poll ; 60 s ajoutaient une
+        # minute pleine à chaque PR, sur le chemin critique du merge.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GATE_CHECK_NAME: "ci-gate"
           GATE_TIMEOUT_SECONDS: "3300"
-          GATE_POLL_SECONDS: "15"
-          GATE_STABILITY_SECONDS: "60"
+          GATE_POLL_SECONDS: "10"
+          GATE_STABILITY_SECONDS: "20"
         run: node scripts/ci/gate.mjs

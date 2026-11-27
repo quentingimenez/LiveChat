@@ -12,9 +12,17 @@ on:
         type: boolean
         default: false
   pull_request:
+    # Les vraies sources du fuzzing, pas `fuzz/**` : toute PR de release réécrit
+    # `fuzz/Cargo.lock` (bump des versions), ce qui matchait `fuzz/**` et lançait
+    # la suite nightly entière (6 jambes de mutation + 3 fuzz + load, 18-21 min)
+    # sur chaque PR de release, en retenant `ci-gate` avec elle. Le lockfile du
+    # fuzzer suit le workspace : il n'a jamais besoin de rejouer la suite ici.
+    # Le nightly planifié reste la couverture complète.
     paths:
       - ".github/workflows/verification-nightly.yml"
-      - "fuzz/**"
+      - "fuzz/Cargo.toml"
+      - "fuzz/src/**"
+      - "fuzz/fuzz_targets/**"
       - "scripts/mutants-baseline.json"
 
 permissions:

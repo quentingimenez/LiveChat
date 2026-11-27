@@ -303,3 +303,38 @@ Test-Case 'mutation matrix remains reachable from the nightly and pull_request t
     Assert-True ($onBlock -match '(?m)^\s*-\s*"\.github/workflows/verification-nightly\.yml"[ \t]*\r?$') 'a PR changing the workflow must run it'
     Assert-True ($onBlock -match '(?m)^\s*-\s*"scripts/mutants-baseline\.json"[ \t]*\r?$') 'a PR changing the baseline must run it'
 }
+
+function Get-MutantsPullRequestPaths {
+    param([string]$Workflow)
+    $block = [regex]::Match($Workflow, '(?ms)^  pull_request:[ \t]*\r?\n(.*?)(?=^  [A-Za-z_][A-Za-z0-9_]*:[ \t]*(?:#.*)?\r?$|\z)').Groups[1].Value
+    $paths = @()
+    $inPaths = $false
+    foreach ($rawLine in ($block -split "\r?\n")) {
+        if ($rawLine -match '^\s*#') { continue }
+        $line = [regex]::Replace($rawLine, '\s+#.*$', '')
+        if (-not $inPaths) {
+            if ($line -match '^\s{4}paths:\s*$') { $inPaths = $true }
+            continue
+        }
+        if ($line -match '^\s*$') { continue }
+        if ($line -notmatch '^\s{6,}-\s') { break }
+        $paths += (ConvertFrom-MutantsScalar ($line -replace '^\s{6,}-\s*', ''))
+    }
+    return $paths
+}
+
+Test-Case 'the pull_request trigger matches the fuzz sources, not every fuzz file' {
+    $paths = @(Get-MutantsPullRequestPaths $workflow)
+    Assert-True ($paths.Count -gt 0) 'no pull_request paths found in verification-nightly.yml'
+    # `fuzz/**` also matched `fuzz/Cargo.lock`, which every release PR rewrites
+    # (the version bump): the whole nightly (six mutation legs + three fuzz
+    # targets + load, 18-21 min) then ran on each release PR and held `ci-gate`
+    # with it. The fuzzer lockfile follows the workspace versions and never
+    # needs the suite replayed; the scheduled nightly stays the full coverage.
+    Assert-True ($paths -notcontains 'fuzz/**') 'a `fuzz/**` path puts the whole nightly on every release PR'
+    Assert-True ($paths -notcontains 'fuzz/Cargo.lock') 'the fuzzer lockfile alone must not trigger the nightly'
+    foreach ($needed in @('fuzz/Cargo.toml', 'fuzz/src/**', 'fuzz/fuzz_targets/**')) {
+        Assert-True ($paths -contains $needed) "the pull_request trigger must still match '$needed'"
+        Assert-True (Test-Path (Join-Path $script:RepoRoot ($needed -replace '/\*\*$', ''))) "the pull_request path '$needed' must point at a real fuzz source"
+    }
+}

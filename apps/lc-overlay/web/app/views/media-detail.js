@@ -55,6 +55,7 @@ import {
 } from '../core/detail-motion.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
 import { playbackPlan } from '../core/media-playback.js';
+import { createPreviewProgress } from '../core/preview-progress.js';
 import { mediaPlaybackGain, playbackSettings } from '../core/sound.js';
 
 const BODY_ESTIMATE = 220;
@@ -390,6 +391,9 @@ export function createMediaDetail(options) {
     }
     // A preview really existed and closed: the next one may open warm.
     lastPreviewClosedAt = performance.now();
+    if (el._progress) {
+      el._progress.destroy();
+    }
     if (el._player) {
       el._player.pause();
     }
@@ -529,20 +533,11 @@ export function createMediaDetail(options) {
     const fill = h('span');
     track.appendChild(fill);
 
-    const paint = () => {
-      const duration = player.duration;
-      const ratio = Number.isFinite(duration) && duration > 0
-        ? player.currentTime / duration
-        : 0;
-      fill.style.transform = `scaleX(${Math.min(1, Math.max(0, ratio))})`;
-    };
-    player.addEventListener('timeupdate', paint);
-    player.addEventListener('durationchange', paint);
-    player.addEventListener('seeked', paint);
-    player.addEventListener('emptied', () => {
-      fill.style.transform = 'scaleX(0)';
-    });
-    paint();
+    // The fill is a linear compositor animation over the time left; the player
+    // events only say when to restart it. The old code painted it on every
+    // `timeupdate` (about four a second) behind a 90 ms transition, which is
+    // what stepped and froze the bar.
+    const progress = createPreviewProgress({ player, fill });
 
     const seekTo = (event) => {
       if (!Number.isFinite(player.duration) || player.duration <= 0) {
@@ -554,7 +549,7 @@ export function createMediaDetail(options) {
       }
       const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
       player.currentTime = ratio * player.duration;
-      paint();
+      progress.paint();
     };
 
     let seeking = false;
@@ -595,7 +590,7 @@ export function createMediaDetail(options) {
     track.addEventListener('pointerup', endSeek);
     track.addEventListener('pointercancel', endSeek);
     track.addEventListener('click', (event) => event.stopPropagation());
-    return track;
+    return { track, destroy: progress.destroy };
   }
 
   function attachPlayer(el, media, player, card, desc) {
@@ -984,7 +979,7 @@ export function createMediaDetail(options) {
       attachStillOpen(media, card);
     }
 
-    const track = player ? attachProgress(player) : null;
+    const progress = player ? attachProgress(player) : null;
 
     const badge = card.querySelector('.card-badge');
     if (badge && badge.textContent && badge.textContent.trim()) {
@@ -1004,11 +999,12 @@ export function createMediaDetail(options) {
     el.setAttribute('role', 'group');
     el.setAttribute('aria-label', `Aperçu de ${desc.label || 'média'}`);
     el.append(media, body);
-    if (track) {
-      media.after(track);
+    if (progress) {
+      media.after(progress.track);
     }
     el._poster = still;
     el._playback = playback;
+    el._progress = progress;
     return el;
   }
 

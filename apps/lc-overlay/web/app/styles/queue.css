@@ -125,6 +125,10 @@
   color: var(--red-text);
 }
 
+.history-status.is-muted {
+  color: var(--text-faint);
+}
+
 .now {
   margin-bottom: 18px;
   padding: 14px 16px;

@@ -5,6 +5,7 @@ import { performAction } from '../core/action-ui.js';
 import { openContextMenu } from '../core/contextmenu.js';
 import { h, icon } from '../core/dom.js';
 import { formatDuration, relativeTime } from '../core/format.js';
+import { historyStatus } from '../core/history-status.js';
 import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
 import { queueClock } from '../core/queue-clock.js';
@@ -485,8 +486,9 @@ export function renderQueue() {
   return h('div', null, blocks, renderHistory());
 }
 
-// Last finished/failed plays of the guild, collapsed by default. The status is
-// drawn as a coloured glyph so the row stays readable without an icon font.
+// Last finished/failed plays of the guild, collapsed by default. A job a
+// moderator removed from the queue is `FAILED` in the database but carries
+// `removedAt`: `historyStatus` keeps it apart from a real playback failure.
 function renderHistory() {
   if (!can('viewQueue') || state.queueHistory.length === 0) {
     return null;
@@ -497,11 +499,11 @@ function renderHistory() {
   }
   const items = state.queueHistory.slice(0, 30);
   const rows = items.map((job) => {
-    const failed = job.status === 'failed';
+    const status = historyStatus(job);
     return h(
       'div',
       { class: 'line is-history' },
-      h('span', { class: `history-status ${failed ? 'is-err' : 'is-ok'}`, title: failed ? 'Échec' : 'Terminé' }, failed ? icon('close') : icon('check')),
+      h('span', { class: `history-status ${status.className}`, title: status.title, 'aria-label': status.title }, icon(status.icon)),
       jobWhat(job, null),
       h('span', { class: 'sub ellipsis' }, job.authorName ? `par ${job.authorName}` : '—'),
       h('span', { class: 'sub', title: job.finishedAt || '' }, relativeTime(job.finishedAt)),

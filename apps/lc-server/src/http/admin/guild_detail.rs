@@ -343,21 +343,32 @@ pub(super) async fn device_code(
 /// Handler `DELETE /admin/api/guilds/{id}/queue`.
 pub(super) async fn clear_queue(
     State(state): State<AppState>,
-    _access: AdminAccess,
+    access: AdminAccess,
     Path(raw_guild_id): Path<String>,
 ) -> Result<Response, AdminError> {
     let guild_id = parse_guild_id(&raw_guild_id)?;
-    to_admin_response(overlay_queue::clear_queue_payload(&state, &guild_id).await)
+    let actor = admin_actor(&access);
+    to_admin_response(overlay_queue::clear_queue_payload(&state, &guild_id, &actor).await)
 }
 
 /// Handler `DELETE /admin/api/guilds/{id}/queue/{jobId}`.
 pub(super) async fn remove_queue_job(
     State(state): State<AppState>,
-    _access: AdminAccess,
+    access: AdminAccess,
     Path((raw_guild_id, job_id_raw)): Path<(String, String)>,
 ) -> Result<Response, AdminError> {
     let guild_id = parse_guild_id(&raw_guild_id)?;
-    to_admin_response(overlay_queue::remove_job_payload(&state, &guild_id, &job_id_raw).await)
+    let actor = admin_actor(&access);
+    to_admin_response(
+        overlay_queue::remove_job_payload(&state, &guild_id, &job_id_raw, &actor).await,
+    )
+}
+
+/// Nom de l'acteur console, tel qu'il apparaît dans l'historique d'un retrait.
+fn admin_actor(access: &AdminAccess) -> String {
+    super::audit::AuditActor::from_session(&access.session)
+        .name
+        .unwrap_or_else(|| "console".to_owned())
 }
 
 /// Handler `POST /admin/api/guilds/{id}/queue/reorder`.

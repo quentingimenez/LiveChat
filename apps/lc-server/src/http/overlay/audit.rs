@@ -199,6 +199,15 @@ pub(crate) async fn record_playback_stop(
     .await;
 }
 
+/// Nom de l'acteur d'une action faite depuis un overlay : le pseudo du membre
+/// rattaché au client, ou le libellé du client quand le token n'en a pas.
+pub(super) fn actor_name(auth: &super::AuthedOverlayClient) -> &str {
+    auth.member
+        .as_ref()
+        .map(|member| member.display_name.as_str())
+        .unwrap_or(auth.client.label.as_str())
+}
+
 /// Journalled action of a queue moderation, if any.
 pub(super) async fn record_queue_action(
     state: &AppState,
@@ -206,11 +215,7 @@ pub(super) async fn record_queue_action(
     action: &str,
     path: &str,
 ) {
-    let actor_name = auth
-        .member
-        .as_ref()
-        .map(|member| member.display_name.as_str())
-        .unwrap_or(auth.client.label.as_str());
+    let actor_name = actor_name(auth);
     record_overlay_audit(
         state,
         auth.guild_id(),

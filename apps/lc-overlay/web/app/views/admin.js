@@ -6,6 +6,7 @@ import { api, run } from '../core/api.js';
 import { isObsolete, newestVersion, platformLabel, presenceSinceLabel as devicePresenceLabel, sessionModeLabel } from '../core/device-helpers.js';
 import { avatarNode, clearSettingsDirty, h, icon, resetOnDoubleClick } from '../core/dom.js';
 import { formatCode, relativeTime } from '../core/format.js';
+import { bindRangeFill } from '../core/range-fill.js';
 import { activeGuild, can, ROLE_LABELS, state } from '../core/state.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
 import { notify } from '../core/toast.js';
@@ -526,6 +527,7 @@ function openDeviceSettingsDialog(device) {
       output.textContent = `${volume.value} %`;
     });
     resetOnDoubleClick(volume, DEFAULT_VOLUME_PERCENT);
+    bindRangeFill(volume);
     const muted = h('input', { type: 'checkbox', checked: Boolean(current.mediaMuted) });
     const paused = h('input', { type: 'checkbox', checked: Boolean(current.paused) });
     const save = async () => {

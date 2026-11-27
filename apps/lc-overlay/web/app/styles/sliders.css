@@ -1,0 +1,99 @@
+/* One slider style for the whole board: a 4 px pill track and a 9 px dot.
+ *
+ * The value is not readable from CSS, so `core/range-fill.js` writes the share
+ * of the track already covered as `--range-p`; the input's own background is
+ * the fill, sized to the track height. A surface can recolour the pill by
+ * setting --range-accent / --range-rest / --range-ring on an ancestor (the
+ * details player does, in media-detail.css): the defaults below are fallbacks,
+ * not declarations on the input, so they do not win over an inherited token.
+ */
+
+input[type='range']:not(.hp-volume-range) {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background-color: transparent;
+  background-image: linear-gradient(
+    to right,
+    var(--range-accent, var(--blue)) 0 var(--range-p, 0%),
+    var(--range-rest, color-mix(in srgb, var(--text) 18%, transparent)) var(--range-p, 0%) 100%
+  );
+  background-size: 100% var(--range-track, 4px);
+  background-position: center;
+  background-repeat: no-repeat;
+  cursor: pointer;
+}
+
+input[type='range']:not(.hp-volume-range)::-webkit-slider-runnable-track {
+  height: 16px;
+  background: transparent;
+}
+
+input[type='range']:not(.hp-volume-range)::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 9px;
+  height: 9px;
+  margin-top: 3.5px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--range-accent, var(--blue));
+  box-shadow: 0 0 0 2px var(--range-ring, var(--slate-800));
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+
+input[type='range']:not(.hp-volume-range):hover::-webkit-slider-thumb {
+  transform: scale(1.14);
+}
+
+input[type='range']:not(.hp-volume-range):focus {
+  outline: none;
+}
+
+input[type='range']:not(.hp-volume-range):focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px var(--range-ring, var(--slate-800)), 0 0 0 5px var(--range-accent, var(--blue));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  input[type='range']:not(.hp-volume-range)::-webkit-slider-thumb {
+    transition: none;
+  }
+}
+
+/* The card-size slider turns vertical in a narrow toolbar (board.css). Its
+   fill is horizontal, so the pill cannot follow the rotation: keep the native
+   vertical control there instead of a squashed 16 px input. */
+@container board-toolbar (max-width: 740px) {
+  input[type='range'].board-size-range {
+    -webkit-appearance: auto;
+    appearance: auto;
+    width: 24px;
+    height: 96px;
+    border-radius: 0;
+    writing-mode: vertical-lr;
+    direction: rtl;
+    background-image: none;
+    background-color: transparent;
+  }
+
+  input[type='range'].board-size-range::-webkit-slider-runnable-track {
+    height: auto;
+    background: initial;
+  }
+
+  input[type='range'].board-size-range::-webkit-slider-thumb {
+    -webkit-appearance: auto;
+    appearance: auto;
+    width: auto;
+    height: auto;
+    margin: initial;
+    border: initial;
+    border-radius: initial;
+    background: initial;
+    box-shadow: none;
+  }
+}

@@ -2,6 +2,7 @@
 // title bar, undo/redo, stage, side panel, optional timeline, save actions.
 
 import { h, icon, registerIcons, resetOnDoubleClick } from '../../core/dom.js';
+import { bindRangeFill } from '../../core/range-fill.js';
 import { createTitleField } from './title-field.js';
 
 registerIcons({
@@ -322,6 +323,7 @@ export function slider({ label, min, max, step, value, format, onInput, onCommit
       }
     },
   });
+  bindRangeFill(input);
   resetOnDoubleClick(input, defaultValue);
   return h('label', { class: 'editor-slider' }, h('span', { class: 'editor-slider-head' }, label, output), input);
 }

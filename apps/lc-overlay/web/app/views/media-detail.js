@@ -33,6 +33,7 @@
 
 import { h } from '../core/dom.js';
 import { DOUBLE_CLICK_WINDOW } from '../core/detail-actions.js';
+import { bindRangeFill, paintRange } from '../core/range-fill.js';
 import {
   readMotion,
   containRect,
@@ -1326,6 +1327,7 @@ export function createMediaDetail(options) {
       'aria-label': 'Volume',
       onInput: () => applyVolume(),
     });
+    bindRangeFill(volume);
     const fullscreen = kind === 'video' && typeof stage.requestFullscreen === 'function'
       ? h('button', {
         type: 'button',
@@ -1385,6 +1387,7 @@ export function createMediaDetail(options) {
       const percent = Math.round(level * 100);
       volume.value = String(percent);
       volume.setAttribute('aria-valuetext', `${percent} %`);
+      paintRange(volume);
     };
 
     const syncFullscreen = () => {

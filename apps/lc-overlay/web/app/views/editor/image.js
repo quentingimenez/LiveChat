@@ -8,6 +8,7 @@
 // walk through them.
 
 import { h, icon, resetOnDoubleClick } from '../../core/dom.js';
+import { bindRangeFill, paintRange } from '../../core/range-fill.js';
 import { formatDuration } from '../../core/format.js';
 import {
   CROP_RATIOS,
@@ -790,6 +791,7 @@ export async function createImageEditor({
       value: String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT)),
       onInput: () => setDisplayScale(Number(range.value)),
     });
+    bindRangeFill(range);
     resetOnDoubleClick(range, DEFAULT_DISPLAY_SCALE_PERCENT);
     const number = h('input', {
       class: 'field',
@@ -816,6 +818,7 @@ export async function createImageEditor({
     syncScaleFields = () => {
       value.textContent = `${displayScale}\u00A0%`;
       range.value = String(clamp(displayScale, MIN_DISPLAY_SCALE_PERCENT, MAX_DISPLAY_SCALE_PERCENT));
+      paintRange(range);
       number.value = String(displayScale);
       line.textContent = displayScaleLine();
     };

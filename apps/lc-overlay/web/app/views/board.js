@@ -43,6 +43,7 @@ import { h, icon, prefersReducedMotion, registerIcons, resetOnDoubleClick } from
 import { formatBoardUsage, formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration, relativeDateLabel } from '../core/format.js';
 import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
 import { pastedMediaFiles } from '../core/media-files.js';
+import { bindRangeFill } from '../core/range-fill.js';
 import { badgeForItem } from '../core/queue-badges.js';
 import {
   cardPointerAction,
@@ -733,6 +734,7 @@ function cardSizeSlider() {
     },
     onChange: (event) => rememberBoardCardWidth(Number(event.target.value)),
   });
+  bindRangeFill(input);
   resetOnDoubleClick(input, DEFAULT_BOARD_CARD_WIDTH);
   return h(
     'label',

@@ -20,6 +20,7 @@ import { avatarNode, h, icon, markSettingsDirty, registerIcons, resetOnDoubleCli
 import { invoke, listen } from '../core/ipc.js';
 import { previewPlaybackEnabled } from '../core/media-playback.js';
 import { forgetFollower, PROFILE_SYNCED_EVENT } from '../core/profile-sync.js';
+import { bindRangeFill } from '../core/range-fill.js';
 import { settingsBackInMargin } from '../core/settings-back.js';
 import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
 import { DEFAULT_VOLUME_PERCENT } from '../core/sound.js';
@@ -371,6 +372,7 @@ export function rangeControl({ id, min, max, value, format, onInput, defaultValu
       onInput(next);
     },
   });
+  bindRangeFill(input);
   resetOnDoubleClick(input, defaultValue);
   return [input, output];
 }

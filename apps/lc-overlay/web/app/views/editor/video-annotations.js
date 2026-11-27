@@ -399,7 +399,15 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
   }
 
   function replay() {
-    applyDrag();
+    if (!drag) {
+      return;
+    }
+    // Recompute the local offsets against the current surface transform.
+    surface.dispatchEvent(new PointerEvent('pointermove', {
+      clientX: drag.clientX,
+      clientY: drag.clientY,
+      bubbles: false,
+    }));
   }
 
   surface.addEventListener('pointerdown', (event) => {
@@ -445,6 +453,8 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     if (drag) {
       drag.pointerX = event.offsetX;
       drag.pointerY = event.offsetY;
+      drag.clientX = event.clientX;
+      drag.clientY = event.clientY;
     }
     paint();
   });
@@ -455,6 +465,8 @@ export function createVideoAnnotations({ frame, host, bounds, source, view, obje
     }
     drag.pointerX = event.offsetX;
     drag.pointerY = event.offsetY;
+    drag.clientX = event.clientX;
+    drag.clientY = event.clientY;
     applyDrag();
   });
 

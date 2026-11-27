@@ -411,17 +411,15 @@ export async function createAvEditor({ src, blob, kind, durationHint, artworkUrl
         annotations.place();
       }
     }
-    // A pan happens under a captured pointer without a pointermove: replaying
-    // the held gesture keeps the grabbed drawing or crop edge under the
-    // cursor. A resize (zoom) changes the surface's local coordinates, so the
-    // saved pointer offsets cannot be replayed there.
-    if (!resized) {
-      if (annotations) {
-        annotations.replay();
-      }
-      if (cropOverlay) {
-        cropOverlay.replay();
-      }
+    // A pan or zoom happens under a captured pointer without a pointermove:
+    // replaying the held gesture keeps the grabbed drawing or crop edge under
+    // the cursor. The annotation replay re-dispatches the last screen pointer,
+    // so the browser recomputes its local offset after the scale change.
+    if (annotations) {
+      annotations.replay();
+    }
+    if (cropOverlay) {
+      cropOverlay.replay();
     }
   }
 

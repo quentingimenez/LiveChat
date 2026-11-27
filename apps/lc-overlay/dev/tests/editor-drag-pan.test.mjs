@@ -167,12 +167,14 @@ test('l’éditeur image rejoue le geste quand la scène défile et se redimensi
   assert.match(image, /stageZoom\.fit\(\{ width: cssWidth, height: cssHeight \}\);[\s\S]{0,160}replayGesture\(\)/);
 });
 
-test('l’éditeur vidéo rejoue le geste après avoir replacé la vue', () => {
-  assert.match(av, /if \(!resized\) \{[\s\S]{0,200}annotations\.replay\(\)/);
-  assert.match(av, /if \(!resized\) \{[\s\S]{0,200}cropOverlay\.replay\(\)/);
-  assert.match(annotations, /function replay\(\)/);
-  assert.match(annotations, /^\s{4}replay,$/m);
-  assert.match(annotations, /drag\.pointerX/);
+test('l’éditeur vidéo rejoue le geste après un pan ou un zoom', () => {
+  assert.match(av, /if \(annotations\) \{[\s\S]{0,200}annotations\.replay\(\)/);
+  assert.match(av, /if \(cropOverlay\) \{[\s\S]{0,120}cropOverlay\.replay\(\)/);
+  assert.doesNotMatch(av, /if \(!resized\) \{/);
+  assert.match(annotations, /function replay\(\) \{[\s\S]{0,240}new PointerEvent\('pointermove'/);
+  assert.match(annotations, /drag\.clientX = event\.clientX/);
+  assert.match(annotations, /drag\.clientY = event\.clientY/);
+  assert.match(annotations, /^ {4}replay,$/m);
 });
 
 test('le rognage ne fige plus la mesure de la couche au pointerdown', () => {

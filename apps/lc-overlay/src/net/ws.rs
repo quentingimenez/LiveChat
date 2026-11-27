@@ -110,6 +110,9 @@ pub struct NetSnapshot {
     pub last_error: Option<String>,
     /// La guilde est-elle en pause partagée (tous les appareils) ?
     pub paused: bool,
+    /// Temps restant gelé par cette pause, en millisecondes. `None` hors pause :
+    /// la board s'en sert pour figer sa barre de progression à la bonne place.
+    pub paused_remaining_ms: Option<u64>,
 }
 
 impl Default for NetSnapshot {
@@ -125,6 +128,7 @@ impl Default for NetSnapshot {
             peers: Vec::new(),
             last_error: None,
             paused: false,
+            paused_remaining_ms: None,
         }
     }
 }
@@ -1434,7 +1438,7 @@ impl SessionEffects for AppEffects {
 
     fn on_pause(&self, payload: &PausePayload) {
         let state = self.app.state::<AppState>();
-        state.set_net_pause(&self.guild_id, payload.paused);
+        state.set_net_pause(&self.guild_id, payload.paused, payload.remaining_ms);
         if let Err(error) = events::emit_guilds_changed(&self.app) {
             tracing::debug!(%error, "échec d'émission de l'état de pause vers la board");
         }

@@ -559,6 +559,13 @@ export function loadQueue(options = {}) {
     return Promise.resolve();
   }
   const quiet = options.quiet === true;
+  if (options.fresh === true) {
+    // A pause/resume changed `startedAt` server-side: this read must supersede
+    // one already in flight, otherwise its older snapshot could paint after the
+    // resume. `loadQueueForGuild` takes a new token, so the older read is
+    // dropped by `isLatest`.
+    return loadQueueForGuild(guildId, quiet);
+  }
   return dedupe(`queue:${guildId}`, () => loadQueueForGuild(guildId, quiet));
 }
 

@@ -8,7 +8,7 @@ import { formatDuration, relativeTime } from '../core/format.js';
 import { historyStatus } from '../core/history-status.js';
 import { invoke } from '../core/ipc.js';
 import { jobMeta, jobOriginLabel, jobOriginTitle, jobTitle } from '../core/job-format.js';
-import { queueClock } from '../core/queue-clock.js';
+import { queueClock, queueProgressStyle } from '../core/queue-clock.js';
 import { moveInQueue, moveToQueue, queueJobIds } from '../core/queue-order.js';
 import { can, describeError, state, activeGuild } from '../core/state.js';
 import { notify } from '../core/toast.js';
@@ -103,9 +103,17 @@ function pauseButton() {
   );
 }
 
-function sharedPaused() {
+function sharedPause() {
   const guild = activeGuild();
-  return Boolean(guild && guild.connection && guild.connection.paused);
+  const paused = Boolean(guild && guild.connection && guild.connection.paused);
+  return {
+    paused,
+    remainingMs: paused ? guild.connection.pausedRemainingMs : null,
+  };
+}
+
+function sharedPaused() {
+  return sharedPause().paused;
 }
 
 // The guild is cut on this device: no media is received, so neither the
@@ -171,32 +179,68 @@ let historyOpen = false;
 let draggedQueueJobId = null;
 let overQueueJobId = null;
 
-// The fill is a compositor-driven linear animation: its duration is the job
-// duration and its negative delay is the elapsed time, so it starts exactly
-// where playback already is, even after the queue is re-rendered. The inline
-// transform stays the static position, used if the animation is unavailable.
-function progressBarStyle(clock) {
-  const position = `transform:scaleX(${clock.ratio})`;
-  if (!clock.anchored || clock.duration <= 0) {
-    return `animation-name:none;${position}`;
+// A resume shifts `startedAt` server-side by the paused time, so the queue must
+// be reloaded before the bar starts moving again. Until then the fast tick keeps
+// the frozen position instead of animating from the stale anchor.
+let resumeReloadPending = false;
+let pauseGuildId = null;
+let lastPaused = null;
+
+function syncQueuePause() {
+  const pause = sharedPause();
+  const guildId = state.activeGuildId;
+  if (guildId !== pauseGuildId) {
+    // A guild switch is not a resume: the queue view is rebuilt with its own
+    // data, so no reload is needed here.
+    pauseGuildId = guildId;
+    lastPaused = pause.paused;
+    resumeReloadPending = false;
+    if (pause.paused) {
+      tickQueueClock();
+    }
+    return;
   }
-  return `--queue-progress-duration:${clock.duration}s;--queue-progress-delay:${-clock.elapsed}s;${position}`;
+  if (pause.paused === lastPaused) {
+    return;
+  }
+  lastPaused = pause.paused;
+  if (pause.paused) {
+    // Freeze at once rather than waiting for the next tick: the CSS animation
+    // would otherwise keep advancing for up to a quarter of a second.
+    tickQueueClock();
+    return;
+  }
+  resumeReloadPending = true;
+  const reloaded = () => {
+    resumeReloadPending = false;
+    tickQueueClock();
+  };
+  loadQueue({ fresh: true }).then(reloaded, reloaded);
 }
 
-// One-second tick: update only the clock and the progress bar. A full
+// Fast tick (250 ms): update only the clock and the progress bar. A full
 // `renderView()` here would close an open history and drop keyboard focus.
 export function tickQueueClock(now = Date.now()) {
+  if (resumeReloadPending) {
+    return;
+  }
   const playing = state.queue.playing;
   if (!playing) {
     return;
   }
-  const clock = queueClock(playing, now);
+  const pause = sharedPause();
+  const clock = queueClock(playing, now, pause);
   const time = document.querySelector('[data-queue-clock]');
   if (time) {
     time.textContent = clock.text;
   }
   const bar = document.querySelector('[data-queue-progress]');
   if (bar) {
+    // Cutting the animation is what actually freezes the fill: the transform
+    // alone would be overridden by the running compositor animation.
+    if (pause.paused) {
+      bar.style.animationName = 'none';
+    }
     // Static position only: the CSS animation drives the visible fill, and this
     // keeps the bar exact when that animation is unavailable.
     bar.style.transform = `scaleX(${clock.ratio})`;
@@ -297,7 +341,8 @@ export function renderQueue() {
   }
   const blocks = [];
   if (playing) {
-    const clock = queueClock(playing);
+    const pause = sharedPause();
+    const clock = queueClock(playing, Date.now(), pause);
     blocks.push(
       h(
         'div',
@@ -312,7 +357,7 @@ export function renderQueue() {
           h('span', { class: 'meta queue-time', 'data-queue-clock': '' }, clock.text),
         ),
         jobMeta(playing) ? h('div', { class: 'sub ellipsis' }, jobMeta(playing)) : null,
-        h('div', { class: 'progress' }, h('span', { 'data-queue-progress': '', style: progressBarStyle(clock) })),
+        h('div', { class: 'progress' }, h('span', { 'data-queue-progress': '', style: queueProgressStyle(clock, pause.paused) })),
       ),
     );
   }
@@ -661,6 +706,15 @@ document.addEventListener('livechat:guilds-updated', () => {
   // A shared pause/resume arrives as a guilds update (connection.paused): the
   // on-air bar and its button must follow without waiting for a queue reload.
   renderOnAir();
+  if (state.page === 'guild' && state.tab === 'queue') {
+    syncQueuePause();
+  } else {
+    // Keep the transition tracker in step even when the queue view is not
+    // shown, so switching to the tab later does not replay a stale resume.
+    pauseGuildId = state.activeGuildId;
+    lastPaused = sharedPause().paused;
+    resumeReloadPending = false;
+  }
 });
 
 document.addEventListener('livechat:guild-mute-changed', () => {

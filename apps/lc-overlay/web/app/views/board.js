@@ -810,18 +810,31 @@ export function renderBoard() {
               {
                 class: 'btn is-quiet',
                 id: 'select-toggle',
+                title: state.selecting ? 'Terminer la sélection' : 'Sélectionner des médias',
                 'aria-pressed': String(state.selecting),
                 onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
               },
-              state.selecting ? 'Terminer' : 'Sélectionner',
+              icon('check'),
+              h('span', { class: 'board-action-label' }, state.selecting ? 'Terminer' : 'Sélectionner'),
             )
           : null,
         h('button', { class: 'btn is-quiet icon-btn', title: 'Actualiser', 'aria-label': 'Actualiser', onClick: loadItems }, icon('refresh')),
-        can('play') ? h('button', { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Lire…') : null,
+        can('play')
+          ? h(
+              'button',
+              { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() },
+              icon('sound'),
+              h('span', { class: 'board-action-label' }, 'Lire…'),
+            )
+          : null,
         // A member who cannot add but can play still opens the dialog, with its
         // "Jouer une fois" action only.
-        !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer') : null,
-        can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter') : null,
+        !can('addMedia') && can('play')
+          ? h('button', { class: 'btn is-primary', title: 'Jouer sur les overlays', onClick: openAddDialog }, icon('play'), h('span', { class: 'board-action-label' }, 'Jouer'))
+          : null,
+        can('addMedia')
+          ? h('button', { class: 'btn is-primary', title: 'Ajouter des médias', onClick: openAddDialog }, icon('plus'), h('span', { class: 'board-action-label' }, 'Ajouter'))
+          : null,
       ),
     ),
   );
@@ -1165,13 +1178,19 @@ function syncSelectionBar() {
 
 // The toolbar button flips between « Sélectionner » and « Terminer » in place:
 // rebuilding the toolbar would take the search field and the scroll with it.
+// Only the label changes: the check icon stays, and the label is the span the
+// icon-only toolbar clips instead of the button's own text.
 function syncSelectionToggle() {
   const toggle = document.getElementById('select-toggle');
   if (!toggle) {
     return;
   }
   toggle.setAttribute('aria-pressed', String(state.selecting));
-  toggle.textContent = state.selecting ? 'Terminer' : 'Sélectionner';
+  toggle.title = state.selecting ? 'Terminer la sélection' : 'Sélectionner des médias';
+  const label = toggle.querySelector('.board-action-label');
+  if (label) {
+    label.textContent = state.selecting ? 'Terminer' : 'Sélectionner';
+  }
 }
 
 function renderSelectionBar() {

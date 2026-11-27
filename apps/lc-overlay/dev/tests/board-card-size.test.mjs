@@ -238,10 +238,11 @@ test('la barre replie le curseur en panneau vertical quand la place manque', () 
   const at = boardCss.indexOf('@container board-toolbar');
   assert.notEqual(at, -1, 'il faut une requête de conteneur sur la largeur des outils');
   const compact = balancedBlock(boardCss.slice(at), '@container board-toolbar', '{', '}');
-  // 840 px : la largeur des outils quand la fenêtre du board est à son minimum
-  // (960 px). En dessous, la rangée ne tient déjà plus ses actions : le curseur
-  // rend sa place plutôt que de passer seul sur une deuxième ligne.
-  assert.match(compact, /^@container board-toolbar \(max-width: 840px\)/);
+  // 900 px : la largeur où la rangée tient encore le curseur horizontal à côté
+  // des actions réduites à leurs icônes (recherche à son plancher, types,
+  // filtres, quatre boutons de 36 px). En dessous, le curseur rend sa place au
+  // lieu d'écraser les types ou de repousser les actions sur une deuxième ligne.
+  assert.match(compact, /^@container board-toolbar \(max-width: 900px\)/);
 
   const label = ruleOf(compact, '.board-size');
   assert.ok(label, 'le mode compact redéfinit le contrôle');

@@ -2,9 +2,10 @@
 // types, les filtres et les actions ; l'occupation du board devient l'en-tête
 // du panneau de filtres au lieu d'une seconde ligne toujours visible.
 //
-// Le champ de recherche cède sa place avant les autres contrôles : son plancher
-// est la largeur exacte de son placeholder, pas celle que l'input s'attribue
-// tout seul.
+// La rangée ne se replie jamais : le champ de recherche cède sa place (son
+// plancher est la largeur exacte de son placeholder), les types s'empilent en
+// interne, puis les libellés des actions laissent la place à leurs icônes —
+// l'action elle-même ne quitte jamais la ligne.
 //
 // Ces invariants protègent le retour utilisateur : plus d'actions rejetées sur
 // une deuxième ligne, plus de légende orpheline quand le panneau est fermé.
@@ -102,6 +103,53 @@ test('le champ de recherche rétrécit jusqu’à la largeur de son texte', () =
   // la vérification dans le navigateur prouve que le placeholder tient.
   assert.equal(min[1], '168', 'largeur du placeholder, paddings et bordures comprises');
   assert.match(search, /max-width:\s*320px/, 'il retrouve sa largeur de lecture quand la place revient');
+});
+
+test('la rangée ne se replie plus : les actions y gardent leur place', () => {
+  const css = read('styles/board.css');
+  const tools = ruleOf(css, '.board-tools');
+  const chips = ruleOf(css, '.chips');
+
+  assert.ok(tools, 'la rangée des outils garde sa règle');
+  assert.match(tools, /flex-wrap:\s*nowrap/, 'la rangée ne se replie jamais : les actions restent dessus');
+  assert.ok(chips, 'les types gardent leur conteneur');
+  assert.match(chips, /min-width:\s*0/, 'les types peuvent céder leur largeur');
+  assert.match(chips, /flex-wrap:\s*wrap/, '… et s’empilent en interne au lieu de pousser les actions à la ligne');
+  assert.match(
+    css,
+    /\.board-tools > \.filters-toggle,\s*\.board-size\s*\{[^}]*flex:\s*0 0 auto/,
+    'Filtres et curseur ne se compriment pas : la recherche cède avant eux',
+  );
+});
+
+test('quand la place manque, les actions passent en icônes sans perdre leur nom', () => {
+  const css = read('styles/board.css');
+  const at = css.indexOf('@container board-toolbar (max-width: 1170px)');
+  assert.notEqual(at, -1, 'le repli des libellés se mesure sur la barre, pas sur la fenêtre');
+
+  const compact = balancedBlock(css, '@container board-toolbar (max-width: 1170px)', '{', '}');
+  const label = ruleOf(compact, '.board-action-label');
+  assert.ok(label, 'le mode icônes doit masquer les libellés');
+  assert.match(label, /position:\s*absolute/);
+  assert.match(label, /width:\s*1px/);
+  assert.match(label, /clip-path:\s*inset\(50%\)/);
+  assert.doesNotMatch(label, /display:\s*none/, 'le libellé reste dans le DOM, il porte le nom accessible');
+  assert.doesNotMatch(label, /visibility:\s*hidden/, 'le libellé reste dans le DOM, il porte le nom accessible');
+  assert.match(ruleOf(compact, '.board-actions .btn'), /padding:\s*0 9px/);
+
+  const board = read('views/board.js');
+  const full = balancedBlock(board, 'const toolbar = h', '(', ')');
+  assert.match(full, /icon\('check'\)/, 'Sélectionner gagne sa coche');
+  assert.match(full, /state\.selecting \? 'Terminer la sélection' : 'Sélectionner des médias'/);
+  const labels = full.match(/class: 'board-action-label'/g) ?? [];
+  assert.equal(labels.length, 4, 'Sélectionner, Lire, Jouer et Ajouter gardent leur libellé');
+  for (const title of [
+    'Lire un texte à voix haute sur les overlays',
+    'Jouer sur les overlays',
+    'Ajouter des médias',
+  ]) {
+    assert.ok(full.includes(`title: '${title}'`), `infobulle manquante : ${title}`);
+  }
 });
 
 test('a role without options keeps the panel usable', () => {

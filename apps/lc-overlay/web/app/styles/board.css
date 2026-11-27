@@ -31,9 +31,11 @@
   z-index: -1;
 }
 
-/* One row: search, type chips, filters, then the actions pushed to the right.
-   The tools group wraps as a whole at narrow widths, so the actions never
-   squeeze the search field down to nothing.
+/* One row: search, type chips, filters, the card-size control, then the
+   actions pushed to the right. The tools group never wraps as a whole: the
+   search yields first, the chips stack inside their own group, and the action
+   labels give way to their icons (see the container queries below) so the
+   actions themselves always stay on the line.
 
    The toolbar is its own query container: the card-size row folds into a hover
    panel when the tools no longer have room for it, instead of pushing it alone
@@ -50,7 +52,7 @@
 .board-tools {
   display: flex;
   flex: 1;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--space-2);
 }
@@ -83,7 +85,15 @@
 .chips {
   display: flex;
   flex-wrap: wrap;
+  min-width: 0;
   gap: var(--space-1);
+}
+
+/* The filters button and the card-size control keep their width: when the row
+   runs out of room, the search shrinks and the chips stack, never those two. */
+.board-tools > .filters-toggle,
+.board-size {
+  flex: 0 0 auto;
 }
 
 /* Card size: the slider of the grid's track width. One line of the toolbar —
@@ -129,10 +139,11 @@
    8 px `::before` bridge keeps the hover alive while the pointer crosses the
    gap between the icon and the panel.
 
-   840 px is the tools width at the board window's 960 px minimum: below it the
-   toolbar is already wrapping its actions, so the card-size row gives its room
-   back instead of landing alone on a second line. */
-@container board-toolbar (max-width: 840px) {
+   900 px is where the tools still hold the horizontal size next to the
+   hidden-label actions (search at its 168 px floor, chips, filters, four icon
+   buttons), with a margin; below it the row gives the icon its room back
+   instead of squeezing the chips. */
+@container board-toolbar (max-width: 900px) {
   .board-size {
     position: relative;
     justify-content: center;
@@ -192,6 +203,34 @@
     min-width: 0;
     font-size: 11px;
     text-align: center;
+  }
+}
+
+/* Narrower toolbar: the actions keep their place on the line and their labels
+   step aside for the icon. The label stays in the DOM, clipped, so the
+   accessible name survives and the `title` carries the tooltip. 1170 px is the
+   width where the labelled row (356 px of actions) still fits with the search
+   at its 260 px reading width; below it the icons take over before the row has
+   to squeeze the chips. */
+@container board-toolbar (max-width: 1170px) {
+  .board-actions .btn {
+    padding: 0 9px;
+  }
+
+  .board-actions .btn.icon-btn {
+    padding: 0;
+  }
+
+  .board-action-label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    border: 0;
+    clip-path: inset(50%);
   }
 }
 

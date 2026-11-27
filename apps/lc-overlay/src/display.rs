@@ -2,7 +2,9 @@
 //! moniteurs factices). Les identifiants sont ceux du legacy Electron :
 //! `displayIndex`, `displayKey` (`x,y,largeur,hauteur` depuis le correctif de
 //! sélection ; les configs antérieures gardent `x,y,largeur,hauteur,index`),
-//! `displayLabel` (nom du périphérique, ex. `\\.\DISPLAY2`).
+//! `displayLabel` (nom du périphérique, ex. `\\.\DISPLAY2`) et
+//! `displayHardwareId` (constructeur, produit et numéro de série lus dans
+//! l'EDID : la seule identité que Windows ne réattribue pas).
 
 use crate::config::OverlayConfig;
 
@@ -14,6 +16,10 @@ pub struct DisplayInfo {
     /// Nom court du moniteur (`DeviceString` Windows, ex. « G27q-20 ») : sert
     /// uniquement à l'affichage, jamais d'identité persistée ni de clé.
     pub short_name: Option<String>,
+    /// Identité matérielle stable du moniteur (EDID), quand Windows la
+    /// fournit : elle survit à une renumérotation de `\\.\DISPLAYn`, à un
+    /// changement de port et à un changement de résolution.
+    pub hardware_id: Option<String>,
     pub x: i32,
     pub y: i32,
     pub width: u32,
@@ -35,6 +41,7 @@ impl DisplayInfo {
             index,
             name,
             short_name: None,
+            hardware_id: None,
             x,
             y,
             width,
@@ -47,6 +54,15 @@ impl DisplayInfo {
     /// remplace ni `label()` ni la clé, qui restent seuls persistés).
     pub fn with_short_name(mut self, short_name: Option<String>) -> Self {
         self.short_name = short_name
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty());
+        self
+    }
+
+    /// Renseigne l'identité matérielle du moniteur (EDID), quand le système la
+    /// fournit : c'est elle que la sélection persiste en premier.
+    pub fn with_hardware_id(mut self, hardware_id: Option<String>) -> Self {
+        self.hardware_id = hardware_id
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty());
         self
@@ -188,6 +204,7 @@ pub struct DisplaySelection {
     pub display_index: Option<i64>,
     pub display_key: Option<String>,
     pub display_label: Option<String>,
+    pub display_hardware_id: Option<String>,
 }
 
 impl DisplaySelection {
@@ -196,6 +213,7 @@ impl DisplaySelection {
             display_index: Some(display.index as i64),
             display_key: Some(display.key()),
             display_label: display.label(),
+            display_hardware_id: display.hardware_id.clone(),
         }
     }
 }
@@ -203,6 +221,9 @@ impl DisplaySelection {
 /// Comment l'écran cible a été retrouvé dans la liste des moniteurs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SelectionSource {
+    /// Identité matérielle (EDID) identique : le moniteur physique, même s'il a
+    /// été renommé, déplacé ou changé de résolution.
+    HardwareId,
     /// Clé de géométrie exacte : l'écran configuré est là, où qu'il soit énuméré.
     Key,
     /// Nom de périphérique identique : l'écran a changé de place ou de taille.
@@ -222,9 +243,22 @@ impl SelectionSource {
     ///
     /// Un repli (`displayIndex`, primaire, premier) ne doit jamais être
     /// persisté : sinon un redémarrage où l'écran n'est pas encore énuméré
-    /// remplace définitivement le choix de l'utilisateur.
+    /// remplace définitivement le choix de l'utilisateur. Le nom
+    /// `\\.\DISPLAYn` non plus : Windows le réattribue d'un démarrage à l'autre
+    /// et après un rebranchement, si bien qu'un label périmé peut désigner un
+    /// autre moniteur — le persister « réinitialisait » l'overlay sur l'écran
+    /// principal.
     pub fn is_confident(self) -> bool {
-        matches!(self, Self::Key | Self::Label | Self::LegacyKey)
+        matches!(self, Self::HardwareId | Self::Key | Self::LegacyKey)
+    }
+
+    /// La correspondance nomme un écran précis, même si elle ne suffit pas à
+    /// réécrire la sélection (le nom `\\.\DISPLAYn` peut être périmé).
+    pub fn is_specific(self) -> bool {
+        matches!(
+            self,
+            Self::HardwareId | Self::Key | Self::Label | Self::LegacyKey
+        )
     }
 }
 
@@ -235,9 +269,13 @@ pub struct SelectedDisplay {
     pub source: SelectionSource,
 }
 
-/// `getTargetDisplay` legacy, adapté : `displayKey` (ou nom, ou clé legacy) ->
-/// `displayIndex` -> primaire -> premier. La source permet à l'appelant de ne
-/// persister que les sélections sûres.
+/// `getTargetDisplay` legacy, adapté : identité matérielle, puis `displayKey`
+/// (ou nom, ou clé legacy) -> `displayIndex` -> primaire -> premier. La source
+/// permet à l'appelant de ne persister que les sélections sûres.
+///
+/// L'identité matérielle passe avant la géométrie : un moniteur déplacé dans le
+/// bureau virtuel, ou qui a changé de résolution, reste le même, alors que sa
+/// clé de géométrie désigne alors un autre écran — ou aucun.
 ///
 /// Limite documentée : le `displayId` numérique d'Electron n'a pas d'équivalent
 /// stable côté Tauri/Win32 ; il est conservé dans le fichier (rollback Electron)
@@ -250,6 +288,17 @@ pub fn resolve_display(
     if displays.is_empty() {
         return None;
     }
+    if let Some(hardware_id) = config.display_hardware_id.as_deref() {
+        if let Some(index) = displays
+            .iter()
+            .position(|display| display.hardware_id.as_deref() == Some(hardware_id))
+        {
+            return Some(SelectedDisplay {
+                index,
+                source: SelectionSource::HardwareId,
+            });
+        }
+    }
     if let Some(key) = config.display_key.as_deref() {
         if let Some(index) = displays.iter().position(|display| display.key() == key) {
             return Some(SelectedDisplay {
@@ -259,7 +308,8 @@ pub fn resolve_display(
         }
     }
     // Le nom du périphérique survit à un changement d'ordre d'énumération, de
-    // place ou de résolution : c'est l'identité la plus fiable de l'écran.
+    // place ou de résolution ; Windows le réattribue en revanche d'un
+    // démarrage à l'autre : il place l'overlay, sans être persisté.
     if let Some(label) = config.display_label.as_deref() {
         if let Some(index) = displays
             .iter()
@@ -317,6 +367,63 @@ pub fn select_display(
     primary_index: Option<usize>,
 ) -> Option<usize> {
     resolve_display(config, displays, primary_index).map(|selected| selected.index)
+}
+
+/// La fenêtre est entièrement posée sur un des écrans énumérés.
+///
+/// Sert de garde aux sélections non sûres : tant que l'overlay remplit un
+/// écran, une énumération transitoire (réveil, changement de mode, écran
+/// temporairement absent) ne doit pas le déplacer. Un écran débranché, lui,
+/// laisse la fenêtre hors de tout écran : le repli peut alors la récupérer.
+pub fn is_on_a_display(current: OverlayGeometry, displays: &[DisplayInfo]) -> bool {
+    displays.iter().any(|display| {
+        let left = i64::from(display.x);
+        let top = i64::from(display.y);
+        let right = left + i64::from(display.width);
+        let bottom = top + i64::from(display.height);
+        let x = i64::from(current.x);
+        let y = i64::from(current.y);
+        x >= left
+            && y >= top
+            && x + i64::from(current.width) <= right
+            && y + i64::from(current.height) <= bottom
+    })
+}
+
+/// La configuration garde une sélection d'écran, fût-elle périmée.
+///
+/// C'est elle qu'un repli doit préserver. Une installation neuve n'en a aucune :
+/// la fenêtre est encore à sa taille par défaut et doit adopter l'écran de
+/// secours au lieu de rester dans ce rectangle.
+pub fn has_recorded_selection(config: &OverlayConfig) -> bool {
+    config.display_hardware_id.is_some()
+        || config.display_key.is_some()
+        || config.display_label.is_some()
+        || config.display_index.is_some()
+        || config.display_id.is_some()
+}
+
+/// Géométrie que l'overlay doit prendre à ce tick, `None` s'il reste où il est.
+///
+/// Un écran qui a changé de place ou de résolution est suivi ; une sélection
+/// non sûre (repli, nom réattribué) ne déplace en revanche jamais une fenêtre
+/// encore posée sur un écran : le choix de l'utilisateur est retrouvé au tick
+/// suivant, quand l'énumération redevient complète.
+pub fn next_overlay_geometry(
+    current: OverlayGeometry,
+    target: &DisplayInfo,
+    source: SelectionSource,
+    displays: &[DisplayInfo],
+    recorded: bool,
+) -> Option<OverlayGeometry> {
+    let target_geometry = OverlayGeometry::from_display(target);
+    if geometry_sync(current, target_geometry) == GeometrySync::Keep {
+        return None;
+    }
+    if recorded && !source.is_confident() && is_on_a_display(current, displays) {
+        return None;
+    }
+    Some(target_geometry)
 }
 
 #[cfg(test)]
@@ -521,10 +628,20 @@ mod tests {
 
     #[test]
     fn selection_roundtrips_through_config_fields() {
-        let selection = DisplaySelection::from_display(&display(1, -2560, Some("DISPLAY2")));
+        let named = display(1, -2560, Some("DISPLAY2"))
+            .with_hardware_id(Some("SAM:707A:Z9XK400001".to_string()));
+        let selection = DisplaySelection::from_display(&named);
         assert_eq!(selection.display_index, Some(1));
         assert_eq!(selection.display_key.as_deref(), Some("-2560,0,2560,1440"));
         assert_eq!(selection.display_label.as_deref(), Some("DISPLAY2"));
+        assert_eq!(
+            selection.display_hardware_id.as_deref(),
+            Some("SAM:707A:Z9XK400001")
+        );
+        assert_eq!(
+            DisplaySelection::from_display(&display(0, 0, None)).display_hardware_id,
+            None
+        );
     }
 
     #[test]
@@ -542,7 +659,7 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_key_is_accepted_and_migrated_through_the_label() {
+    fn a_legacy_key_is_placed_through_the_label_without_being_persisted() {
         let reordered = vec![
             display(0, -2560, Some("\\\\.\\DISPLAY2")),
             display(1, 0, Some("\\\\.\\DISPLAY1")),
@@ -554,7 +671,10 @@ mod tests {
         let selected = resolve_display(&config, &reordered, Some(1)).expect("selection");
         assert_eq!(selected.index, 0);
         assert_eq!(selected.source, SelectionSource::Label);
-        assert!(selected.source.is_confident());
+        assert!(
+            !selected.source.is_confident(),
+            "le nom place l'overlay mais ne remplace pas la sélection enregistrée"
+        );
     }
 
     #[test]
@@ -607,5 +727,187 @@ mod tests {
         assert_eq!(first.index, 0);
         assert_eq!(first.source, SelectionSource::First);
         assert!(!first.source.is_confident());
+    }
+
+    #[test]
+    fn a_renumbered_display_label_is_not_a_confident_identity() {
+        // Windows réattribue `\\.\DISPLAYn` d'un démarrage à l'autre : après un
+        // redémarrage ou un rebranchement, DISPLAY2 peut nommer l'écran
+        // principal. Retrouver l'écran par ce nom ne doit donc jamais passer
+        // pour un choix sûr, sinon un label périmé réécrit définitivement la
+        // sélection de l'utilisateur.
+        let renumbered = vec![
+            display(0, 0, Some("\\\\.\\DISPLAY2")),
+            display(1, -1920, Some("\\\\.\\DISPLAY1")),
+        ];
+        let mut config = OverlayConfig::default();
+        config.display_key = Some("-2560,0,2560,1440".to_string());
+        config.display_label = Some("\\\\.\\DISPLAY2".to_string());
+        let selected = resolve_display(&config, &renumbered, Some(0)).expect("selection");
+        assert_eq!(selected.index, 0, "le nom retrouve le moniteur renuméroté");
+        assert_eq!(selected.source, SelectionSource::Label);
+        assert!(
+            !selected.source.is_confident(),
+            "un nom `\\\\.\\DISPLAYn` renuméroté n'est pas une identité sûre"
+        );
+    }
+
+    #[test]
+    fn the_hardware_identity_wins_over_a_geometry_taken_by_another_screen() {
+        // Les deux moniteurs ont échangé leurs places : la clé enregistrée
+        // désigne désormais l'autre écran, l'EDID désigne toujours celui de
+        // l'utilisateur.
+        let swapped = vec![
+            display(0, -2560, Some("\\\\.\\DISPLAY2"))
+                .with_hardware_id(Some("SAM:707A:PRINCIPAL".to_string())),
+            display(1, 0, Some("\\\\.\\DISPLAY1"))
+                .with_hardware_id(Some("SAM:707A:BUREAU".to_string())),
+        ];
+        let mut config = OverlayConfig::default();
+        config.display_key = Some("0,0,2560,1440".to_string());
+        config.display_hardware_id = Some("SAM:707A:BUREAU".to_string());
+        let selected = resolve_display(&config, &swapped, Some(0)).expect("selection");
+        assert_eq!(selected.index, 1);
+        assert_eq!(selected.source, SelectionSource::HardwareId);
+        assert!(selected.source.is_confident());
+    }
+
+    #[test]
+    fn a_renumbered_label_does_not_beat_the_hardware_identity() {
+        // Après un rebranchement, le moniteur de l'utilisateur est nommé
+        // DISPLAY1 et le nom enregistré (DISPLAY2) désigne le principal.
+        let renumbered = vec![
+            display(0, 0, Some("\\\\.\\DISPLAY2"))
+                .with_hardware_id(Some("SAM:707A:PRINCIPAL".to_string())),
+            display(1, -1920, Some("\\\\.\\DISPLAY1"))
+                .with_hardware_id(Some("SAM:707A:BUREAU".to_string())),
+        ];
+        let mut config = OverlayConfig::default();
+        config.display_key = Some("-2560,0,2560,1440".to_string());
+        config.display_label = Some("\\\\.\\DISPLAY2".to_string());
+        config.display_hardware_id = Some("SAM:707A:BUREAU".to_string());
+        let selected = resolve_display(&config, &renumbered, Some(0)).expect("selection");
+        assert_eq!(selected.index, 1);
+        assert_eq!(selected.source, SelectionSource::HardwareId);
+    }
+
+    #[test]
+    fn a_window_is_on_a_screen_only_when_it_fits_entirely() {
+        let displays = displays();
+        let on_second = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        assert!(is_on_a_display(on_second, &displays));
+        let slightly_off = OverlayGeometry::new(-2559, 0, 2560, 1440);
+        assert!(!is_on_a_display(slightly_off, &displays));
+        let straddling = OverlayGeometry::new(-1280, 0, 2560, 1440);
+        assert!(!is_on_a_display(straddling, &displays));
+        let too_tall = OverlayGeometry::new(-2560, 0, 2560, 4000);
+        assert!(!is_on_a_display(too_tall, &displays));
+        assert!(!is_on_a_display(on_second, &[]));
+    }
+
+    #[test]
+    fn a_transient_fallback_never_pulls_the_overlay_off_its_screen() {
+        // Réveil, changement de mode ou ré-énumération : l'écran configuré
+        // manque le temps d'un tick et la sélection retombe sur le principal.
+        // L'overlay occupe encore son écran : il ne doit pas sauter.
+        let displays = displays();
+        let current = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        for source in [SelectionSource::Primary, SelectionSource::Index] {
+            assert_eq!(
+                next_overlay_geometry(current, &displays[0], source, &displays, true),
+                None,
+                "repli {source:?} : l'overlay reste sur son écran"
+            );
+        }
+    }
+
+    #[test]
+    fn a_first_launch_adopts_the_fallback_screen() {
+        // Installation neuve : aucune sélection enregistrée, et la fenêtre est
+        // encore à sa taille par défaut (1280×720). Le repli doit la faire
+        // adopter l'écran principal, pas la laisser dans ce rectangle.
+        let displays = displays();
+        let mut config = OverlayConfig::default();
+        assert!(!has_recorded_selection(&config));
+        assert_eq!(
+            next_overlay_geometry(
+                OverlayGeometry::new(0, 0, 1280, 720),
+                &displays[0],
+                SelectionSource::Primary,
+                &displays,
+                has_recorded_selection(&config)
+            ),
+            Some(OverlayGeometry::new(0, 0, 2560, 1440)),
+            "sans sélection enregistrée, le repli remplit l'écran"
+        );
+        // Une sélection, même périmée, protège la fenêtre en place.
+        config.display_key = Some("-2560,0,2560,1440".to_string());
+        assert!(has_recorded_selection(&config));
+        assert_eq!(
+            next_overlay_geometry(
+                OverlayGeometry::new(0, 0, 1280, 720),
+                &displays[1],
+                SelectionSource::Primary,
+                &displays,
+                has_recorded_selection(&config)
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn a_confident_selection_follows_a_screen_that_moved() {
+        let displays = displays();
+        let current = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        let moved = display(1, -1920, Some("DISPLAY2"));
+        assert_eq!(
+            next_overlay_geometry(current, &moved, SelectionSource::Key, &displays, true),
+            Some(OverlayGeometry::new(-1920, 0, 2560, 1440))
+        );
+    }
+
+    #[test]
+    fn a_fallback_recovers_an_overlay_left_off_every_screen() {
+        // Écran débranché : la fenêtre n'est plus posée sur aucun écran, le
+        // repli la ramène sur le principal.
+        let disconnected = vec![display(0, 0, Some("DISPLAY1"))];
+        let current = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        assert_eq!(
+            next_overlay_geometry(
+                current,
+                &disconnected[0],
+                SelectionSource::Primary,
+                &disconnected,
+                true
+            ),
+            Some(OverlayGeometry::new(0, 0, 2560, 1440))
+        );
+    }
+
+    #[test]
+    fn an_overlay_already_filling_its_screen_is_left_alone() {
+        let displays = displays();
+        let current = OverlayGeometry::new(-2560, 0, 2560, 1440);
+        assert_eq!(
+            next_overlay_geometry(
+                current,
+                &displays[1],
+                SelectionSource::HardwareId,
+                &displays,
+                true
+            ),
+            None
+        );
+        assert_eq!(
+            next_overlay_geometry(
+                current,
+                &displays[1],
+                SelectionSource::Label,
+                &displays,
+                true
+            ),
+            None,
+            "un nom renuméroté ne déplace pas une fenêtre encore posée sur son écran"
+        );
     }
 }

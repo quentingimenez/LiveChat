@@ -97,6 +97,21 @@ function play(player) {
   player.fire('play');
 }
 
+test('a resumed fill starts from the displayed ratio', () => {
+  const plan = previewProgressFrames({
+    currentTime: 12,
+    duration: 30,
+    playing: true,
+    startRatio: 0.45,
+  });
+  assert.deepEqual(plan.frames, [
+    { transform: 'scaleX(0.45)' },
+    { transform: 'scaleX(1)' },
+  ]);
+  assert.equal(plan.ratio, 0.45);
+  assert.deepEqual(plan.options, { duration: 18000, easing: 'linear', fill: 'forwards' });
+});
+
 test('the ratio is bounded and an unknown duration reads as empty', () => {
   assert.equal(progressRatio(3, 12), 0.25);
   assert.equal(progressRatio(0, 12), 0);
@@ -222,6 +237,54 @@ test('pause cancels the animation and leaves the exact ratio', () => {
   play(player);
   assert.deepEqual(fill.animations[1].frames[0], { transform: 'scaleX(0.25)' });
   assert.deepEqual(fill.animations[1].options, { duration: 22500, easing: 'linear', fill: 'forwards' });
+});
+
+test('pause freezes at the displayed ratio, not at the last media frame', () => {
+  const { player, fill } = setup();
+  play(player);
+  const [animation] = fill.animations;
+  animation.progress = 0.3;
+  player.currentTime = 7.5;
+
+  player.paused = true;
+  player.fire('pause');
+  assert.equal(fill.style.transform, 'scaleX(0.3)');
+
+  player.fire('timeupdate');
+  assert.equal(fill.style.transform, 'scaleX(0.3)', 'a late tick does not snap the bar back');
+
+  player.paused = false;
+  player.fire('play');
+  assert.equal(fill.animations.length, 2);
+  assert.deepEqual(fill.animations[1].frames[0], { transform: 'scaleX(0.3)' });
+  assert.deepEqual(fill.animations[1].options, { duration: 22500, easing: 'linear', fill: 'forwards' });
+
+  player.fire('playing');
+  assert.equal(fill.animations.length, 2, 'playing does not restart the resumed animation');
+});
+
+test('a seek after a pause drops the frozen position', () => {
+  const { player, fill } = setup();
+  play(player);
+  const [animation] = fill.animations;
+  animation.progress = 0.3;
+  player.currentTime = 7.5;
+  player.paused = true;
+  player.fire('pause');
+
+  player.currentTime = 6;
+  player.seeking = true;
+  player.fire('seeking');
+  assert.equal(fill.style.transform, 'scaleX(0.2)');
+
+  player.seeking = false;
+  player.fire('seeked');
+  assert.equal(fill.style.transform, 'scaleX(0.2)');
+
+  player.paused = false;
+  player.fire('play');
+  assert.deepEqual(fill.animations.at(-1).frames[0], { transform: 'scaleX(0.2)' });
+  assert.deepEqual(fill.animations.at(-1).options, { duration: 24000, easing: 'linear', fill: 'forwards' });
 });
 
 test('waiting freezes the bar, playing starts it again from the same point', () => {

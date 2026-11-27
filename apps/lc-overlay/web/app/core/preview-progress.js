@@ -23,12 +23,15 @@ export function progressRatio(currentTime, duration) {
 // stalled, no duration yet, or already at the end. `playing` is the caller's
 // reading of the player, so a seeking or stalled element never animates.
 // `playbackRate` keeps the fill on the media's wall clock: at 2x it crosses the
-// same span in half the time.
+// same span in half the time. `startRatio` overrides the first keyframe when a
+// pause froze the fill between two media frames: resuming from that displayed
+// position avoids the small jump back to `currentTime`.
 export function previewProgressFrames({
   currentTime,
   duration,
   playing = false,
   playbackRate = 1,
+  startRatio,
 } = {}) {
   if (playing !== true) {
     return null;
@@ -38,11 +41,14 @@ export function previewProgressFrames({
   if (!Number.isFinite(remaining) || remaining <= 0) {
     return null;
   }
+  const start = Number.isFinite(startRatio)
+    ? Math.min(1, Math.max(0, startRatio))
+    : ratio;
   const rate = Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1;
   return {
-    ratio,
+    ratio: start,
     frames: [
-      { transform: `scaleX(${ratio})` },
+      { transform: `scaleX(${start})` },
       { transform: 'scaleX(1)' },
     ],
     options: {
@@ -70,6 +76,7 @@ export function createPreviewProgress({ player, fill, drift = PROGRESS_DRIFT } =
   let animation = null;
   let startRatio = 0;
   let stalled = false;
+  let resumeFrom = null;
   const listeners = new Map();
 
   const still = (ratio) => {
@@ -84,14 +91,38 @@ export function createPreviewProgress({ player, fill, drift = PROGRESS_DRIFT } =
     }
   };
 
-  const paint = () => {
+  // Where the compositor currently shows the fill, or null when there is no
+  // running animation (or its progress is unavailable, e.g. in a hidden tab).
+  const displayed = () => {
+    if (!animation) {
+      return null;
+    }
+    const timing = animation.effect && typeof animation.effect.getComputedTiming === 'function'
+      ? animation.effect.getComputedTiming()
+      : null;
+    const progress = timing ? timing.progress : null;
+    if (!Number.isFinite(progress)) {
+      return null;
+    }
+    return Math.min(1, Math.max(0, startRatio + (1 - startRatio) * progress));
+  };
+
+  // `from` restarts the fill at a displayed ratio (a pause froze it between two
+  // media frames); without it the fill follows `currentTime`.
+  const paint = (from = null) => {
+    resumeFrom = null;
     cancel();
-    still(progressRatio(player.currentTime, player.duration));
+    const mediaRatio = progressRatio(player.currentTime, player.duration);
+    const start = Number.isFinite(from)
+      ? Math.min(1, Math.max(0, from))
+      : mediaRatio;
+    still(start);
     const plan = previewProgressFrames({
       currentTime: player.currentTime,
       duration: player.duration,
       playing: !player.paused && !player.seeking && !stalled,
       playbackRate: player.playbackRate,
+      startRatio: start,
     });
     if (!plan || typeof fill.animate !== 'function') {
       return;
@@ -111,12 +142,34 @@ export function createPreviewProgress({ player, fill, drift = PROGRESS_DRIFT } =
     };
   };
 
+  // The media clock and the display clock do not stop on the same frame:
+  // `currentTime` on pause is the last decoded frame, while the compositor has
+  // already shown the next one. Freezing at the displayed ratio avoids the
+  // small backward jump; `currentTime` stays the fallback when it is unknown.
+  const freeze = () => {
+    const shown = displayed();
+    cancel();
+    if (shown !== null) {
+      resumeFrom = shown;
+      still(shown);
+    } else if (resumeFrom === null) {
+      still(progressRatio(player.currentTime, player.duration));
+    }
+  };
+
+  const resume = () => {
+    const from = resumeFrom;
+    resumeFrom = null;
+    paint(from);
+  };
+
   const sync = () => {
-    if (!animation) {
-      paint();
+    // The pause, stall and seek handlers already froze the fill; a late
+    // `timeupdate` must not pull it back to the media clock.
+    if (player.paused || player.seeking || stalled) {
       return;
     }
-    if (player.paused || player.seeking || stalled) {
+    if (!animation) {
       paint();
       return;
     }
@@ -140,25 +193,34 @@ export function createPreviewProgress({ player, fill, drift = PROGRESS_DRIFT } =
     listeners.set(type, handler);
   };
 
-  listen('play', paint);
+  listen('play', resume);
   listen('playing', () => {
     stalled = false;
-    paint();
+    if (resumeFrom !== null) {
+      resume();
+    } else if (!animation) {
+      paint();
+    }
   });
-  listen('pause', paint);
+  listen('pause', () => {
+    // A paused media is not stalled: the next play resumes from the frozen
+    // ratio instead of waiting for a `playing` event.
+    stalled = false;
+    freeze();
+  });
   listen('waiting', () => {
     stalled = true;
-    paint();
+    freeze();
   });
   listen('stalled', () => {
     stalled = true;
-    paint();
+    freeze();
   });
-  listen('seeking', paint);
-  listen('seeked', paint);
-  listen('durationchange', paint);
-  listen('ratechange', paint);
-  listen('emptied', paint);
+  listen('seeking', () => paint());
+  listen('seeked', () => paint());
+  listen('durationchange', () => paint());
+  listen('ratechange', () => paint());
+  listen('emptied', () => paint());
   listen('timeupdate', sync);
 
   paint();

@@ -559,10 +559,18 @@ export function loadQueue(options = {}) {
     return Promise.resolve();
   }
   const quiet = options.quiet === true;
-  return dedupe(`queue:${guildId}`, () => loadQueueForGuild(guildId, quiet));
+  const render = options.render !== false;
+  if (options.fresh === true) {
+    // A pause/resume changed `startedAt` server-side: this read must supersede
+    // one already in flight, otherwise its older snapshot could paint after the
+    // resume. `loadQueueForGuild` takes a new token, so the older read is
+    // dropped by `isLatest`.
+    return loadQueueForGuild(guildId, quiet, render);
+  }
+  return dedupe(`queue:${guildId}`, () => loadQueueForGuild(guildId, quiet, render));
 }
 
-async function loadQueueForGuild(guildId, quiet) {
+async function loadQueueForGuild(guildId, quiet, render = true) {
   const token = requestToken(`queue:${guildId}`);
   try {
     const body = await apiForGuild(guildId, 'GET', '/overlay/queue');
@@ -582,6 +590,11 @@ async function loadQueueForGuild(guildId, quiet) {
       return;
     }
     state.queueLoaded = true;
+    if (!render) {
+      // Background anchor reconciliation: keep the view (and its running
+      // animation) untouched instead of repainting the same job.
+      return;
+    }
     state.queueError = error.message;
     if (!quiet) {
       notify(error.message, true);
@@ -595,7 +608,7 @@ async function loadQueueForGuild(guildId, quiet) {
   }
   // The history only matters on its own tab: reading it on every background
   // queue refresh would spend a request per played media.
-  if (state.tab === 'queue' && state.page === 'guild' && can('viewQueue')) {
+  if (render && state.tab === 'queue' && state.page === 'guild' && can('viewQueue')) {
     try {
       const body = await apiForGuild(guildId, 'GET', '/overlay/queue/history?limit=30');
       if (isLatest(token) && guildId === state.activeGuildId) {
@@ -606,10 +619,12 @@ async function loadQueueForGuild(guildId, quiet) {
       // A failed history read keeps the list already shown.
     }
   }
-  renderHeader();
-  renderOnAir();
-  if (state.tab === 'queue' && state.page === 'guild') {
-    renderView();
+  if (render) {
+    renderHeader();
+    renderOnAir();
+    if (state.tab === 'queue' && state.page === 'guild') {
+      renderView();
+    }
   }
   scheduleQueueEndRefresh();
 }

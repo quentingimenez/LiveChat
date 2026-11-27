@@ -1,6 +1,6 @@
-// What the queue clock must show, and the guarantee that the one-second tick
-// updates it in place instead of rebuilding the queue view (a rebuild closed
-// the open history and dropped keyboard focus).
+// What the queue clock must show, and the guarantee that the fast tick updates
+// it in place instead of rebuilding the queue view (a rebuild closed the open
+// history and dropped keyboard focus).
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -41,11 +41,23 @@ test('aucun média en lecture : horloge neutre', () => {
   assert.deepEqual(queueClock(null, NOW), { text: '0:00 / 0:00', ratio: 0, elapsed: 0, duration: 0, anchored: false });
 });
 
-test('la seconde de battement met à jour le temps, pas toute la vue', () => {
+test('le battement rapide met à jour le temps, pas toute la vue', () => {
   const main = readFileSync(new URL('../../web/app/main.js', import.meta.url), 'utf8');
-  const block = main.match(/setInterval\(\(\) => \{[\s\S]*?tickQueueClock\(\);[\s\S]*?\}, 1000\);/);
-  assert.ok(block, 'le battement d’une seconde appelle tickQueueClock');
+  const block = main.match(/setInterval\(\(\) => \{[\s\S]*?tickQueueClock\(\);[\s\S]*?\}, 250\);/);
+  assert.ok(block, 'le battement de 250 ms appelle tickQueueClock');
   assert.doesNotMatch(block[0], /renderView\(\)/);
+  // The overlay countdown refreshes every 200 ms: a one-second tick made the
+  // queue text lag behind it by up to a second.
+  assert.ok(!/tickQueueClock[\s\S]*?\}, 1000\)/.test(main), 'le tic ne revient pas à une seconde');
+});
+
+test('le rafraîchissement sur indice suit le démarrage de près', () => {
+  const main = readFileSync(new URL('../../web/app/main.js', import.meta.url), 'utf8');
+  const hint = main.match(/queueHintTimer = setTimeout\(refreshQueueAutomatically, (\d+)\)/);
+  assert.ok(hint, 'l’indice de file planifie un rafraîchissement');
+  // The overlay starts the media at once: a long debounce left the queue card
+  // on the previous media for half a second.
+  assert.ok(Number(hint[1]) <= 250, `délai d’indice trop long : ${hint[1]} ms`);
 });
 
 test('la file expose des cibles de mise à jour et garde l’historique ouvert', () => {
@@ -63,16 +75,19 @@ test('la position de la barre est exacte, sans arrondi au pourcentage', () => {
   assert.equal(clock.ratio, 1 / 3);
 });
 
-test('la barre avance en continu au lieu de sauter chaque seconde', () => {
-  const queue = read('views/queue.js');
+test('la barre avance en continu au lieu de sauter à chaque tic', () => {
+  const clock = read('core/queue-clock.js');
   // The fill advances over the real duration: a delay equal to the elapsed time
   // places it where playback already is, even after a re-render.
-  assert.match(queue, /--queue-progress-duration/);
-  assert.match(queue, /--queue-progress-delay/);
-  assert.match(queue, /transform:scaleX\(/);
-  // No integer percentage recomputed once a second: on a 30 s clip it moved by
+  assert.match(clock, /--queue-progress-duration/);
+  assert.match(clock, /--queue-progress-delay/);
+  assert.match(clock, /transform:scaleX\(/);
+  // No integer percentage recomputed at each tick: on a 30 s clip it moved by
   // 3 % or 4 % per tick, and beyond 100 s it only moved every two or three ticks.
-  assert.doesNotMatch(queue, /Math\.round\(clock\.ratio \* 100\)/);
+  assert.doesNotMatch(clock, /Math\.round\(clock\.ratio \* 100\)/);
+  assert.doesNotMatch(clock, /\.style\.width =/);
+
+  const queue = read('views/queue.js');
   assert.doesNotMatch(queue, /\.style\.width =/);
 
   const css = read('styles/queue.css');
@@ -87,7 +102,7 @@ test('la barre avance en continu au lieu de sauter chaque seconde', () => {
 test('la barre reste animée quand les animations système sont réduites', () => {
   const css = read('styles/queue.css');
   // The fill reports progress: freezing it would hide how far playback is and
-  // leave the one-second tick's jumps as the only movement. The animation is
+  // leave the fast tick's jumps as the only movement. The animation is
   // therefore kept even under prefers-reduced-motion.
   assert.doesNotMatch(
     css,
@@ -95,7 +110,7 @@ test('la barre reste animée quand les animations système sont réduites', () =
   );
 });
 
-test('le battement d’une seconde pose la position exacte de la barre', () => {
+test('le battement pose la position exacte de la barre', () => {
   const queue = read('views/queue.js');
   const tick = queue.match(/export function tickQueueClock\([\s\S]*?\r?\n\}/);
   assert.ok(tick, 'tickQueueClock est exporté');

@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 25] = [
+const KNOWN_KEYS: [&str; 29] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -43,6 +43,10 @@ const KNOWN_KEYS: [&str; 25] = [
     "showText",
     "mediaMuted",
     "hoverPreview",
+    "previewAutoplay",
+    "detailAutoplay",
+    "previewSound",
+    "detailSound",
     // Replaced by hoverPreview: never read, never written back.
     "hoverDetails",
     "serverUrl",
@@ -292,6 +296,14 @@ pub struct OverlayConfig {
     pub media_muted: bool,
     /// A board card shows its preview when the pointer stays on it.
     pub hover_preview: bool,
+    /// The hover preview starts playing its media as soon as it opens.
+    pub preview_autoplay: bool,
+    /// The details window starts playing its media as soon as it opens.
+    pub detail_autoplay: bool,
+    /// The hover preview starts with its sound on.
+    pub preview_sound: bool,
+    /// The details window starts with its sound on.
+    pub detail_sound: bool,
     pub server_url: Option<String>,
     pub client_token: Option<String>,
     pub client_id: Option<String>,
@@ -332,6 +344,12 @@ impl Default for OverlayConfig {
             media_muted: false,
             // On by default: the preview opens unless the device turns it off.
             hover_preview: true,
+            // Autoplay and sound are on by default, as before they were
+            // settings: an old config.json keeps the previous behaviour.
+            preview_autoplay: true,
+            detail_autoplay: true,
+            preview_sound: true,
+            detail_sound: true,
             server_url: None,
             client_token: None,
             client_id: None,
@@ -398,6 +416,10 @@ impl OverlayConfig {
         config.show_text = bool_field(map, "showText", true, &mut warnings);
         config.media_muted = bool_field(map, "mediaMuted", false, &mut warnings);
         config.hover_preview = bool_field(map, "hoverPreview", true, &mut warnings);
+        config.preview_autoplay = bool_field(map, "previewAutoplay", true, &mut warnings);
+        config.detail_autoplay = bool_field(map, "detailAutoplay", true, &mut warnings);
+        config.preview_sound = bool_field(map, "previewSound", true, &mut warnings);
+        config.detail_sound = bool_field(map, "detailSound", true, &mut warnings);
         config.server_url = string_field(map, "serverUrl", &mut warnings);
         config.client_token = string_field(map, "clientToken", &mut warnings);
         config.client_id = string_field(map, "clientId", &mut warnings);
@@ -1073,6 +1095,10 @@ mod tests {
         assert!(!config.guest_mode);
         assert!(config.show_text);
         assert!(config.hover_preview);
+        assert!(config.preview_autoplay);
+        assert!(config.detail_autoplay);
+        assert!(config.preview_sound);
+        assert!(config.detail_sound);
         assert_eq!(config.display_id, None);
         assert_eq!(config.display_index, None);
         assert_eq!(config.display_key, None);
@@ -1135,6 +1161,42 @@ mod tests {
             !config.extra.contains_key("hoverPreview"),
             "a known field is not kept as an unknown extra"
         );
+    }
+
+    #[test]
+    fn media_playback_settings_default_on_and_round_trip() {
+        let (mut config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.5 }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(config.preview_autoplay, "the previews play by default");
+        assert!(config.detail_autoplay, "the window plays by default");
+        assert!(config.preview_sound, "the previews sound by default");
+        assert!(config.detail_sound, "the window sounds by default");
+
+        config.preview_autoplay = false;
+        config.detail_sound = false;
+        let saved = serde_json::to_value(&config).expect("serializable config");
+        assert_eq!(saved["previewAutoplay"], json!(false));
+        assert_eq!(saved["detailAutoplay"], json!(true));
+        assert_eq!(saved["previewSound"], json!(true));
+        assert_eq!(saved["detailSound"], json!(false));
+        for key in [
+            "previewAutoplay",
+            "detailAutoplay",
+            "previewSound",
+            "detailSound",
+        ] {
+            assert!(
+                !config.extra.contains_key(key),
+                "{key} is a known field, never kept as an extra"
+            );
+        }
+
+        let (reloaded, warnings) = OverlayConfig::from_json_value(&saved);
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(!reloaded.preview_autoplay);
+        assert!(reloaded.detail_autoplay);
+        assert!(reloaded.preview_sound);
+        assert!(!reloaded.detail_sound);
     }
 
     #[test]

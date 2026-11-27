@@ -182,6 +182,12 @@
   text-wrap: pretty;
 }
 
+/* A switch that cannot apply yet (its feature is off) fades with its label;
+   the hint keeps explaining what it will do. */
+.settings-row:has(input[type='checkbox']:disabled) .settings-label {
+  color: var(--text-faint);
+}
+
 .settings-control {
   display: flex;
   align-items: center;

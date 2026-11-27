@@ -56,7 +56,7 @@ import {
 import { capturedKeyLabel, forgetShortcutLabel, shortcutLabel, writeShortcutLabel } from '../core/shortcut-labels.js';
 import { invoke, listen } from '../core/ipc.js';
 import { activeGuild, can, describeError, KIND_LABELS, state } from '../core/state.js';
-import { previewVolume } from '../core/sound.js';
+import { mediaLevel } from '../core/sound.js';
 import { notify } from '../core/toast.js';
 import { confirmDialog, copyText } from '../core/ui.js';
 import { loadItems, refreshQueueAutomatically } from '../data.js';
@@ -1586,7 +1586,7 @@ function describeItem(id) {
     expiresAt: urlExpiresAt(url),
     poster,
     ratio: width > 0 && height > 0 ? width / height : null,
-    volume: previewVolume(state.activeGuildId),
+    volume: mediaLevel(state.activeGuildId),
     label: itemTitle(item),
     previewBody: () => previewBody(item),
     detailBody: () => detailBody(item),
@@ -2365,10 +2365,10 @@ function inlineField(item, field, available = true) {
   );
 }
 
-// The window's player follows the device's preview volume, like the board's
+// The window's player follows the device's default level, like the board's
 // other media players did.
 document.addEventListener('livechat:sound', () => {
-  mediaDetail.setVolume(previewVolume(state.activeGuildId));
+  mediaDetail.setVolume(mediaLevel(state.activeGuildId));
 });
 
 // --- keyboard shortcuts (active guild) ---

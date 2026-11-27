@@ -9,6 +9,15 @@ import { acceleratorFromEvent, BARE_KEY_MESSAGE, UNSUPPORTED_KEY, UNSUPPORTED_KE
 import { ARTWORK_MESSAGES, artworkExtension, droppedArtworkLink, fetchArtwork, MAX_ARTWORK_BYTES, pickArtworkFile } from '../core/artwork.js';
 import { backToTopBehavior, showsBackToTop } from '../core/back-to-top.js';
 import {
+  applyBoardCardWidth,
+  BOARD_CARD_WIDTH_STEP,
+  currentBoardCardWidth,
+  DEFAULT_BOARD_CARD_WIDTH,
+  MAX_BOARD_CARD_WIDTH,
+  MIN_BOARD_CARD_WIDTH,
+  rememberBoardCardWidth,
+} from '../core/board-card-size.js';
+import {
   activeFilterCount,
   authorsOf,
   DEFAULT_FILTERS,
@@ -30,7 +39,7 @@ import {
   withVersion,
 } from '../core/detail-drawer.js';
 import { detailActionIds, DOUBLE_CLICK_WINDOW, previewAllowed, previewMeta } from '../core/detail-actions.js';
-import { h, icon, prefersReducedMotion, registerIcons } from '../core/dom.js';
+import { h, icon, prefersReducedMotion, registerIcons, resetOnDoubleClick } from '../core/dom.js';
 import { formatBoardUsage, formatDuration, INVALID_DURATION_MESSAGE, MAX_DISPLAY_DURATION_SEC, parseDisplayDuration, relativeDateLabel } from '../core/format.js';
 import { DROP_VEIL_TEXT, dropTarget } from '../core/media-drop.js';
 import { pastedMediaFiles } from '../core/media-files.js';
@@ -75,6 +84,8 @@ registerIcons({
   star: 'M12 3.09l2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z',
   filter: 'M4 6h16M7 12h10M10 18h4',
   check: 'M5 12.5l4.5 4.5L19 7',
+  // Four squares: the icon of the card-size slider, next to the grid it sizes.
+  grid: 'M4 4h6.5v6.5H4zM13.5 4H20v6.5h-6.5zM4 13.5h6.5V20H4zM13.5 13.5H20V20h-6.5z',
 });
 
 export function itemTitle(item) {
@@ -695,6 +706,42 @@ function retryItems() {
   loadItems({ quiet: true });
 }
 
+// Card size: one slider in the toolbar for the width of every card. The width
+// is applied live on the grid's `--board-card-width` property, so the cards
+// and their skeleton follow the thumb while it moves; only the release writes
+// localStorage, and a double click puts the V1 width back. The range and its
+// value share one panel that stays behind the grid icon at every width: on
+// hover or keyboard focus it opens horizontally, and vertically when the
+// toolbar is too narrow for the horizontal row (see board.css).
+function cardSizeSlider() {
+  const start = currentBoardCardWidth();
+  const sizeLabel = (value) => `${value}\u00A0px`;
+  const output = h('span', { class: 'board-size-value' }, sizeLabel(start));
+  const input = h('input', {
+    class: 'board-size-range',
+    type: 'range',
+    min: String(MIN_BOARD_CARD_WIDTH),
+    max: String(MAX_BOARD_CARD_WIDTH),
+    step: String(BOARD_CARD_WIDTH_STEP),
+    value: String(start),
+    'aria-label': 'Taille des vignettes',
+    'aria-valuetext': sizeLabel(start),
+    onInput: (event) => {
+      const next = applyBoardCardWidth(Number(event.target.value));
+      output.textContent = sizeLabel(next);
+      input.setAttribute('aria-valuetext', sizeLabel(next));
+    },
+    onChange: (event) => rememberBoardCardWidth(Number(event.target.value)),
+  });
+  resetOnDoubleClick(input, DEFAULT_BOARD_CARD_WIDTH);
+  return h(
+    'label',
+    { class: 'board-size', title: 'Taille des vignettes' },
+    icon('grid'),
+    h('span', { class: 'board-size-panel' }, input, output),
+  );
+}
+
 export function renderBoard() {
   if (state.info && !can('viewBoard')) {
     closeDetail();
@@ -727,32 +774,37 @@ export function renderBoard() {
       }),
       h(
         'div',
-        { class: 'chips', role: 'group', 'aria-label': 'Filtrer par type de média' },
-        Object.entries(KIND_LABELS).map(([id, label]) =>
-          h(
-            'button',
-            {
-              class: `chip${state.kind === id ? ' is-active' : ''}`,
-              'data-kind': id,
-              'aria-pressed': String(state.kind === id),
-              onClick: () => setKind(id),
-            },
-            label,
+        { class: 'board-tools-secondary' },
+        h(
+          'div',
+          { class: 'chips', role: 'group', 'aria-label': 'Filtrer par type de média' },
+          Object.entries(KIND_LABELS).map(([id, label]) =>
+            h(
+              'button',
+              {
+                class: `chip${state.kind === id ? ' is-active' : ''}`,
+                'data-kind': id,
+                'aria-pressed': String(state.kind === id),
+                onClick: () => setKind(id),
+              },
+              label,
+            ),
           ),
         ),
-      ),
-      h(
-        'button',
-        {
-          class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
-          'aria-expanded': String(state.filtersOpen),
-          onClick: () => {
-            state.filtersOpen = !state.filtersOpen;
-            renderView();
+        h(
+          'button',
+          {
+            class: `btn is-quiet filters-toggle${filterCount > 0 || state.filtersOpen ? ' is-active' : ''}`,
+            'aria-expanded': String(state.filtersOpen),
+            onClick: () => {
+              state.filtersOpen = !state.filtersOpen;
+              renderView();
+            },
           },
-        },
-        icon('filter'),
-        filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
+          icon('filter'),
+          filterCount > 0 ? `Filtres · ${filterCount}` : 'Filtres',
+        ),
+        cardSizeSlider(),
       ),
       h(
         'div',
@@ -763,18 +815,31 @@ export function renderBoard() {
               {
                 class: 'btn is-quiet',
                 id: 'select-toggle',
+                title: state.selecting ? 'Terminer la sélection' : 'Sélectionner des médias',
                 'aria-pressed': String(state.selecting),
                 onClick: () => (state.selecting ? leaveSelection() : enterSelection()),
               },
-              state.selecting ? 'Terminer' : 'Sélectionner',
+              icon('check'),
+              h('span', { class: 'board-action-label' }, state.selecting ? 'Terminer' : 'Sélectionner'),
             )
           : null,
         h('button', { class: 'btn is-quiet icon-btn', title: 'Actualiser', 'aria-label': 'Actualiser', onClick: loadItems }, icon('refresh')),
-        can('play') ? h('button', { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() }, icon('sound'), 'Lire…') : null,
+        can('play')
+          ? h(
+              'button',
+              { class: 'btn is-quiet', title: 'Lire un texte à voix haute sur les overlays', onClick: () => openSayDialog() },
+              icon('sound'),
+              h('span', { class: 'board-action-label' }, 'Lire…'),
+            )
+          : null,
         // A member who cannot add but can play still opens the dialog, with its
         // "Jouer une fois" action only.
-        !can('addMedia') && can('play') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('play'), 'Jouer') : null,
-        can('addMedia') ? h('button', { class: 'btn is-primary', onClick: openAddDialog }, icon('plus'), 'Ajouter') : null,
+        !can('addMedia') && can('play')
+          ? h('button', { class: 'btn is-primary', title: 'Jouer sur les overlays', onClick: openAddDialog }, icon('play'), h('span', { class: 'board-action-label' }, 'Jouer'))
+          : null,
+        can('addMedia')
+          ? h('button', { class: 'btn is-primary', title: 'Ajouter des médias', onClick: openAddDialog }, icon('plus'), h('span', { class: 'board-action-label' }, 'Ajouter'))
+          : null,
       ),
     ),
   );
@@ -1118,13 +1183,19 @@ function syncSelectionBar() {
 
 // The toolbar button flips between « Sélectionner » and « Terminer » in place:
 // rebuilding the toolbar would take the search field and the scroll with it.
+// Only the label changes: the check icon stays, and the label is the span the
+// icon-only toolbar clips instead of the button's own text.
 function syncSelectionToggle() {
   const toggle = document.getElementById('select-toggle');
   if (!toggle) {
     return;
   }
   toggle.setAttribute('aria-pressed', String(state.selecting));
-  toggle.textContent = state.selecting ? 'Terminer' : 'Sélectionner';
+  toggle.title = state.selecting ? 'Terminer la sélection' : 'Sélectionner des médias';
+  const label = toggle.querySelector('.board-action-label');
+  if (label) {
+    label.textContent = state.selecting ? 'Terminer' : 'Sélectionner';
+  }
 }
 
 function renderSelectionBar() {

@@ -89,7 +89,9 @@ test('la barre de sélection est créée quand elle manque', () => {
   assert.match(bar, /document\.querySelector\('\.view \.board'\)\?\.after\(next\)/);
   assert.match(boardSource, /id: 'select-toggle'/);
   const toggle = functionBody('function syncSelectionToggle()');
-  assert.match(toggle, /toggle\.textContent = state\.selecting \? 'Terminer' : 'Sélectionner';/);
+  assert.match(toggle, /toggle\.querySelector\('\.board-action-label'\)/);
+  assert.match(toggle, /label\.textContent = state\.selecting \? 'Terminer' : 'Sélectionner';/);
+  assert.doesNotMatch(toggle, /toggle\.textContent =/, 'seul le libellé change : l’icône de sélection reste en place');
 });
 
 function functionBody(start) {

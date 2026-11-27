@@ -298,16 +298,19 @@ export function renderQueue() {
   const blocks = [];
   if (playing) {
     const clock = queueClock(playing);
+    const title = jobTitle(playing);
     blocks.push(
       h(
         'div',
         { class: 'now', onContextMenu: openStopMenu },
+        // Le nom du média occupe sa propre ligne (deux au maximum) : la ligne
+        // d'origine, d'auteur et d'horloge reste ainsi sur une seule ligne.
+        h('strong', { class: 'now-title', title }, title),
         h(
           'div',
-          { class: 'row' },
-          h('strong', { class: 'ellipsis' }, jobTitle(playing)),
+          { class: 'row now-meta' },
           originBadge(playing),
-          playing.authorName ? h('span', { class: 'meta' }, `par ${playing.authorName}`) : null,
+          playing.authorName ? h('span', { class: 'meta now-author' }, `par ${playing.authorName}`) : null,
           h('span', { class: 'spacer' }),
           h('span', { class: 'meta queue-time', 'data-queue-clock': '' }, clock.text),
         ),

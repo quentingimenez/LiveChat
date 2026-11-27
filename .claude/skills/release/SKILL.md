@@ -176,7 +176,16 @@ l'erreur.
    avec `cmp`), change l'image du template, lance `update_container` puis
    `docker start`, attend que `/health` annonce X.Y.Z avec db et discord `ok`,
    vérifie « Discord prêt » dans les logs et le 403 de `/admin/` depuis une adresse
-   non autorisée. En cas d'échec pendant le script hôte, il remet le template
+   non autorisée. **Une fois ces vérifications passées seulement**, il supprime
+   l'image précédente de l'hôte (`docker image rm`), pour qu'un déploiement
+   n'empile pas une image par version : le disque de l'hôte se remplit sinon à
+   chaque release. Une image déjà absente ou encore référencée est signalée sans
+   faire échouer un déploiement vérifié ; une image d'un autre dépôt (fork, build
+   local) est laissée en place, elle n'est pas forcément re-téléchargeable. La
+   commande `ROLLBACK` ci-dessous s'exécute avant cette suppression (l'image est
+   encore locale) ; revenir à l'ancienne version **après** un déploiement réussi
+   repasse par un `docker pull` de son tag. En cas
+   d'échec pendant le script hôte, il remet le template
    sauvegardé, recrée et relance le conteneur ; en cas d'échec des vérifications
    (nouvelle image en mauvaise santé), il affiche l'image précédente, le dossier de
    sauvegarde et la commande `ROLLBACK` (template + base) à lancer sur l'hôte. La

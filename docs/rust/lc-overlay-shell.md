@@ -125,9 +125,10 @@ Au démarrage (`lib.rs::prepare_store`) :
 `displayId`, `displayIndex`, `displayKey`, `displayLabel`, `volume`, `enabled`,
 `autoStart`, `guestMode`, `showText`, `serverUrl`, `clientToken`, `clientId`,
 `guildId`, `authorName`, `deviceName`, `mediaBindings`, plus `memberships`,
-`profileName`, `profileAvatar`, `shortcuts` et `layout` ; les clés inconnues
-sont conservées dans `extra` (`#[serde(flatten)]`) pour ne pas perdre de champ
-Electron lors d'un rollback.
+`profileName`, `profileAvatar`, `shortcuts` et `layout` ; `displayHardwareId`
+(Tauri seul : identité matérielle EDID, §5) s'ajoute à la sélection d'écran. Les
+clés inconnues sont conservées dans `extra` (`#[serde(flatten)]`) pour ne pas
+perdre de champ Electron lors d'un rollback.
 
 `Membership` porte un `volume` par guilde (défaut `1.0`, borné `[0,1]`).
 `shortcuts = { stop, stopLocal, muteAll, openBoard }` et `layout = { zone: { x,
@@ -168,29 +169,49 @@ L'aperçu en direct de la mise en page (gabarit, échéance de 4 s) vit dans
 
 Détails d'implémentation :
 
-- `overlay` est positionnée sur l'écran mémorisé (`displayKey` → nom du
+- `overlay` est positionnée sur l'écran mémorisé, du plus sûr au moins sûr :
+  identité matérielle `displayHardwareId` (constructeur, produit et numéro de
+  série EDID, `win32::display_hardware_id`) → `displayKey` (`x,y,w,h`, sans
+  l'index d'énumération, qui peut changer d'un démarrage à l'autre) → nom du
   périphérique `displayLabel` → clé legacy `x,y,w,h,index` → `displayIndex` →
-  primaire → premier). La clé de géométrie est stable (`x,y,w,h`, sans l'index
-  d'énumération, qui peut changer d'un démarrage à l'autre). Seules les
-  correspondances sûres sont réécrites dans la config
-  (`windows::persist_display_selection`) : un repli (index, primaire, premier)
-  positionne l'overlay mais ne l'enregistre jamais, sinon un démarrage où
-  l'écran configuré n'est pas encore énuméré remplacerait définitivement le
-  choix de l'utilisateur (`display::SelectionSource::is_confident`).
+  primaire → premier. Seules les correspondances sûres sont réécrites dans la
+  config (`windows::persist_display_selection`) : un repli (index, primaire,
+  premier) et le nom `\\.\DISPLAYn` positionnent l'overlay mais ne
+  l'enregistrent jamais, sinon un démarrage où l'écran configuré n'est pas
+  encore énuméré remplacerait définitivement le choix de l'utilisateur
+  (`display::SelectionSource::is_confident`). Le nom est exclu parce que Windows
+  le réattribue entre deux démarrages : le label d'un moniteur peut désigner un
+  autre écran, et l'enregistrer « réinitialisait » la sélection sur le principal.
 - Chaque tick de la garde topmost compare la géométrie réelle de `overlay`
   (`outer_position` + `inner_size`) aux bornes de l'écran sélectionné
-  (`windows::sync_overlay_geometry`, décision pure dans `display::geometry_sync`).
-  Après un changement de résolution ou une réorganisation des écrans, la
-  fenêtre est replacée et redimensionnée, et la clé d'écran mémorisée réécrite
-  puisqu'elle contient la taille : sans cela, l'overlay restait à l'ancienne
-  géométrie physique (média décalé, ou hors écran donc plus rien d'affiché).
-  Là aussi, seul un écran retrouvé de façon sûre est réécrit.
+  (`windows::sync_overlay_geometry`, décision pure dans
+  `display::next_overlay_geometry`). Après un changement de résolution ou une
+  réorganisation des écrans, la fenêtre est replacée et redimensionnée, et la
+  clé d'écran mémorisée réécrite puisqu'elle contient la taille : sans cela,
+  l'overlay restait à l'ancienne géométrie physique (média décalé, ou hors
+  écran donc plus rien d'affiché). Là aussi, seul un écran retrouvé de façon
+  sûre est réécrit — mais il l'est même si la géométrie n'a pas bougé
+  (auto-réparation de l'identité persistée, par exemple la première fois que
+  l'EDID répond).
+- Une sélection non sûre ne déplace jamais une fenêtre encore entièrement
+  posée sur un écran (`display::is_on_a_display`) : un écran qui manque le temps
+  d'une énumération (veille, changement de mode de jeu, DisplayPort renégocié)
+  ne doit pas aspirer l'overlay sur le principal, il est retrouvé au tick
+  suivant. Cette garde ne s'applique qu'au tick et seulement si la config
+  garde une sélection (`display::has_recorded_selection`) : une installation
+  neuve, dont la fenêtre est encore au rectangle par défaut (1280×720), adopte
+  l'écran de secours. Le démarrage et un choix de l'utilisateur (sélecteur du
+  board, menu du tray) adoptent en revanche l'écran résolu tel quel — la fenêtre
+  vient d'être créée, ou l'utilisateur vient de désigner l'écran.
 - Les libellés viennent de `display::format_settings_label`
   (« Écran 1 — G27q-20 (2560 × 1440, principal) ») et de
   `display::format_display_menu_label` (« Écran 1 - G27q-20 ») : ils préfèrent
   le nom court du moniteur (descripteur EDID 0xFC, lu par
   `win32::display_short_name`, repli sur le `DeviceString` du pilote), jamais
-  `displayLabel`, qui reste l'identité persistée.
+  `displayLabel`. Le sélecteur du board reçoit la clé de l'écran réellement
+  occupé (`settings::effective_display_key`, même résolution) et non plus la
+  seule clé stockée : une clé périmée n'y apparaît plus comme « Écran
+  principal ».
 - `apply_overlay_flags` : `set_ignore_cursor_events(true)`,
   `set_focusable(false)`, `set_always_on_top(true)`, `set_skip_taskbar(true)`,
   puis `GetWindowLongPtrW(GWL_EXSTYLE)` + `SetWindowLongPtrW` pour forcer les
@@ -436,9 +457,10 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 ## 13. Écarts, risques et limites connues
 
 1. `displayId` (identifiant Electron du moniteur) n'est pas résolu : la
-   sélection utilise `displayKey`/`displayLabel`/`displayIndex`/primaire, la
-   clé legacy `x,y,w,h,index` restant acceptée le temps de la migration ; la
-   clé de géométrie n'inclut plus l'index d'énumération.
+   sélection utilise `displayHardwareId`/`displayKey`/`displayLabel`/
+   `displayIndex`/primaire, la clé legacy `x,y,w,h,index` restant acceptée le
+   temps de la migration ; la clé de géométrie n'inclut plus l'index
+   d'énumération.
 2. `pairing_consume` est opérationnel et la board porte l'appairage ; la
    fenêtre `pairing` a été retirée.
 3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;

@@ -85,6 +85,7 @@ pub fn select_display(app: &AppHandle<Wry>, index: usize) {
         config.display_index = selection.display_index;
         config.display_key = selection.display_key.clone();
         config.display_label = selection.display_label.clone();
+        config.display_hardware_id = selection.display_hardware_id.clone();
     });
     match result {
         Ok(_) => {

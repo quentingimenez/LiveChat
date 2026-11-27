@@ -997,7 +997,10 @@ Aucun payload. Réponse `SettingsView` :
 }
 ```
 
-`selectedDisplayKey: null` désigne l'écran principal. `generalMute` est
+`selectedDisplayKey` est la clé de l'écran que l'overlay occupe réellement (la
+résolution du shell Tauri, `displayHardwareId` → `displayKey` → nom → clé
+legacy → index → principal) : une clé qui ne correspond à aucun écran listé,
+ou `null`, fait retomber le board sur le principal. `generalMute` est
 l'inverse de `enabled`. `guildVolumes` contient toutes les guildes rejointes.
 `autoStart` reflète l'état réel du plugin autostart.
 

@@ -167,6 +167,24 @@ fn display_views(displays: &[DisplayInfo], primary_index: Option<usize>) -> Vec<
         .collect()
 }
 
+/// Clé de l'écran que l'overlay occupe réellement.
+///
+/// La configuration peut désigner l'écran par une clé périmée (écrans qui ont
+/// échangé leurs places) ou par son nom : le sélecteur doit alors afficher
+/// l'écran effectivement choisi. Sinon il ne retrouvait aucune option et
+/// retombait sur « Écran principal », alors que l'overlay restait sur son écran.
+fn effective_display_key(
+    config: &OverlayConfig,
+    displays: &[DisplayInfo],
+    primary_index: Option<usize>,
+) -> Option<String> {
+    crate::display::resolve_display(config, displays, primary_index)
+        .filter(|selected| selected.source.is_specific())
+        .and_then(|selected| displays.get(selected.index))
+        .map(DisplayInfo::key)
+        .or_else(|| config.display_key.clone())
+}
+
 /// Builds the settings projection without touching Tauri, for unit tests.
 pub fn build_settings_view(
     config: &OverlayConfig,
@@ -179,7 +197,7 @@ pub fn build_settings_view(
         version: env!("CARGO_PKG_VERSION").to_string(),
         update,
         displays: display_views(displays, primary_index),
-        selected_display_key: config.display_key.clone(),
+        selected_display_key: effective_display_key(config, displays, primary_index),
         volume: config.volume,
         guilds: config
             .memberships
@@ -528,6 +546,7 @@ fn apply_display_patch(
             config.display_index = None;
             config.display_key = None;
             config.display_label = None;
+            config.display_hardware_id = None;
         }
         Value::String(key) => {
             let key = key.trim();
@@ -544,6 +563,7 @@ fn apply_display_patch(
             config.display_index = selection.display_index;
             config.display_key = selection.display_key;
             config.display_label = selection.display_label;
+            config.display_hardware_id = selection.display_hardware_id;
         }
         _ => {
             return Err(SettingsError::new(
@@ -1122,6 +1142,57 @@ mod tests {
         .expect("legacy display key");
         assert_eq!(patched.display_index, Some(1));
         assert_eq!(patched.display_key.as_deref(), Some("-1920,0,1920,1080"));
+    }
+
+    #[test]
+    fn the_selection_stores_the_hardware_identity_of_the_screen() {
+        let displays = sample_displays()
+            .into_iter()
+            .enumerate()
+            .map(|(index, display)| {
+                let hardware_id = if index == 0 {
+                    "GIG:41B2:PRINCIPAL"
+                } else {
+                    "SAM:707A:BUREAU"
+                };
+                display.with_hardware_id(Some(hardware_id.to_string()))
+            })
+            .collect::<Vec<_>>();
+        let key = displays[1].key();
+        let patched = apply_settings_patch(
+            &paired_config(),
+            &json!({ "selectedDisplayKey": key }),
+            &displays,
+        )
+        .expect("valid display");
+        assert_eq!(
+            patched.display_hardware_id.as_deref(),
+            Some("SAM:707A:BUREAU")
+        );
+        // Revenir à « Écran principal » efface aussi l'identité matérielle : la
+        // garder ferait repartir l'overlay sur l'ancien écran au démarrage.
+        let cleared =
+            apply_settings_patch(&patched, &json!({ "selectedDisplayKey": null }), &displays)
+                .expect("clear display");
+        assert_eq!(cleared.display_hardware_id, None);
+        assert_eq!(cleared.display_key, None);
+    }
+
+    #[test]
+    fn the_settings_view_shows_the_screen_that_holds_the_overlay() {
+        // Clé périmée (les écrans ont échangé leurs places) retrouvée par le
+        // nom du moniteur : le sélecteur doit afficher cet écran, pas
+        // retomber sur « Écran principal ».
+        let displays = sample_displays();
+        let mut config = paired_config();
+        config.display_key = Some("-9999,0,2560,1440".to_string());
+        config.display_index = Some(1);
+        config.display_label = Some("DISPLAY2".to_string());
+        let view = build_settings_view(&config, &displays, Some(0), true, idle_update());
+        assert_eq!(
+            view.selected_display_key.as_deref(),
+            Some("-1920,0,1920,1080")
+        );
     }
 
     #[test]

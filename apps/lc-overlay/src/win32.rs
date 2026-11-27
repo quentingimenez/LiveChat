@@ -134,6 +134,11 @@ pub fn reassert_topmost(hwnd: HWND) -> WindowsResult<()> {
     }
 }
 
+/// `EDD_GET_DEVICE_INTERFACE_NAME` (GDI) : `EnumDisplayDevicesW` rend alors le
+/// chemin d'interface du moniteur, qui nomme son instance de registre — la
+/// seule clé sous laquelle Windows range l'EDID.
+const EDD_GET_DEVICE_INTERFACE_NAME: u32 = 0x0000_0001;
+
 /// Classes of shell windows that must never get a window placed behind them:
 /// the desktop sits at the bottom of the Z order (a window behind it would
 /// vanish under the icons) and the taskbars are topmost.
@@ -464,6 +469,28 @@ fn read_machine_string(subkey: PCWSTR, value: PCWSTR) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// Identité matérielle du moniteur : constructeur, produit et numéro de série
+/// de l'EDID (`DEL:41B2:065KXLX123456`).
+///
+/// C'est la seule identité que Windows ne réattribue pas : ni `\\.\DISPLAYn`
+/// (renuméroté au gré des branchements) ni la géométrie (échangée dès que les
+/// écrans bougent). Un moniteur sans numéro de série lisible est identifié par
+/// son instance de registre, stable tant que le pilote ne le réinstalle pas.
+pub fn display_hardware_id(device_name: &str) -> Option<String> {
+    // Le chemin d'interface (`\\?\DISPLAY#SAM707A#7&…&UID772#{…}`) nomme
+    // l'instance exacte du registre ; `DeviceID` simple (`MONITOR\SAM707A\{…}\0008`)
+    // ne porte qu'un index de classe sous lequel aucun EDID n'est rangé.
+    let device_id = enum_display_device(device_name, 0, EDD_GET_DEVICE_INTERFACE_NAME)
+        .and_then(|device| device_string(&device.DeviceID))
+        .or_else(|| {
+            enum_display_device(device_name, 0, 0)
+                .and_then(|device| device_string(&device.DeviceID))
+        })?;
+    let (hardware_id, instance) = monitor_device_path(&device_id)?;
+    let edid = registry_monitor_edid(&hardware_id, &instance)?;
+    edid_hardware_id(&edid, &instance)
+}
+
 /// Nom court du moniteur tel que Windows l'affiche (ex. « LC27G5xT »).
 ///
 /// `DeviceString` ne porte le modèle que si le constructeur fournit un pilote
@@ -475,13 +502,13 @@ pub fn display_short_name(device_name: &str) -> Option<String> {
     monitor_hardware_id(device_name)
         .and_then(|hardware_id| registry_monitor_name(&hardware_id))
         .or_else(|| {
-            enum_display_device(device_name, 0)
+            enum_display_device(device_name, 0, 0)
                 .and_then(|device| device_string(&device.DeviceString))
         })
 }
 
 /// Premier moniteur rattaché à l'adaptateur, tel que le rapporte GDI.
-fn enum_display_device(device_name: &str, index: u32) -> Option<DISPLAY_DEVICEW> {
+fn enum_display_device(device_name: &str, index: u32, flags: u32) -> Option<DISPLAY_DEVICEW> {
     let device_name = device_name.trim();
     if device_name.is_empty() {
         return None;
@@ -497,13 +524,13 @@ fn enum_display_device(device_name: &str, index: u32) -> Option<DISPLAY_DEVICEW>
     // SAFETY: `wide` is NUL-terminated and outlives the call; `device` is a
     // valid `DISPLAY_DEVICEW` whose `cb` describes its size.
     let found =
-        unsafe { EnumDisplayDevicesW(PCWSTR::from_raw(wide.as_ptr()), index, &mut device, 0) };
+        unsafe { EnumDisplayDevicesW(PCWSTR::from_raw(wide.as_ptr()), index, &mut device, flags) };
     found.as_bool().then_some(device)
 }
 
 /// Identifiant matériel du moniteur : `SAM707A` dans `MONITOR\SAM707A\{…}\0008`.
 fn monitor_hardware_id(device_name: &str) -> Option<String> {
-    enum_display_device(device_name, 0)
+    enum_display_device(device_name, 0, 0)
         .and_then(|device| device_string(&device.DeviceID))
         .and_then(|device_id| hardware_id_from_device_id(&device_id))
 }
@@ -515,8 +542,49 @@ fn hardware_id_from_device_id(device_id: &str) -> Option<String> {
     (!hardware_id.is_empty()).then(|| hardware_id.to_owned())
 }
 
+/// Identifiant matériel et instance du moniteur dans le registre.
+///
+/// Deux formes de `DeviceID` désignent le même écran :
+/// `MONITOR\SAM707A\{4d36e96e-…}\0008` quand GDI nomme l'adaptateur, et
+/// `\\?\DISPLAY#SAM707A#7&2dc4a82b&1&UID772#{e6f07b5f-…}` avec
+/// `EDD_GET_DEVICE_INTERFACE_NAME`, où l'instance est enfin le nom de clé sous
+/// `Enum\DISPLAY\<hardware_id>` — le seul endroit où Windows range l'EDID.
+fn monitor_device_path(device_id: &str) -> Option<(String, String)> {
+    let device_id = device_id.trim();
+    let (hardware_id, instance) = match device_id.strip_prefix(r"\\?\") {
+        // `\\?\DISPLAY#<hardware_id>#<instance>#{interface}`.
+        Some(interface) => {
+            let parts: Vec<&str> = interface.split('#').collect();
+            (*parts.get(1)?, *parts.get(2)?)
+        }
+        // `MONITOR\<hardware_id>\{class}\<instance>`.
+        None => {
+            let parts: Vec<&str> = device_id.split('\\').collect();
+            (*parts.get(1)?, *parts.get(3)?)
+        }
+    };
+    let (hardware_id, instance) = (hardware_id.trim(), instance.trim());
+    // Un identifiant d'interface à la place de l'instance (`…\DISPLAY#SAM707A#{…}`)
+    // n'a pas de nom de clé à ouvrir.
+    if hardware_id.is_empty() || instance.is_empty() || instance.starts_with('{') {
+        return None;
+    }
+    Some((hardware_id.to_owned(), instance.to_owned()))
+}
+
 /// Nom du moniteur lu dans l'EDID exposé par le registre des périphériques.
 fn registry_monitor_name(hardware_id: &str) -> Option<String> {
+    with_monitor_registry(hardware_id, scan_monitor_instances)
+}
+
+/// Bloc EDID de l'instance de moniteur qui porte exactement `device_id`.
+fn registry_monitor_edid(hardware_id: &str, instance: &str) -> Option<Vec<u8>> {
+    with_monitor_registry(hardware_id, |key| read_monitor_edid(key, instance))
+}
+
+/// Ouvre `HKLM\SYSTEM\CurrentControlSet\Enum\DISPLAY\<hardware_id>` le temps
+/// d'une lecture.
+fn with_monitor_registry<T>(hardware_id: &str, read: impl FnOnce(HKEY) -> Option<T>) -> Option<T> {
     let subkey: Vec<u16> = format!("SYSTEM\\CurrentControlSet\\Enum\\DISPLAY\\{hardware_id}")
         .encode_utf16()
         .chain(std::iter::once(0))
@@ -535,10 +603,10 @@ fn registry_monitor_name(hardware_id: &str) -> Option<String> {
     if status != ERROR_SUCCESS {
         return None;
     }
-    let name = scan_monitor_instances(key);
+    let value = read(key);
     // SAFETY: `key` was opened above and is closed exactly once.
     let _ = unsafe { RegCloseKey(key) };
-    name
+    value
 }
 
 /// Parcourt les instances du moniteur et retient la première qui porte un EDID.
@@ -622,9 +690,14 @@ fn read_monitor_edid(key: HKEY, instance: &str) -> Option<Vec<u8>> {
 
 /// Nom du moniteur dans les descripteurs EDID (tag 0xFC, 13 octets ASCII).
 fn edid_monitor_name(edid: &[u8]) -> Option<String> {
+    edid_descriptor_text(edid, 0xfc)
+}
+
+/// Texte d'un descripteur EDID à 18 octets portant `tag`.
+fn edid_descriptor_text(edid: &[u8], tag: u8) -> Option<String> {
     let descriptors = edid.get(54..)?.as_chunks::<18>().0.iter().take(4);
     for descriptor in descriptors {
-        if descriptor[..3] != [0, 0, 0] || descriptor[3] != 0xfc {
+        if descriptor[..3] != [0, 0, 0] || descriptor[3] != tag {
             continue;
         }
         let text: String = descriptor[5..18]
@@ -632,12 +705,56 @@ fn edid_monitor_name(edid: &[u8]) -> Option<String> {
             .take_while(|byte| !matches!(**byte, 0x0a | 0x00 | 0xff))
             .map(|byte| char::from(*byte))
             .collect();
-        let name = text.trim();
-        if !name.is_empty() {
-            return Some(name.to_owned());
+        let text = text.trim();
+        if !text.is_empty() {
+            return Some(text.to_owned());
         }
     }
     None
+}
+
+/// Identité stable tirée de l'EDID : `CONSTRUCTEUR:PRODUIT:SÉRIE`.
+///
+/// Le constructeur est le code PnP trois lettres des octets 8-9, le produit son
+/// identifiant des octets 10-11, la série le descripteur 0xFF (texte) sinon
+/// l'identifiant numérique des octets 12-15. `instance` ne sert que pour un
+/// moniteur muet sur les deux (EDID minimal de certains KVM).
+fn edid_hardware_id(edid: &[u8], instance: &str) -> Option<String> {
+    // Un bloc sans en-tête EDID valide ne désigne aucun moniteur.
+    (edid.get(..8)? == [0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]).then_some(())?;
+    let vendor = edid_vendor(edid.get(8..10)?)?;
+    let product = u16::from_le_bytes([*edid.get(10)?, *edid.get(11)?]);
+    let serial = u32::from_le_bytes([
+        *edid.get(12)?,
+        *edid.get(13)?,
+        *edid.get(14)?,
+        *edid.get(15)?,
+    ]);
+    let serial = edid_descriptor_text(edid, 0xff).unwrap_or_else(|| {
+        if serial == 0 || serial == u32::MAX {
+            instance.to_owned()
+        } else {
+            format!("{serial:08X}")
+        }
+    });
+    Some(format!("{vendor}:{product:04X}:{serial}"))
+}
+
+/// Code PnP trois lettres du constructeur EDID (octets 8-9, 5 bits par lettre,
+/// 1 = « A »).
+fn edid_vendor(bytes: &[u8]) -> Option<String> {
+    let value = (u16::from(*bytes.first()?) << 8) | u16::from(*bytes.get(1)?);
+    let letter = |bits: u16| -> Option<char> {
+        match bits & 0x1f {
+            0 => None,
+            code => char::from_u32(u32::from('A') + u32::from(code) - 1),
+        }
+    };
+    let mut vendor = String::with_capacity(3);
+    vendor.push(letter(value >> 10)?);
+    vendor.push(letter(value >> 5)?);
+    vendor.push(letter(value)?);
+    Some(vendor)
 }
 
 /// Chaîne UTF-16 terminée par NUL → texte trimé, `None` si vide.
@@ -739,13 +856,102 @@ mod tests {
         assert_eq!(edid_monitor_name(&[0_u8; 60]), None);
     }
 
+    #[test]
+    fn the_monitor_device_path_names_the_registry_instance() {
+        let device_id = "MONITOR\\SAM707A\\{4d36e96e-e325-11ce-bfc1-08002be10318}\\0008";
+        assert_eq!(
+            monitor_device_path(device_id),
+            Some(("SAM707A".to_string(), "0008".to_string()))
+        );
+        assert_eq!(monitor_device_path("MONITOR\\SAM707A"), None);
+        assert_eq!(
+            monitor_device_path("MONITOR\\SAM707A\\{4d36e96e-e325-11ce-bfc1-08002be10318}"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_interface_path_names_the_instance_holding_the_edid() {
+        // Forme rendue avec `EDD_GET_DEVICE_INTERFACE_NAME` : l'instance y est
+        // le nom de clé sous `Enum\DISPLAY\SAM707A`, seul endroit où l'EDID est
+        // rangé (`MONITOR\SAM707A\{…}\0008` n'est qu'un index de classe).
+        let interface = concat!(
+            "\\\\?\\DISPLAY#SAM707A#7&2dc4a82b&1&UID772#",
+            "{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"
+        );
+        assert_eq!(
+            monitor_device_path(interface),
+            Some(("SAM707A".to_string(), "7&2dc4a82b&1&UID772".to_string()))
+        );
+        // Une interface tronquée n'invente pas d'instance.
+        assert_eq!(
+            monitor_device_path("\\\\?\\DISPLAY#SAM707A#{e6f07b5f-ee97-4a90-b076-33f57bf4eaa7}"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_hardware_identity_comes_from_the_edid_header() {
+        let edid = edid_with_identity(0x10ac, 0x41b2, 0x1234_5678);
+        assert_eq!(
+            edid_hardware_id(&edid, "0008").as_deref(),
+            Some("DEL:41B2:12345678")
+        );
+        // Le numéro de série texte du descripteur 0xFF est plus précis que le
+        // numérique : certains constructeurs y laissent 0 pour tous leurs
+        // écrans d'un même modèle.
+        let named = edid_with_descriptor(0xff, "Z9XK400001");
+        assert_eq!(
+            edid_hardware_id(&named, "0008").as_deref(),
+            Some("DEL:41B2:Z9XK400001")
+        );
+    }
+
+    #[test]
+    fn a_monitor_without_a_serial_number_keeps_its_registry_instance() {
+        let anonymous = edid_with_identity(0x10ac, 0x41b2, 0);
+        assert_eq!(
+            edid_hardware_id(&anonymous, "5&1a2b3c4d&0&1").as_deref(),
+            Some("DEL:41B2:5&1a2b3c4d&0&1")
+        );
+        let all_ones = edid_with_identity(0x10ac, 0x41b2, u32::MAX);
+        assert_eq!(
+            edid_hardware_id(&all_ones, "0008").as_deref(),
+            Some("DEL:41B2:0008")
+        );
+    }
+
+    #[test]
+    fn a_corrupt_edid_designates_no_monitor() {
+        assert_eq!(edid_hardware_id(&[0_u8; 128], "0008"), None);
+        assert_eq!(edid_hardware_id(&[], "0008"), None);
+        // Constructeur nul : pas d'identité fiable.
+        let blank_vendor = edid_with_identity(0, 0x41b2, 1);
+        assert_eq!(edid_hardware_id(&blank_vendor, "0008"), None);
+        // En-tête EDID faux.
+        let mut bad_header = edid_with_identity(0x10ac, 0x41b2, 1);
+        bad_header[7] = 0x01;
+        assert_eq!(edid_hardware_id(&bad_header, "0008"), None);
+    }
+
+    /// EDID minimale valide : en-tête, constructeur, produit et série numériques.
+    fn edid_with_identity(vendor: u16, product: u16, serial: u32) -> Vec<u8> {
+        let mut edid = vec![0_u8; 128];
+        edid[..8].copy_from_slice(&[0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00]);
+        edid[8..10].copy_from_slice(&vendor.to_be_bytes());
+        edid[10..12].copy_from_slice(&product.to_le_bytes());
+        edid[12..16].copy_from_slice(&serial.to_le_bytes());
+        edid
+    }
+
     /// EDID minimale : un seul descripteur, tag 0xFC, texte de 13 octets.
     fn edid_with_name(text: &str) -> Vec<u8> {
         edid_with_descriptor(0xfc, text)
     }
 
     fn edid_with_descriptor(tag: u8, text: &str) -> Vec<u8> {
-        let mut edid = vec![0_u8; 128];
+        let mut edid = edid_with_identity(0x10ac, 0x41b2, 0x1234_5678);
+        edid[54..57].copy_from_slice(&[0, 0, 0]);
         edid[57] = tag;
         let bytes = text.as_bytes();
         let len = bytes.len().min(13);

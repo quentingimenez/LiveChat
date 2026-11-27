@@ -11,9 +11,7 @@ use tauri::{
 };
 
 use crate::config::OverlayConfig;
-use crate::display::{
-    self, DisplayInfo, DisplaySelection, GeometrySync, OverlayGeometry, SelectionSource,
-};
+use crate::display::{self, DisplayInfo, DisplaySelection, OverlayGeometry, SelectionSource};
 use crate::state::AppState;
 #[cfg(windows)]
 use crate::win32;
@@ -77,6 +75,17 @@ fn display_short_name(_device: Option<&str>) -> Option<String> {
     None
 }
 
+/// Identité matérielle du moniteur (EDID), la seule stable entre les démarrages.
+#[cfg(windows)]
+fn display_hardware_id(device: Option<&str>) -> Option<String> {
+    device.and_then(crate::win32::display_hardware_id)
+}
+
+#[cfg(not(windows))]
+fn display_hardware_id(_device: Option<&str>) -> Option<String> {
+    None
+}
+
 /// Liste les moniteurs visibles avec leur index Tauri et l'index du primaire.
 pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize>) {
     let monitors = match app.available_monitors() {
@@ -109,6 +118,7 @@ pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize
                 monitor.scale_factor(),
             )
             .with_short_name(display_short_name(monitor.name().map(String::as_str)))
+            .with_hardware_id(display_hardware_id(monitor.name().map(String::as_str)))
         })
         .collect::<Vec<_>>();
     let primary_index = primary_geometry.and_then(|geometry| {
@@ -122,18 +132,6 @@ pub fn collect_displays(app: &AppHandle<Wry>) -> (Vec<DisplayInfo>, Option<usize
         })
     });
     (displays, primary_index)
-}
-
-/// Écran cible d'après la configuration persistée, avec la source du choix.
-pub fn selected_display(app: &AppHandle<Wry>) -> Option<(DisplayInfo, SelectionSource)> {
-    let (displays, primary_index) = collect_displays(app);
-    if displays.is_empty() {
-        return None;
-    }
-    let config = app.state::<AppState>().config_snapshot();
-    let selected = display::resolve_display(&config, &displays, primary_index)?;
-    let display = displays.into_iter().nth(selected.index)?;
-    Some((display, selected.source))
 }
 
 /// Mémoire de sélection à écrire dans la configuration (uniquement si changé).
@@ -160,9 +158,17 @@ fn persist_display_selection(
         return;
     }
     let selection = DisplaySelection::from_display(target);
+    // Un EDID illisible ne doit ni effacer l'identité déjà connue du même
+    // écran, ni faire hériter un autre écran de l'identité précédente.
+    let hardware_id = match selection.display_hardware_id.clone() {
+        Some(hardware_id) => Some(hardware_id),
+        None if config.display_key == selection.display_key => config.display_hardware_id.clone(),
+        None => None,
+    };
     let already_saved = config.display_index == selection.display_index
         && config.display_key == selection.display_key
-        && config.display_label == selection.display_label;
+        && config.display_label == selection.display_label
+        && config.display_hardware_id == hardware_id;
     if already_saved {
         return;
     }
@@ -171,6 +177,7 @@ fn persist_display_selection(
         config.display_index = selection.display_index;
         config.display_key = selection.display_key.clone();
         config.display_label = selection.display_label.clone();
+        config.display_hardware_id = hardware_id.clone();
     }) {
         tracing::warn!(%error, "échec de persistance de l'écran sélectionné");
     }
@@ -186,35 +193,57 @@ fn apply_overlay_geometry(window: &WebviewWindow<Wry>, geometry: OverlayGeometry
     }
 }
 
+/// Géométrie physique actuelle de la fenêtre overlay, quand Windows la rapporte.
+fn overlay_geometry(window: &WebviewWindow<Wry>) -> Option<OverlayGeometry> {
+    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
+        return None;
+    };
+    Some(OverlayGeometry::new(
+        position.x,
+        position.y,
+        size.width,
+        size.height,
+    ))
+}
+
+/// Positionne l'overlay sur l'écran résolu, quitte à ce que ce soit un repli.
+///
+/// Au démarrage et sur un choix explicite, l'écran résolu est adopté tel quel :
+/// la fenêtre vient d'être créée (rectangle par défaut), ou l'utilisateur vient
+/// de désigner un écran. C'est le tick de `sync_overlay_geometry` qui, lui,
+/// refuse de suivre un repli tant que la fenêtre est encore posée sur un écran.
 fn position_overlay(app: &AppHandle<Wry>, persist: bool) -> Option<DisplayInfo> {
     let Some(window) = window(app, OVERLAY_LABEL) else {
         tracing::warn!("fenêtre overlay absente");
         return None;
     };
-    let Some((target, source)) = selected_display(app) else {
+    let (displays, primary_index) = collect_displays(app);
+    if displays.is_empty() {
         tracing::warn!("aucun écran disponible");
         return None;
-    };
+    }
+    let config = app.state::<AppState>().config_snapshot();
+    let selected = display::resolve_display(&config, &displays, primary_index)?;
+    let target = displays.get(selected.index)?.clone();
     let geometry = OverlayGeometry::from_display(&target);
     apply_overlay_geometry(&window, geometry);
-    if persist {
-        let config = app.state::<AppState>().config_snapshot();
-        persist_display_selection(app, &target, source, &config);
-    }
     tracing::info!(
         display_index = target.index,
         display_key = %target.key(),
-        ?source,
+        ?selected.source,
         x = geometry.x,
         y = geometry.y,
         width = geometry.width,
         height = geometry.height,
         "overlay positionné sur l'écran sélectionné"
     );
+    if persist {
+        persist_display_selection(app, &target, selected.source, &config);
+    }
     Some(target)
 }
 
-/// Positionne et dimensionne l'overlay sur l'écran sélectionné.
+/// Positionne et dimensionne l'overlay sur l'écran sélectionné (choix explicite).
 pub fn position_overlay_on_selected_display(app: &AppHandle<Wry>) -> Option<DisplayInfo> {
     position_overlay(app, true)
 }
@@ -236,29 +265,57 @@ fn sync_overlay_geometry(app: &AppHandle<Wry>) -> bool {
     let Some(window) = window(app, OVERLAY_LABEL) else {
         return false;
     };
-    let Some((target, source)) = selected_display(app) else {
-        return false;
-    };
-    let target_geometry = OverlayGeometry::from_display(&target);
-    let (Ok(position), Ok(size)) = (window.outer_position(), window.inner_size()) else {
-        return false;
-    };
-    let current = OverlayGeometry::new(position.x, position.y, size.width, size.height);
-    let action = display::geometry_sync(current, target_geometry);
-    if action == GeometrySync::Keep {
+    let (displays, primary_index) = collect_displays(app);
+    if displays.is_empty() {
         return false;
     }
+    let config = app.state::<AppState>().config_snapshot();
+    let Some(selected) = display::resolve_display(&config, &displays, primary_index) else {
+        return false;
+    };
+    let Some(target) = displays.get(selected.index) else {
+        return false;
+    };
+    let Some(current) = overlay_geometry(&window) else {
+        return false;
+    };
+    let Some(target_geometry) = display::next_overlay_geometry(
+        current,
+        target,
+        selected.source,
+        &displays,
+        display::has_recorded_selection(&config),
+    ) else {
+        // Rien à déplacer. Deux cas : la fenêtre est déjà à sa place, ou un
+        // repli vient d'être refusé pour ne pas l'arracher à son écran. Le
+        // second mérite une trace : c'est lui qui explique un écran qui ne
+        // revient pas tout de suite, sans qu'aucun déplacement n'ait eu lieu.
+        if !selected.source.is_confident() && display::is_on_a_display(current, &displays) {
+            tracing::debug!(
+                display_index = target.index,
+                ?selected.source,
+                "écran configuré absent de l'énumération : overlay maintenu là où il est"
+            );
+        }
+        // Une sélection sûre reste mémorisée même sans déplacement : une clé
+        // périmée (écrans qui ont échangé leurs places) ou une sélection de
+        // l'ère Electron se répare au tick, sans attendre que la géométrie
+        // change — sinon le prochain démarrage repart de rien.
+        if selected.source.is_confident() {
+            persist_display_selection(app, target, selected.source, &config);
+        }
+        return false;
+    };
     tracing::debug!(
-        ?action,
         display_index = target.index,
+        ?selected.source,
         "écran modifié pendant l'exécution : overlay repositionné"
     );
     apply_overlay_geometry(&window, target_geometry);
     // A `displayKey` carries the size: keeping the old one would send the next
     // launch back to the previous geometry. `persist_display_selection` only
     // rewrites a confident selection, never a fallback.
-    let config = app.state::<AppState>().config_snapshot();
-    persist_display_selection(app, &target, source, &config);
+    persist_display_selection(app, target, selected.source, &config);
     true
 }
 
@@ -744,7 +801,10 @@ pub fn identify_displays(app: &AppHandle<Wry>) -> usize {
 /// Point d'entrée de l'affichage initial, appelé depuis `setup`.
 pub fn bootstrap_windows(app: &AppHandle<Wry>) {
     install_window_events(app);
-    let _display = position_overlay_on_selected_display(app);
+    // Démarrage : la fenêtre vient d'être créée, elle adopte l'écran résolu —
+    // y compris par le nom `\\.\DISPLAYn`, seule preuve restante du choix quand
+    // la géométrie a changé. Un repli ne réécrit jamais la sélection.
+    let _display = position_overlay(app, true);
     apply_overlay_flags(app);
     // First launch without a guild: open the board so pairing can happen (it
     // replaces the former `pairing` window).

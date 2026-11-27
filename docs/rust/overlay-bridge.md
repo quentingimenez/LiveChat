@@ -787,9 +787,11 @@ Réponse `MediaBoardTriggerResponse` :
     nécessaire ;
   - `guild_connecting` : connexion ou reconnexion en cours ;
   - `device_revoked` : appareil révoqué ;
-  - `guild_disabled` : overlay désactivé ou guilde coupée sur cet appareil ;
-  - `socket_unavailable` : aucune guilde, autre cause (erreur, non appairé), ou
-    canal de réponse fermé avant l'`ack` (session terminée).
+  - `overlay_disabled` : overlay désactivé dans les réglages (`enabled: false`) ;
+  - `guild_disabled` : cette guilde est coupée sur cet appareil ;
+  - `socket_unavailable` : aucune guilde, guilde pas encore supervisée, autre
+    cause (erreur, non appairé), ou canal de réponse fermé avant l'`ack`
+    (session terminée).
 - `ack_timeout` : aucun `ack` reçu dans les 10 s.
 - Refus serveur : `reason` = `error.code`, `message` = `error.message` ; sans
   objet `error`, `reason` vaut `trigger_refused`.

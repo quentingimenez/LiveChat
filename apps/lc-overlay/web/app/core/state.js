@@ -84,6 +84,7 @@ export const ERROR_LABELS = {
   guild_connecting: 'Connexion à la guilde en cours : réessaie dans un instant.',
   device_revoked: 'Cet appareil a été révoqué : appaire-le à nouveau.',
   guild_disabled: 'Guilde coupée sur cet appareil : réactive-la pour envoyer l’action.',
+  overlay_disabled: 'Overlay désactivé : réactive-le pour envoyer l’action.',
   ack_timeout: 'Le serveur n’a pas confirmé l’action.',
   no_active_guild: 'Aucune guilde active.',
   trigger_refused: 'Le serveur a refusé la lecture.',

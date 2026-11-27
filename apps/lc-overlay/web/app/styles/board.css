@@ -109,12 +109,14 @@
 }
 
 /* Card size: the slider of the grid's track width, always folded behind the
-   grid icon. The panel opens on hover or keyboard focus, to the left of the
+   grid icon. The panel opens on hover or keyboard focus, to the right of the
    icon and centred on its height: it fades with opacity rather than
    `visibility: hidden`, so the range stays in the tab order, and its 8 px
    `::before` bridge keeps the hover alive while the pointer crosses the gap
-   between the icon and the panel. It grows leftwards, over the filters rather
-   than the actions: the buttons keep their end of the row. */
+   between the icon and the panel. The action group sits at the row's end, so
+   the panel grows rightwards into the space `margin-left: auto` leaves there;
+   when the row leaves less than its 174 px, it floats over the actions rather
+   than pushing them. */
 .board-size {
   position: relative;
   display: flex;
@@ -140,7 +142,7 @@
 .board-size-panel {
   position: absolute;
   top: 50%;
-  right: calc(100% + 8px);
+  left: calc(100% + 8px);
   z-index: 20;
   display: flex;
   align-items: center;
@@ -152,7 +154,7 @@
   box-shadow: 0 12px 28px rgb(0 0 0 / 45%);
   opacity: 0;
   pointer-events: none;
-  transform: translate(4px, -50%);
+  transform: translate(-4px, -50%);
   transition: opacity 120ms ease, transform 120ms ease;
 }
 
@@ -160,7 +162,7 @@
   content: '';
   position: absolute;
   top: 0;
-  right: -8px;
+  left: -8px;
   bottom: 0;
   width: 8px;
 }
@@ -208,10 +210,11 @@
    actions add up to 741 px. The chips do not shrink and do not stack — they
    move as one horizontal group to a second row, with the filters and the size
    icon at its right end, while the search (which now fills its line) and the
-   actions keep the first. The size panel then opens vertically, hanging from
-   the icon's right edge, since the row has no room left for the horizontal
-   panel. Below the board window's 960 px minimum, this mode is a graceful
-   fallback rather than the everyday layout. */
+   actions keep the first. The size panel then turns vertical and keeps opening
+   to the left: the icon sits on the row's right edge, with only the view's
+   39 px padding beyond it, so a 46 px panel on its right would overflow the
+   window and add a horizontal scrollbar. Below the board window's 960 px
+   minimum, this mode is a graceful fallback rather than the everyday layout. */
 @container board-toolbar (max-width: 740px) {
   .board-tools {
     flex-wrap: wrap;
@@ -239,9 +242,17 @@
   }
 
   .board-size-panel {
+    left: auto;
+    right: calc(100% + 8px);
     flex-direction: column;
     gap: 4px;
     padding: 10px 6px 8px;
+    transform: translate(4px, -50%);
+  }
+
+  .board-size-panel::before {
+    left: auto;
+    right: -8px;
   }
 
   .board-size-range {

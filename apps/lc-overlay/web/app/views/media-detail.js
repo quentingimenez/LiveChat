@@ -615,18 +615,15 @@ export function createMediaDetail(options) {
     // at the card's default level.
     const defaultLevel = clampVolume(desc && desc.volume);
     const currentLevel = () => (previewLevel === null ? defaultLevel : previewLevel);
-    // The tooltip names the action, not a sentence: the preview is paused
-    // until its player says otherwise.
-    media.title = 'Lecture';
+    // The preview surface carries no tooltip: the pause veil shows the state
+    // and the card's own buttons name the actions.
 
     player.addEventListener('play', () => {
       el.classList.remove('is-paused');
-      media.title = 'Pause';
     });
     player.addEventListener('pause', () => {
       if (!el.classList.contains('is-out')) {
         el.classList.add('is-paused');
-        media.title = 'Lecture';
       }
     });
 

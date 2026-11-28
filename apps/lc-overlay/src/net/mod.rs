@@ -7,7 +7,11 @@
 
 pub mod api;
 pub(crate) mod artwork;
+pub(crate) mod fetch;
+pub(crate) mod media_download;
 pub mod pairing;
+#[cfg(test)]
+pub(crate) mod test_support;
 pub(crate) mod tls;
 pub mod upload;
 pub mod ws;

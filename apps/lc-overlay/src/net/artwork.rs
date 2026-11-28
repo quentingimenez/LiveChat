@@ -8,52 +8,15 @@
 
 use std::time::Duration;
 
-use reqwest::header::{CONTENT_TYPE, LOCATION};
-use url::Url;
+use reqwest::header::CONTENT_TYPE;
 
+use crate::net::fetch::get;
 use crate::net::upload::{normalize_content_type, MAX_ARTWORK_BYTES};
+
+pub(crate) use crate::net::fetch::LinkError;
 
 /// Durée maximale du téléchargement complet.
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(20);
-/// Durée maximale pour ouvrir la connexion.
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-/// Redirections suivies avant d'abandonner.
-const MAX_REDIRECTS: usize = 3;
-
-/// Pourquoi un lien n'a pas donné d'image ; [`LinkError::code`] est ce que le
-/// board traduit en message (`core/artwork.js`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LinkError {
-    /// Pas un lien HTTP(S), ou redirection vers autre chose.
-    Invalid,
-    /// Échec DNS, connexion, TLS ou délai dépassé.
-    Unreachable,
-    /// Plus de [`MAX_REDIRECTS`] redirections.
-    TooManyRedirects,
-    /// Le site a répondu autre chose qu'un succès.
-    Http(u16),
-    /// La réponse n'est pas une image.
-    NotImage,
-    /// L'image dépasse [`MAX_ARTWORK_BYTES`].
-    TooLarge,
-    /// La réponse est vide.
-    Empty,
-}
-
-impl LinkError {
-    /// Code stable lu par `artworkLinkError` côté web.
-    pub(crate) fn code(self) -> String {
-        match self {
-            LinkError::Invalid => "invalid_link".to_string(),
-            LinkError::Unreachable => "unreachable".to_string(),
-            LinkError::TooManyRedirects => "too_many_redirects".to_string(),
-            LinkError::Http(status) => format!("http_{status}"),
-            LinkError::NotImage => "not_image".to_string(),
-            LinkError::TooLarge => "too_large".to_string(),
-            LinkError::Empty => "empty".to_string(),
-        }
-    }
-}
 
 /// Image téléchargée et son type MIME final.
 #[derive(Debug)]
@@ -62,24 +25,7 @@ pub(crate) struct Downloaded {
     pub(crate) bytes: Vec<u8>,
 }
 
-/// Analyse le lien : URL absolue HTTP(S), sans identifiants.
-pub(crate) fn parse_link(raw: &str) -> Result<Url, LinkError> {
-    let url = Url::parse(raw.trim()).map_err(|_| LinkError::Invalid)?;
-    check_link(&url)?;
-    Ok(url)
-}
-
-fn check_link(url: &Url) -> Result<(), LinkError> {
-    if url.host_str().is_none() || !matches!(url.scheme(), "http" | "https") {
-        return Err(LinkError::Invalid);
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(LinkError::Invalid);
-    }
-    Ok(())
-}
-
-/// Télécharge l'image de `raw`, en suivant jusqu'à [`MAX_REDIRECTS`]
+/// Télécharge l'image de `raw`, en suivant jusqu'à [`crate::net::fetch::MAX_REDIRECTS`]
 /// redirections.
 pub(crate) async fn download(raw: &str) -> Result<Downloaded, LinkError> {
     tokio::time::timeout(DOWNLOAD_TIMEOUT, download_inner(raw))
@@ -88,46 +34,11 @@ pub(crate) async fn download(raw: &str) -> Result<Downloaded, LinkError> {
 }
 
 async fn download_inner(raw: &str) -> Result<Downloaded, LinkError> {
-    let mut target = parse_link(raw)?;
-    let client = reqwest::Client::builder()
-        .connect_timeout(CONNECT_TIMEOUT)
-        .user_agent(concat!("lc-overlay/", env!("CARGO_PKG_VERSION")))
-        // Redirections suivies à la main pour les plafonner et revalider
-        // chaque cible (même règle que le chemin WebView).
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|_| LinkError::Unreachable)?;
-    for _ in 0..=MAX_REDIRECTS {
-        let response = client
-            .get(target.clone())
-            .send()
-            .await
-            .map_err(|_| LinkError::Unreachable)?;
-        let Some(location) = redirect_of(&response) else {
-            return read_picture(response).await;
-        };
-        target = target.join(&location).map_err(|_| LinkError::Invalid)?;
-        check_link(&target)?;
-    }
-    Err(LinkError::TooManyRedirects)
-}
-
-fn redirect_of(response: &reqwest::Response) -> Option<String> {
-    if !response.status().is_redirection() {
-        return None;
-    }
-    response
-        .headers()
-        .get(LOCATION)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
+    let response = get(raw).await?;
+    read_picture(response).await
 }
 
 async fn read_picture(response: reqwest::Response) -> Result<Downloaded, LinkError> {
-    let status = response.status();
-    if !status.is_success() {
-        return Err(LinkError::Http(status.as_u16()));
-    }
     let declared = response
         .headers()
         .get(CONTENT_TYPE)
@@ -190,90 +101,11 @@ fn sniff_type(bytes: &[u8]) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use crate::net::test_support::{http_response, redirect, serve};
     use tokio::net::TcpListener;
-    use tokio::task::JoinHandle;
 
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR";
     const WEBP: &[u8] = b"RIFF\x24\x00\x00\x00WEBPVP8 ";
-
-    fn http_response(status: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
-        let mut head = format!("HTTP/1.1 {status}\r\n");
-        for (name, value) in headers {
-            head.push_str(&format!("{name}: {value}\r\n"));
-        }
-        head.push_str(&format!(
-            "content-length: {}\r\nconnection: close\r\n\r\n",
-            body.len()
-        ));
-        let mut response = head.into_bytes();
-        response.extend_from_slice(body);
-        response
-    }
-
-    fn redirect(location: &str) -> Vec<u8> {
-        http_response("302 Found", &[("location", location)], b"")
-    }
-
-    /// Sert chaque requête par une connexion dédiée, avec la réponse que
-    /// calcule `reply` à partir du chemin.
-    async fn serve(
-        mut reply: impl FnMut(&str) -> Vec<u8> + Send + 'static,
-    ) -> (String, JoinHandle<()>) {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("écoute");
-        let address = listener.local_addr().expect("adresse");
-        let task = tokio::spawn(async move {
-            loop {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let mut request = Vec::new();
-                let mut buffer = [0u8; 1024];
-                loop {
-                    let read = match socket.read(&mut buffer).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(read) => read,
-                    };
-                    request.extend_from_slice(&buffer[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let head = String::from_utf8_lossy(&request);
-                let path = head
-                    .split_whitespace()
-                    .nth(1)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| "/".to_string());
-                if socket.write_all(&reply(&path)).await.is_err() {
-                    return;
-                }
-            }
-        });
-        (format!("http://{address}"), task)
-    }
-
-    #[test]
-    fn parse_link_keeps_http_links_and_refuses_the_rest() {
-        assert!(parse_link("https://valorantinfo.com/images/us/chamber.webp").is_ok());
-        assert!(parse_link("  http://example.com/a.png  ").is_ok());
-        assert_eq!(parse_link("a.png"), Err(LinkError::Invalid));
-        assert_eq!(parse_link("/a.png"), Err(LinkError::Invalid));
-        assert_eq!(
-            parse_link("ftp://example.com/a.png"),
-            Err(LinkError::Invalid)
-        );
-        assert_eq!(parse_link("javascript:alert(1)"), Err(LinkError::Invalid));
-        assert_eq!(
-            parse_link("https://user:pass@example.com/a.png"),
-            Err(LinkError::Invalid)
-        );
-        assert_eq!(
-            parse_link("https://user@example.com/a.png"),
-            Err(LinkError::Invalid)
-        );
-        assert_eq!(parse_link(""), Err(LinkError::Invalid));
-    }
 
     #[test]
     fn sniff_type_knows_the_formats_the_server_accepts() {
@@ -452,16 +284,5 @@ mod tests {
             .await
             .expect_err("injoignable");
         assert_eq!(error, LinkError::Unreachable);
-    }
-
-    #[test]
-    fn codes_are_stable_for_the_board() {
-        assert_eq!(LinkError::Invalid.code(), "invalid_link");
-        assert_eq!(LinkError::Unreachable.code(), "unreachable");
-        assert_eq!(LinkError::TooManyRedirects.code(), "too_many_redirects");
-        assert_eq!(LinkError::Http(500).code(), "http_500");
-        assert_eq!(LinkError::NotImage.code(), "not_image");
-        assert_eq!(LinkError::TooLarge.code(), "too_large");
-        assert_eq!(LinkError::Empty.code(), "empty");
     }
 }

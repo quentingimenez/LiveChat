@@ -31,7 +31,8 @@
 // class are resolved by those tokens, so this module never queries the system
 // preference itself.
 
-import { h } from '../core/dom.js';
+import { openContextMenu } from '../core/contextmenu.js';
+import { h, icon } from '../core/dom.js';
 import { DOUBLE_CLICK_WINDOW } from '../core/detail-actions.js';
 import { bindRangeFill, paintRange } from '../core/range-fill.js';
 import {
@@ -55,11 +56,14 @@ import {
   playTimeline,
 } from '../core/detail-motion.js';
 import { formatDuration } from '../core/format.js';
+import { invoke } from '../core/ipc.js';
+import { mediaDownloadError } from '../core/media-download.js';
 import { ratioAt, seekBy, seekToRatio } from '../core/media-controls.js';
 import { createMediaPrefetcher } from '../core/media-prefetch.js';
 import { playbackPlan } from '../core/media-playback.js';
 import { createPreviewProgress } from '../core/preview-progress.js';
 import { mediaPlaybackGain, playbackSettings } from '../core/sound.js';
+import { toast } from '../core/toast.js';
 
 const BODY_ESTIMATE = 220;
 const MAX_WIDTH = 460;
@@ -234,6 +238,33 @@ const fullscreenExitIcon = () => glyph([
 const backIcon = () => glyph(['M19 12H5', 'M11 6l-6 6 6 6']);
 
 const pictureIcon = () => glyph(['M4 5h16v14H4zM4 16l5-5 4 4 3-3 4 4']);
+
+// Saves the media the details window shows where the user wants it. The shell
+// does the transfer — a WebView cannot write a file and the media URL is signed
+// — after opening a native "save as" dialog: cancelling it writes nothing and
+// stays silent, and a toast only speaks for a finished transfer or a failure.
+async function downloadMedia(desc) {
+  const url = desc && typeof desc.url === 'string' ? desc.url.trim() : '';
+  if (!url) {
+    toast({ message: 'Média indisponible : rien à télécharger.', kind: 'error' });
+    return;
+  }
+  const name = desc && typeof desc.label === 'string' ? desc.label.trim() : '';
+  try {
+    const saved = await invoke('media_download', { payload: { url, name } });
+    if (!saved || saved.canceled) {
+      return;
+    }
+    const fileName = typeof saved.fileName === 'string' ? saved.fileName : '';
+    toast({
+      message: fileName ? `Média enregistré : ${fileName}` : 'Média enregistré.',
+      kind: 'success',
+      timeout: 7000,
+    });
+  } catch (error) {
+    toast({ message: mediaDownloadError(error), kind: 'error', timeout: 9000 });
+  }
+}
 
 function previewGlyph(kind) {
   const box = document.createElement('div');
@@ -1277,7 +1308,7 @@ export function createMediaDetail(options) {
   // keeps the media element for playback and replaces only its chrome, with the
   // same compositor-driven fill as the hover preview. It is attached to the
   // stage, never to a still: an image has no player and gets no bar.
-  function attachPlayerControls(stage, player, kind, initialLevel) {
+  function attachPlayerControls(stage, player, kind, initialLevel, download) {
     player.controls = false;
     let level = clampVolume(initialLevel);
 
@@ -1325,6 +1356,15 @@ export function createMediaDetail(options) {
       onInput: () => applyVolume(),
     });
     bindRangeFill(volume);
+    const downloadButton = typeof download === 'function'
+      ? h('button', {
+        type: 'button',
+        class: 'hp-ctl-button hp-ctl-download',
+        'aria-label': 'Télécharger le média',
+        title: 'Télécharger le média',
+        onClick: () => startDownload(),
+      }, icon('download'))
+      : null;
     const fullscreen = kind === 'video' && typeof stage.requestFullscreen === 'function'
       ? h('button', {
         type: 'button',
@@ -1336,6 +1376,9 @@ export function createMediaDetail(options) {
       : null;
 
     root.append(playButton, clock, track, muteButton, volume);
+    if (downloadButton) {
+      root.append(downloadButton);
+    }
     if (fullscreen) {
       root.append(fullscreen);
     }
@@ -1520,6 +1563,33 @@ export function createMediaDetail(options) {
       }
     };
 
+    // The transfer can last several seconds for a video: the button stays busy
+    // meanwhile, so a second click cannot start a second save.
+    const startDownload = () => {
+      if (!downloadButton || downloadButton.disabled) {
+        return;
+      }
+      const pending = download();
+      if (!pending || typeof pending.then !== 'function') {
+        return;
+      }
+      downloadButton.disabled = true;
+      pending.finally(() => {
+        downloadButton.disabled = false;
+      });
+    };
+
+    // A click on the media itself toggles playback, like the hover preview. The
+    // bar keeps its own clicks: its play button replaces its own glyph while the
+    // click bubbles, so the click's target is already detached when this runs —
+    // the dispatch path, not the target, tells where the click happened.
+    const onStageClick = (event) => {
+      if (event.composedPath().includes(root)) {
+        return;
+      }
+      togglePlay();
+    };
+
     bind(player, 'play', syncPlay);
     bind(player, 'playing', syncPlay);
     bind(player, 'pause', syncPlay);
@@ -1534,6 +1604,7 @@ export function createMediaDetail(options) {
       syncPlay();
     });
     bind(player, 'volumechange', syncVolume);
+    bind(stage, 'click', onStageClick);
     bind(track, 'pointerdown', onPointerDown);
     bind(track, 'pointermove', onPointerMove);
     bind(track, 'pointerup', onPointerUp);
@@ -1547,6 +1618,7 @@ export function createMediaDetail(options) {
     syncTime();
     syncVolume();
     syncFullscreen();
+    stage.classList.add('is-playable');
     stage.appendChild(root);
 
     return {
@@ -1562,6 +1634,7 @@ export function createMediaDetail(options) {
         bindings.length = 0;
         progress.destroy();
         root.remove();
+        stage.classList.remove('is-playable');
       },
     };
   }
@@ -1644,7 +1717,17 @@ export function createMediaDetail(options) {
     if (player) {
       player.controls = false;
     }
-    const controls = player ? attachPlayerControls(stage, player, kind, volume) : null;
+    // Right click saves the media too: it is the gesture a picture can offer
+    // (it has no bar), and the same one works on a video or an audio file.
+    const download = url ? () => downloadMedia(desc) : null;
+    if (download) {
+      stage.addEventListener('contextmenu', (event) => {
+        openContextMenu(event, [
+          { label: 'Télécharger le média', icon: 'download', onSelect: () => download() },
+        ]);
+      });
+    }
+    const controls = player ? attachPlayerControls(stage, player, kind, volume, download) : null;
     return { stage, player, kind, poster, controls };
   }
 

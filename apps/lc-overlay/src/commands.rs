@@ -19,6 +19,7 @@ use lc_protocol::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Manager, State, WebviewWindow, Wry};
+use tauri_plugin_dialog::DialogExt;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
@@ -27,6 +28,8 @@ use crate::events;
 use crate::layout_preview;
 use crate::net::api;
 use crate::net::artwork;
+use crate::net::fetch;
+use crate::net::media_download;
 use crate::net::pairing::{self, PairingRequest};
 use crate::net::upload::{self, UploadEntry, UploadRegistry};
 use crate::net::ws::{self, NetCommand};
@@ -101,6 +104,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "media_upload_cancel",
             "media_artwork_upload",
             "media_artwork_link",
+            "media_download",
         ],
     ),
 ];
@@ -1757,6 +1761,71 @@ pub async fn media_artwork_link(
     })
 }
 
+/// Réponse de `media_download` : fichier choisi puis écrit, ou annulation.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaDownloadResponse {
+    pub canceled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl MediaDownloadResponse {
+    /// L'utilisateur a fermé la boîte de dialogue : rien n'a été écrit.
+    fn canceled() -> Self {
+        Self {
+            canceled: true,
+            file_name: None,
+            path: None,
+        }
+    }
+}
+
+/// `media_download` — asks where to save a board media, then writes it there.
+///
+/// The board only has a signed media URL and the webview cannot write files:
+/// the shell opens a native "save as" dialog (suggesting the media title) and
+/// streams the media into the chosen file. Cancelling writes nothing.
+#[tauri::command]
+pub async fn media_download(
+    window: WebviewWindow<Wry>,
+    app: AppHandle<Wry>,
+    payload: Value,
+) -> Result<MediaDownloadResponse, String> {
+    ensure_allowed(&window, "media_download")?;
+    let url = payload
+        .get("url")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+        .ok_or_else(|| fetch::LinkError::Invalid.code())?
+        .to_string();
+    let label = payload.get("name").and_then(Value::as_str).unwrap_or("");
+    let suggested = media_download::suggested_name(&url, label);
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Enregistrer le média")
+        .set_file_name(suggested)
+        .save_file(move |path| {
+            drop(sender.send(path));
+        });
+    let Some(target) = receiver.await.map_err(|_| "io".to_string())? else {
+        return Ok(MediaDownloadResponse::canceled());
+    };
+    let target = target.into_path().map_err(|_| "io".to_string())?;
+    let saved = media_download::save(&url, &target)
+        .await
+        .map_err(|error| error.code())?;
+    Ok(MediaDownloadResponse {
+        canceled: false,
+        file_name: Some(saved.file_name),
+        path: Some(saved.path.to_string_lossy().into_owned()),
+    })
+}
+
 /// `media_upload_cancel` — aborts an in-flight upload (`true` if it existed).
 #[tauri::command]
 pub fn media_upload_cancel(
@@ -1920,6 +1989,7 @@ mod tests {
         assert!(command_allowed("board", "media_upload_chunk"));
         assert!(command_allowed("board", "media_artwork_upload"));
         assert!(command_allowed("board", "media_artwork_link"));
+        assert!(command_allowed("board", "media_download"));
         assert!(command_allowed("board", "media_upload_finish"));
         assert!(command_allowed("board", "media_upload_cancel"));
         assert!(!command_allowed("board", "overlay_renderer_ready"));
@@ -1944,6 +2014,7 @@ mod tests {
             "media_upload_cancel",
             "media_artwork_upload",
             "media_artwork_link",
+            "media_download",
         ] {
             assert!(!command_allowed("overlay", command), "{command}");
         }
@@ -1955,6 +2026,30 @@ mod tests {
         assert!(!command_allowed("unknown", "overlay_get_config"));
         assert!(!command_allowed("unknown", "board_take_pending_view"));
         assert!(!command_allowed("", "overlay_get_config"));
+    }
+
+    #[test]
+    fn a_download_response_reports_the_file_or_the_cancel() {
+        use super::MediaDownloadResponse;
+        use serde_json::json;
+
+        let canceled = serde_json::to_value(MediaDownloadResponse::canceled()).expect("json");
+        assert_eq!(canceled, json!({ "canceled": true }));
+
+        let saved = serde_json::to_value(MediaDownloadResponse {
+            canceled: false,
+            file_name: Some("Clip Discord.mp4".to_string()),
+            path: Some("C:\\Téléchargements\\Clip Discord.mp4".to_string()),
+        })
+        .expect("json");
+        assert_eq!(
+            saved,
+            json!({
+                "canceled": false,
+                "fileName": "Clip Discord.mp4",
+                "path": "C:\\Téléchargements\\Clip Discord.mp4",
+            })
+        );
     }
 
     #[test]

@@ -198,6 +198,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
                 .build(),
         )
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(handler_closures())
@@ -243,6 +244,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::media_upload_cancel,
             commands::media_artwork_upload,
             commands::media_artwork_link,
+            commands::media_download,
         ])
         .setup(setup)
         .build(context)?;

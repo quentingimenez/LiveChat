@@ -880,7 +880,13 @@ function renderAppearance() {
   );
 }
 
-function renderAbout(settings) {
+function renderUpdates(settings) {
+  const autoUpdate = h('input', {
+    id: 'settings-auto-update',
+    type: 'checkbox',
+    checked: settings.autoUpdate !== false,
+    onChange: (event) => applyPatch({ autoUpdate: event.target.checked }),
+  });
   const update = currentUpdateStatus() || {};
   const busy = checkingUpdates || update.state === 'checking' || update.state === 'downloading';
   const button =
@@ -897,6 +903,19 @@ function renderAbout(settings) {
         );
   const message = updateError || update.message;
   return section(
+    'Mise à jour',
+    switchRow(
+      'Installer automatiquement',
+      autoUpdate,
+      'settings-auto-update',
+      'Sans clic, dès que l’overlay est libre ; désactivé, un bandeau en haut de la fenêtre propose l’installation.',
+    ),
+    controlRow('Version', [button, message ? hint(message) : null]),
+  );
+}
+
+function renderAbout(settings) {
+  return section(
     'À propos',
     h(
       'div',
@@ -909,8 +928,6 @@ function renderAbout(settings) {
         h('p', { class: 'meta' }, `Version ${settings.version || '—'}`),
       ),
     ),
-    h('div', { class: 'settings-control' }, button),
-    message ? hint(message) : null,
   );
 }
 
@@ -961,7 +978,8 @@ export function renderSettings() {
   }
   const settings = deviceSettings;
   // The order of the sections is fixed (theme.test.mjs pins Démarrage,
-  // Apparence and À propos): Apparence stays between the two.
+  // Apparence, Mise à jour and À propos): Mise à jour stays between the last
+  // two.
   return settingsPage(
     renderDisplay(settings),
     renderPlayback(settings),
@@ -970,6 +988,7 @@ export function renderSettings() {
     renderProfile(settings),
     renderStartup(settings),
     renderAppearance(),
+    renderUpdates(settings),
     renderAbout(settings),
   );
 }

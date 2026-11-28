@@ -144,11 +144,18 @@ test('Paramètres offers the three choices and applies them at once', () => {
     assert.match(settings, new RegExp(`'${label}'`));
   }
   assert.match(settings, /setThemePreference\(event\.target\.value\)/);
-  const order = ['renderStartup(settings)', 'renderAppearance()', 'renderAbout(settings)'].map((call) =>
-    settings.indexOf(call),
-  );
+  const order = [
+    'renderStartup(settings)',
+    'renderAppearance()',
+    'renderUpdates(settings)',
+    'renderAbout(settings)',
+  ].map((call) => settings.indexOf(call));
   assert.ok(order.every((index) => index > 0));
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'Apparence sits between Démarrage and À propos');
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+    'Apparence and Mise à jour sit between Démarrage and À propos',
+  );
 });
 
 test('the About logo follows the surface', () => {

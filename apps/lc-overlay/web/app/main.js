@@ -37,6 +37,7 @@ import { tickQueueClock } from './views/queue.js';
 import { renderRail } from './views/rail.js';
 import { initDeviceSettings, openSettings } from './views/settings.js';
 import { showSettingsRemoteUpdate } from './views/settings-banner.js';
+import { initUpdateNotice } from './views/update-notice.js';
 import { initUploadIngestion } from './views/uploads.js';
 import { renderView } from './views/view.js';
 
@@ -58,6 +59,8 @@ listen('overlay://guilds', applyGuilds);
 
 // Device settings: changes made elsewhere and the tray's « Paramètres… » view.
 initDeviceSettings();
+// A ready update only shows a banner when automatic installs are disabled.
+initUpdateNotice();
 
 // The device profile follows the linked Discord account: refresh every six
 // hours like the server does. Guild loads and a fresh link sync sooner. The

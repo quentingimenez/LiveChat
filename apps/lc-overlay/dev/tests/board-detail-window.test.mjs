@@ -555,14 +555,14 @@ test('the action buttons keep their focus ring clear of the column clip edge', (
   );
 });
 
-test('the preview tooltip names the action: « Lecture » or « Pause »', () => {
+test('the preview surface carries no tooltip', () => {
+  // The preview used to name its click action in a title (« Lecture » /
+  // « Pause »). The pause veil shows the state and the card's own buttons
+  // name the actions; a tooltip on a media surface is noise.
   const attach = /\n  function attachPlayer\(el, media, player, card, desc\) \{([\s\S]*?)\n  \}/.exec(mediaDetail);
   assert.ok(attach, 'attachPlayer is found');
-  assert.match(attach[1], /media\.title = 'Lecture';/, 'a paused preview offers « Lecture »');
-  assert.match(attach[1], /player\.addEventListener\('play'[\s\S]*?media\.title = 'Pause';/);
-  assert.match(attach[1], /player\.addEventListener\('pause'[\s\S]*?media\.title = 'Lecture';/);
-  assert.doesNotMatch(mediaDetail, /Cliquer pour mettre en pause|Cliquer pour reprendre la lecture/);
-  // The accessible name stays descriptive even though the tooltip is terse.
+  assert.doesNotMatch(attach[1], /media\.title\s*=/, 'the preview sets no title');
+  // The accessible name stays descriptive even though there is no tooltip.
   assert.match(mediaDetail, /Mettre l’aperçu en pause/);
   assert.match(mediaDetail, /Lire l’aperçu/);
 });

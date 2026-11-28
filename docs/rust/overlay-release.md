@@ -157,20 +157,27 @@ Preuves collectées sur les artefacts de la build du 2026-11-10 :
   la release marquée *Latest* fait foi (bêta : `releases/download/next/latest.json`).
 - `updater.rs` vérifie dès l'ouverture de la board (à chaque ouverture), au
   démarrage puis toutes les 6 h (ces deux-là en build release seulement ; le
-  bouton « Rechercher une mise à jour » des Paramètres marche partout). Une version
+  bouton « Rechercher une mise à jour » de Paramètres → Mise à jour marche
+  partout). Une version
   plus récente est téléchargée et sa signature vérifiée en arrière-plan, puis
   gardée en mémoire.
-- En build release, l'installation est automatique, sans clic. Dès qu'une
-  version est prête, un superviseur l'installe quand l'overlay est resté libre
-  60 s : aucun média à l'écran ni en file, aucun envoi en cours, board masquée,
-  aucune pose de zone en cours. Il reprend l'attente dès que l'overlay redevient
-  occupé, et un échec ne boucle pas (la vérification suivante peut retélécharger
-  la mise à jour).
+- En build release, l'installation est automatique, sans clic, quand le réglage
+  `autoUpdate` est activé (défaut). Dès qu'une version est prête, un superviseur
+  l'installe quand l'overlay est resté libre 60 s : aucun média à l'écran ni en
+  file, aucun envoi en cours, board masquée, aucune pose de zone en cours. Il
+  reprend l'attente dès que l'overlay redevient occupé, et un échec ne boucle
+  pas (la vérification suivante peut retélécharger la mise à jour).
+- `autoUpdate: false` (Paramètres → Mise à jour) désarme le superviseur et
+  l'installation à la fermeture ; la vérification et le téléchargement restent
+  automatiques. Un bandeau en haut de la board annonce alors le téléchargement,
+  puis propose « Redémarrer pour installer » et « Plus tard » (report limité à
+  cette version). Une erreur d'installation s'y affiche avec un bouton pour
+  relancer une vérification.
 - Si l'overlay n'a jamais été libre, la mise à jour est installée à la fermeture
   (« Quitter ») sans relancer LiveChat : elle s'applique au démarrage suivant.
-  L'installation manuelle et l'état de la mise à jour sont regroupés dans
-  Paramètres → À propos ; la board n'affiche plus de bandeau et le tray n'a plus
-  d'entrée d'installation. L'installeur NSIS tourne en mode passif
+  L'état, l'installation manuelle et le réglage d'installation automatique sont
+  regroupés dans Paramètres → Mise à jour ; le tray n'a plus d'entrée
+  d'installation. L'installeur NSIS tourne en mode passif
   (`installMode: passive`, barre de progression sans question) et relance
   LiveChat, sauf à la fermeture.
 - Limite Windows : un arrêt ou une déconnexion peut terminer le process sans

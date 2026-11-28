@@ -1,7 +1,7 @@
-// Shared updater status store (core/update-status.js): Paramètres → À propos is
-// now the only surface that shows updater state, so this file protects the
-// store contract it relies on (current value, clearing, subscriptions). The
-// board banner and its `updateNotice` helper were removed on purpose.
+// Shared updater status store (core/update-status.js): Paramètres → Mise à jour
+// and the board banner both read it, so this file protects the store contract
+// (current value, clearing, subscriptions). The banner decision itself
+// (`updateNotice`) is covered by update-notice.test.mjs.
 //
 // The updater's own policy is tested in Rust (src/updater.rs).
 

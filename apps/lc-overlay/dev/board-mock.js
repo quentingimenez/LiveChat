@@ -9,7 +9,8 @@
 // ?nozone (le shell ne connaît aucun écran : l'éditeur image n'a alors pas de
 // zone d'affichage et retombe sur son estimation 1920 × 1080),
 // ?update=ready|downloading (état de l'updater au démarrage, visible dans
-// Paramètres → À propos).
+// Paramètres → Mise à jour) ; ?autoupdate=off désactive l'installation
+// automatique pour voir le bandeau de mise à jour en haut de la board.
 // Depuis la console : `__mock.emit(event, payload)`,
 // `__mock.removeGuild(guildId, reason)`, `__mock.finishPlaying()`,
 // `__mock.reconnect(guildId)` (coupure puis retour du WebSocket),
@@ -17,7 +18,8 @@
 // `__mock.openSettings()` (équivalent de l'entrée tray « Paramètres… »),
 // `__mock.settings` (réglages simulés).
 // Paramètres : settings_get/settings_set (validation des écrans, volumes,
-// pause, démarrage automatique, raccourcis, disposition et profil),
+// pause, démarrage automatique, mises à jour automatiques, raccourcis,
+// disposition et profil),
 // settings_identify_displays, settings_test_media (overlay_busy si un média
 // passe), settings_preview_layout (dernier brouillon dans
 // `__mock.previewLayouts`), settings_placement_start / settings_placement_cancel
@@ -106,8 +108,10 @@
   const GUILD_VOLUMES = { 111: 0.4, 222: 0.75, 333: 0.5, 444: 1, 555: 1 };
 
   // `?update=ready|downloading` : état de l'updater au démarrage, visible dans
-  // Paramètres → À propos (l'erreur d'installation y est testable aussi).
+  // Paramètres → Mise à jour (l'erreur d'installation y est testable aussi).
+  // `?autoupdate=off` : installation automatique désactivée, donc bandeau.
   const UPDATE_VERSION = '3.2.0';
+  const AUTO_UPDATE = new URLSearchParams(location.search).get('autoupdate') !== 'off';
 
   function initialUpdate() {
     const flag = new URLSearchParams(location.search).get('update');
@@ -118,7 +122,7 @@
       state: flag,
       currentVersion: '3.1.0',
       availableVersion: UPDATE_VERSION,
-      message: flag === 'ready' ? `La version ${UPDATE_VERSION} est prête : installation automatique dès que l'overlay est libre.` : `Téléchargement de la version ${UPDATE_VERSION}…`,
+      message: flag === 'ready' ? `La version ${UPDATE_VERSION} est prête à être installée.` : `Téléchargement de la version ${UPDATE_VERSION}…`,
     };
   }
 
@@ -147,6 +151,7 @@
     previewSound: false,
     detailSound: false,
     autoStart: false,
+    autoUpdate: AUTO_UPDATE,
     shortcuts: { stop: 'CommandOrControl+Shift+S', stopLocal: null, muteAll: null, openBoard: null },
     layout: { zone: { x: 0, y: 0, width: 1, height: 1 }, align: 'center' },
     placing: false,
@@ -438,6 +443,7 @@
       'previewSound',
       'detailSound',
       'autoStart',
+      'autoUpdate',
     ]) {
       if (!(key in input)) {
         continue;
@@ -554,7 +560,7 @@
     return delay(300)
       .then(() => setUpdate('downloading', '3.2.0', 'Téléchargement de la version 3.2.0…'))
       .then(() => delay(600))
-      .then(() => setUpdate('ready', '3.2.0', "La version 3.2.0 est prête : installation automatique dès que l'overlay est libre."));
+      .then(() => setUpdate('ready', '3.2.0', 'La version 3.2.0 est prête à être installée.'));
   }
 
   function api(payload) {

@@ -402,7 +402,7 @@ Commandes exposées (via `tauri::generate_handler!`) :
 `overlay_report_playback_state`, `overlay_report_playback_stop`,
 `pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
 `media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `overlay_check_updates`,
-`overlay_install_update`, `board_take_pending_view`, `settings_get`,
+`overlay_install_update`, `open_repository`, `board_take_pending_view`, `settings_get`,
 `settings_set`, `settings_identify_displays`, `settings_test_media`,
 `settings_preview_layout`, `settings_placement_start`,
 `settings_placement_cancel`, `overlay_placement_finish` et les commandes de

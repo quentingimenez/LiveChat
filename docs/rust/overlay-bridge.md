@@ -652,6 +652,9 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 - `overlay_install_update` (board) installe la version prête immédiatement :
   l'installeur passif quitte l'overlay et le relance. Sans version prête :
   erreur « Aucune mise à jour prête à installer. ».
+- `open_repository` (board) remet l'URL fixe du dépôt public au navigateur par
+  défaut. La board ne peut pas ouvrir de nouvelle fenêtre : le lien GitHub de
+  Paramètres → À propos passe par cette commande plutôt que par `target="_blank"`.
 - `UpdateStatus` = `{state, currentVersion, availableVersion, message}` avec
   `state` ∈ `idle`, `checking`, `downloading`, `up_to_date`, `ready`, `error` ;
   il est aussi publié dans `settings.update` à chaque changement

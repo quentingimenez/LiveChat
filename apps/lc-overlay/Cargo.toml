@@ -46,6 +46,7 @@ thiserror = { workspace = true }
 time = { workspace = true }
 lc-protocol = { workspace = true }
 lc-domain = { workspace = true }
+tauri-plugin-dialog = "2"
 
 # Blob Win32 isolé (styles étendus + topmost) : même version que Tauri 2.12.5,
 # pour partager le type `HWND` sans conversion. Windows uniquement : la CI Linux

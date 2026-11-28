@@ -36,6 +36,7 @@ tokio = { version = "1", features = [
     "sync",
     "signal",
     "fs",
+    "io-util",
 ] }
 tracing = "0.1"
 

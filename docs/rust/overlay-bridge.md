@@ -881,6 +881,22 @@ Chaque requête a un délai de 30 min et un délai de connexion de 15 s.
   `core/artwork.js` traduit en message : `invalid_link`, `unreachable`,
   `too_many_redirects`, `http_<statut>`, `not_image`, `too_large`, `empty`.
 
+#### Téléchargement d'un média : `media_download`
+
+- `invoke('media_download', { payload: { url, name } })` →
+  `{ "canceled": false, "fileName": "Clip Discord.mp4", "path": "C:\\…" }`, ou
+  `{ "canceled": true }` quand la boîte de dialogue est fermée. Le shell ouvre
+  une boîte de dialogue native « Enregistrer sous » (nom proposé : le titre du
+  média, complété par l'extension lisible dans l'URL), puis télécharge l'URL
+  signée dans le fichier choisi : le WebView ne peut pas écrire de fichier. Le
+  nom et l'extension choisis sont conservés ; une extension manquante est
+  complétée par celle du média (sinon du type MIME, sinon `.bin`). Mêmes limites
+  réseau que `media_artwork_link` (HTTP(S) sans identifiants, 3 redirections),
+  300 s au total, 500 Mio, et une page HTML/JSON n'est jamais enregistrée. Les
+  échecs sont des codes que `core/media-download.js` traduit en message :
+  `invalid_link`, `unreachable`, `too_many_redirects`, `http_<statut>`,
+  `not_media`, `too_large`, `empty`, `io`.
+
 ### 13.4 Ingestion asynchrone et rafraîchissement du board
 
 Les routes d'ajout de média répondent désormais **`202 {"ingestionId": "<uuid>"}`**

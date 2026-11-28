@@ -759,6 +759,11 @@
   background: var(--slate-900);
 }
 
+/* A player's stage toggles playback on a click: the cursor says so. */
+.hp-page-stage.is-playable {
+  cursor: pointer;
+}
+
 .hp-page-stage::before {
   content: '';
   position: absolute;
@@ -846,6 +851,13 @@
 
 .hp-ctl-button:hover {
   background: rgba(255, 255, 255, 0.14);
+}
+
+/* The download button keeps this look for the whole transfer. */
+.hp-ctl-button:disabled {
+  background: transparent;
+  cursor: default;
+  opacity: 0.55;
 }
 
 .hp-ctl-button:focus-visible,

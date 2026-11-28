@@ -55,7 +55,7 @@ apps/lc-overlay/
     tray.rs               # icône + modèle de menu pur + handlers
     device_settings.rs    # réglages appareil retirés du tray (page Paramètres)
     shortcuts.rs          # global-shortcuts / mediaBindings (squelette)
-    updater.rs            # vérification périodique, téléchargement, installation automatique au repos
+    updater.rs            # vérification périodique, téléchargement, installation auto au repos (réglage autoUpdate)
     commands.rs           # commandes bridge (config, télémétrie, appairage, médias du board) + 2 commandes update
 ```
 
@@ -402,7 +402,7 @@ Commandes exposées (via `tauri::generate_handler!`) :
 `overlay_report_playback_state`, `overlay_report_playback_stop`,
 `pairing_consume`, `media_board_get_bindings`, `media_board_set_bindings`,
 `media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `overlay_check_updates`,
-`overlay_install_update`, `board_take_pending_view`, `settings_get`,
+`overlay_install_update`, `open_repository`, `board_take_pending_view`, `settings_get`,
 `settings_set`, `settings_identify_displays`, `settings_test_media`,
 `settings_preview_layout`, `settings_placement_start`,
 `settings_placement_cancel`, `overlay_placement_finish` et les commandes de
@@ -465,7 +465,9 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
    fenêtre `pairing` a été retirée.
 3. `media_board_trigger/stop` sont branchés sur le client WebSocket v2 ;
    `socket_unavailable` signale désormais une guilde/superviseur indisponible.
-4. Updater : actif depuis 3.1.1 (vérification au démarrage puis toutes les 6 h).
+4. Updater : actif depuis 3.1.1 (vérification au démarrage puis toutes les 6 h ;
+   installation automatique débrayable par `autoUpdate`, bandeau de board
+   seulement quand elle est désactivée).
 5. Tray : en-tête N/M guildes connectées, sans version serveur détaillée.
 6. `serverUrl` non normalisé à l'écriture (parité legacy volontaire).
 7. Autostart : collision potentielle de la valeur `Run` `livechat` avec
@@ -496,7 +498,8 @@ URLs média restant verbatim. Origine WebView : `http://tauri.localhost` (pas de
 - [ ] CSP élargie `{API_URL}`/`{WS_API_URL}` ; CORS serveur pour
       `http://tauri.localhost`.
 - [x] Updater : clé minisign réelle, `latest.json`, check au démarrage +
-      installation automatique au repos (repli à la fermeture).
+      installation automatique au repos (repli à la fermeture), réglage
+      `autoUpdate` et bandeau de board quand elle est désactivée.
 - [ ] Single-instance : `--board`/`--from-autostart` (et `--pairing` en
       compatibilité) et remontée au board.
 - [ ] Coexistence bêta : build `tauri.beta.conf.json` + `LIVECHAT_PRODUCT_NAME`,

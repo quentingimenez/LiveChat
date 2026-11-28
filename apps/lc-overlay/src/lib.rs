@@ -32,6 +32,7 @@ mod fingerprint;
 pub mod layout_preview;
 pub mod net;
 pub mod placement;
+pub mod repository;
 pub mod screen;
 pub mod settings;
 pub mod shortcuts;
@@ -234,6 +235,7 @@ pub fn run() -> Result<(), Box<dyn Error>> {
             commands::overlay_placement_finish,
             commands::overlay_check_updates,
             commands::overlay_install_update,
+            repository::open_repository,
             commands::board_take_pending_view,
             commands::board_take_guild_removals,
             commands::media_upload_start,

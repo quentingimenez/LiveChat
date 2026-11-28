@@ -81,6 +81,7 @@ const COMMAND_MATRIX: &[(&str, &[&str])] = &[
             "media_board_pause",
             "overlay_check_updates",
             "overlay_install_update",
+            "open_repository",
             "pairing_consume",
             "guilds_list",
             "guild_select",
@@ -1963,12 +1964,14 @@ mod tests {
         assert!(!command_allowed("overlay", "pairing_consume"));
         assert!(!command_allowed("overlay", "media_board_set_bindings"));
         assert!(!command_allowed("overlay", "overlay_install_update"));
+        assert!(!command_allowed("overlay", "open_repository"));
 
         // Board : gestion des médias du board et mises à jour.
         assert!(command_allowed("board", "media_board_set_bindings"));
         assert!(command_allowed("board", "media_board_trigger"));
         assert!(command_allowed("board", "overlay_check_updates"));
         assert!(command_allowed("board", "overlay_install_update"));
+        assert!(command_allowed("board", "open_repository"));
         // Le board est l'application principale : il rejoint et gère les guildes.
         assert!(command_allowed("board", "pairing_consume"));
         assert!(command_allowed("board", "guild_api"));

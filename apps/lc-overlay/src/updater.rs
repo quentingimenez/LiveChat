@@ -6,9 +6,12 @@
 //! then kept in memory. Release builds then install it on their own once the
 //! overlay has stayed free for a minute (no media, no queued play, no upload,
 //! board hidden), and install it when LiveChat quits if that never happened.
-//! Manual installs stay available (tray or Settings), and the NSIS installer
-//! runs in passive mode and relaunches LiveChat; the quit install skips the
-//! relaunch, so the update applies at the next start.
+//! The `autoUpdate` device setting turns that zero-click path off: the board
+//! then announces the download and offers the installation in a banner, and
+//! the quit install is skipped. Manual installs stay available (banner and
+//! Settings), and the NSIS installer runs in passive mode and relaunches
+//! LiveChat; the quit install skips the relaunch, so the update applies at the
+//! next start.
 //!
 //! Debug builds skip the start checks, the 6-hour checks and the automatic
 //! install; opening the board and the Settings button still check.
@@ -120,9 +123,7 @@ fn describe(state: UpdateState, version: Option<&str>, error: Option<&str>) -> U
         UpdateState::Checking => "Recherche d'une mise à jour…".to_string(),
         UpdateState::Downloading => format!("Téléchargement de la version {version_text}…"),
         UpdateState::UpToDate => "LiveChat est à jour.".to_string(),
-        UpdateState::Ready => format!(
-            "La version {version_text} est prête : installation automatique dès que l'overlay est libre."
-        ),
+        UpdateState::Ready => format!("La version {version_text} est prête à être installée."),
         UpdateState::Error => format!(
             "Échec de la mise à jour : {}",
             error.unwrap_or("erreur inconnue")
@@ -136,7 +137,8 @@ fn describe(state: UpdateState, version: Option<&str>, error: Option<&str>) -> U
     }
 }
 
-/// Tells the board (Settings › À propos) that the updater state changed.
+/// Tells the board (Settings › Mise à jour, and the banner) that the updater
+/// state changed.
 fn publish(app: &AppHandle<Wry>) {
     if let Err(error) = crate::events::emit_device_settings(app) {
         tracing::debug!(%error, "échec d'émission overlay://device-settings (updater)");
@@ -184,10 +186,11 @@ struct AutoInstallWindow {
 }
 
 impl AutoInstallWindow {
-    /// Arms on the first eligible observation, starts over when the overlay
-    /// becomes busy again, and reports `true` once the grace delay elapsed.
-    fn ready(&mut self, eligible: bool, now: Instant) -> bool {
-        if !eligible {
+    /// Arms on the first eligible observation, starts over when automatic
+    /// installs are off or the overlay becomes busy again, and reports `true`
+    /// once the grace delay elapsed.
+    fn ready(&mut self, enabled: bool, eligible: bool, now: Instant) -> bool {
+        if !enabled || !eligible {
             self.since = None;
             return false;
         }
@@ -222,7 +225,11 @@ async fn auto_install(app: &AppHandle<Wry>) {
     let mut window = AutoInstallWindow::default();
     loop {
         tokio::time::sleep(AUTO_INSTALL_POLL).await;
-        if window.ready(auto_install_eligible(app), Instant::now()) {
+        let enabled = app
+            .state::<crate::state::AppState>()
+            .config_snapshot()
+            .auto_update;
+        if window.ready(enabled, auto_install_eligible(app), Instant::now()) {
             match install(app) {
                 Ok(()) => tracing::info!("mise à jour lancée automatiquement"),
                 // The failed phase makes the window empty again; a later check
@@ -288,10 +295,22 @@ pub fn install(app: &AppHandle<Wry>) -> Result<(), String> {
     install_with(app, true)
 }
 
+/// Whether quitting should install the ready update: only when automatic
+/// installs are on (pure, for tests).
+fn quit_install_planned(auto_update: bool, ready: bool) -> bool {
+    auto_update && ready
+}
+
 /// Installs the downloaded update when LiveChat is quitting, without relaunching
-/// it: the update applies at the next start instead of being lost.
+/// it: the update applies at the next start instead of being lost. A device
+/// that turned automatic installs off keeps the update for a manual install.
 pub fn install_on_quit(app: &AppHandle<Wry>) -> Result<(), String> {
-    if app.state::<UpdaterState>().ready_version().is_none() {
+    let auto_update = app
+        .state::<crate::state::AppState>()
+        .config_snapshot()
+        .auto_update;
+    let ready = app.state::<UpdaterState>().ready_version().is_some();
+    if !quit_install_planned(auto_update, ready) {
         return Ok(());
     }
     install_with(app, false)
@@ -337,7 +356,7 @@ mod tests {
         assert_eq!(value["availableVersion"], "3.2.0");
         assert_eq!(
             value["message"],
-            "La version 3.2.0 est prête : installation automatique dès que l'overlay est libre."
+            "La version 3.2.0 est prête à être installée."
         );
         let value = serde_json::to_value(describe(UpdateState::UpToDate, None, None))
             .expect("sérialisation");
@@ -349,34 +368,65 @@ mod tests {
     fn auto_install_waits_for_the_grace_delay() {
         let mut window = AutoInstallWindow::default();
         let start = Instant::now();
-        assert!(!window.ready(true, start));
-        assert!(!window.ready(true, start + AUTO_INSTALL_GRACE - Duration::from_millis(1)));
-        assert!(window.ready(true, start + AUTO_INSTALL_GRACE));
+        assert!(!window.ready(true, true, start));
+        assert!(!window.ready(
+            true,
+            true,
+            start + AUTO_INSTALL_GRACE - Duration::from_millis(1)
+        ));
+        assert!(window.ready(true, true, start + AUTO_INSTALL_GRACE));
     }
 
     #[test]
     fn auto_install_starts_over_when_the_overlay_becomes_busy() {
         let mut window = AutoInstallWindow::default();
         let start = Instant::now();
-        assert!(!window.ready(true, start));
-        assert!(!window.ready(false, start + Duration::from_secs(20)));
+        assert!(!window.ready(true, true, start));
+        assert!(!window.ready(true, false, start + Duration::from_secs(20)));
         let free_again = start + Duration::from_secs(25);
-        assert!(!window.ready(true, free_again));
+        assert!(!window.ready(true, true, free_again));
         assert!(!window.ready(
+            true,
             true,
             free_again + AUTO_INSTALL_GRACE - Duration::from_millis(1)
         ));
-        assert!(window.ready(true, free_again + AUTO_INSTALL_GRACE));
+        assert!(window.ready(true, true, free_again + AUTO_INSTALL_GRACE));
     }
 
     #[test]
     fn auto_install_does_not_arm_without_a_ready_update() {
         let mut window = AutoInstallWindow::default();
         let start = Instant::now();
-        assert!(!window.ready(false, start));
-        assert!(!window.ready(false, start + AUTO_INSTALL_GRACE));
-        assert!(!window.ready(true, start + AUTO_INSTALL_GRACE));
-        assert!(window.ready(true, start + 2 * AUTO_INSTALL_GRACE));
+        assert!(!window.ready(true, false, start));
+        assert!(!window.ready(true, false, start + AUTO_INSTALL_GRACE));
+        assert!(!window.ready(true, true, start + AUTO_INSTALL_GRACE));
+        assert!(window.ready(true, true, start + 2 * AUTO_INSTALL_GRACE));
+    }
+
+    #[test]
+    fn turning_automatic_installs_off_disarms_the_window() {
+        let mut window = AutoInstallWindow::default();
+        let start = Instant::now();
+        assert!(!window.ready(false, true, start));
+        assert!(!window.ready(false, true, start + 2 * AUTO_INSTALL_GRACE));
+        // Back on: the grace delay starts from the first enabled observation,
+        // not from the observation made while the setting was off.
+        let enabled_again = start + 3 * AUTO_INSTALL_GRACE;
+        assert!(!window.ready(true, true, enabled_again));
+        assert!(!window.ready(
+            true,
+            true,
+            enabled_again + AUTO_INSTALL_GRACE - Duration::from_millis(1)
+        ));
+        assert!(window.ready(true, true, enabled_again + AUTO_INSTALL_GRACE));
+    }
+
+    #[test]
+    fn quitting_only_installs_when_automatic_installs_are_on() {
+        assert!(quit_install_planned(true, true));
+        assert!(!quit_install_planned(false, true));
+        assert!(!quit_install_planned(true, false));
+        assert!(!quit_install_planned(false, false));
     }
 
     #[test]

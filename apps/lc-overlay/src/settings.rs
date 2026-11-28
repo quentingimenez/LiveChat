@@ -64,6 +64,8 @@ pub struct SettingsView {
     /// The details window starts with its sound on.
     pub detail_sound: bool,
     pub auto_start: bool,
+    /// A downloaded update installs itself without a click.
+    pub auto_update: bool,
     pub shortcuts: ShortcutSettings,
     pub layout: OverlayLayout,
     /// The display zone is being placed on the overlay screen.
@@ -227,6 +229,7 @@ pub fn build_settings_view(
         preview_sound: config.preview_sound,
         detail_sound: config.detail_sound,
         auto_start,
+        auto_update: config.auto_update,
         shortcuts: config.shortcuts.clone(),
         layout: config.layout.clone(),
         placing: false,
@@ -649,6 +652,9 @@ pub fn apply_settings_patch(
     if let Some(auto_start) = bool_value(object, "autoStart")? {
         config.auto_start = auto_start;
     }
+    if let Some(auto_update) = bool_value(object, "autoUpdate")? {
+        config.auto_update = auto_update;
+    }
 
     apply_shortcuts_patch(&mut config, object)?;
     apply_layout_patch(&mut config, object)?;
@@ -802,6 +808,33 @@ mod tests {
         )
         .expect_err("boolean only");
         assert_eq!(error.field, "hoverPreview");
+    }
+
+    #[test]
+    fn settings_set_round_trips_automatic_updates_from_an_old_config() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.6 }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(
+            config.auto_update,
+            "an old config installs updates automatically"
+        );
+
+        let view = build_settings_view(&config, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        assert_eq!(value["autoUpdate"], json!(true));
+
+        let patched =
+            apply_settings_patch(&config, &json!({ "autoUpdate": false }), &sample_displays())
+                .expect("valid payload");
+        assert!(!patched.auto_update);
+        let view = build_settings_view(&patched, &sample_displays(), Some(0), true, idle_update());
+        let value = serde_json::to_value(view).expect("serializable view");
+        assert_eq!(value["autoUpdate"], json!(false));
+
+        let error =
+            apply_settings_patch(&config, &json!({ "autoUpdate": "off" }), &sample_displays())
+                .expect_err("boolean only");
+        assert_eq!(error.field, "autoUpdate");
     }
 
     #[test]
@@ -1317,6 +1350,7 @@ mod tests {
         assert_eq!(view.displays[1].label, "Écran 2 — 1920 × 1080");
         assert_eq!(view.layout.zone.width, 0.7);
         assert!(view.auto_start);
+        assert!(view.auto_update);
         assert!(!view.placing);
 
         let value = serde_json::to_value(view).expect("serialize");
@@ -1324,6 +1358,7 @@ mod tests {
         assert_eq!(value["layout"]["zone"]["width"], json!(0.7));
         assert_eq!(value["shortcuts"]["stop"], json!("Ctrl+Shift+S"));
         assert_eq!(value["profile"]["displayName"], json!("Quentin"));
+        assert_eq!(value["autoUpdate"], json!(true));
         assert_eq!(value["update"]["state"], json!("idle"));
     }
 

@@ -30,7 +30,7 @@ pub const CONFIG_PATH_ENV: &str = "LIVECHAT_CONFIG_PATH";
 
 const DEFAULT_VOLUME: f64 = 1.0;
 
-const KNOWN_KEYS: [&str; 30] = [
+const KNOWN_KEYS: [&str; 31] = [
     "displayId",
     "displayIndex",
     "displayKey",
@@ -39,6 +39,7 @@ const KNOWN_KEYS: [&str; 30] = [
     "volume",
     "enabled",
     "autoStart",
+    "autoUpdate",
     "guestMode",
     "showText",
     "mediaMuted",
@@ -291,6 +292,9 @@ pub struct OverlayConfig {
     pub volume: f64,
     pub enabled: bool,
     pub auto_start: bool,
+    /// A downloaded update installs itself as soon as the overlay is free,
+    /// and at quit; disabled, the board offers the installation by hand.
+    pub auto_update: bool,
     pub guest_mode: bool,
     pub show_text: bool,
     /// Every media is still shown, without its sound.
@@ -342,6 +346,8 @@ impl Default for OverlayConfig {
             volume: DEFAULT_VOLUME,
             enabled: true,
             auto_start: false,
+            // On by default: the zero-click path stays what an update does.
+            auto_update: true,
             guest_mode: false,
             show_text: true,
             media_muted: false,
@@ -417,6 +423,7 @@ impl OverlayConfig {
         config.auto_start = map
             .get("autoStart")
             .is_some_and(|value| value == &Value::Bool(true));
+        config.auto_update = bool_field(map, "autoUpdate", true, &mut warnings);
         config.guest_mode = map
             .get("guestMode")
             .is_some_and(|value| value == &Value::Bool(true));
@@ -1100,6 +1107,7 @@ mod tests {
         assert_eq!(config.volume, 1.0);
         assert!(config.enabled);
         assert!(!config.auto_start);
+        assert!(config.auto_update);
         assert!(!config.guest_mode);
         assert!(config.show_text);
         assert!(config.hover_preview);
@@ -1245,6 +1253,38 @@ mod tests {
             "the old key is not written back"
         );
         assert_eq!(saved["hoverPreview"], json!(true));
+    }
+
+    #[test]
+    fn auto_update_defaults_on_and_round_trips() {
+        let (config, warnings) = OverlayConfig::from_json_value(&json!({ "volume": 0.4 }));
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(
+            config.auto_update,
+            "an old config installs updates automatically"
+        );
+
+        let mut disabled = config;
+        disabled.auto_update = false;
+        let saved = serde_json::to_value(&disabled).expect("serializable config");
+        assert_eq!(saved["autoUpdate"], json!(false));
+        assert!(
+            !disabled.extra.contains_key("autoUpdate"),
+            "autoUpdate is a known field, never kept as an extra"
+        );
+
+        let (reloaded, warnings) = OverlayConfig::from_json_value(&saved);
+        assert!(warnings.is_empty(), "warnings: {warnings:?}");
+        assert!(!reloaded.auto_update);
+
+        let (fallback, warnings) = OverlayConfig::from_json_value(&json!({ "autoUpdate": "non" }));
+        assert!(fallback.auto_update, "an invalid value falls back to on");
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("autoUpdate")),
+            "the invalid field is reported: {warnings:?}"
+        );
     }
 
     #[test]

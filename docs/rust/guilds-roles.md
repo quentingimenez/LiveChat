@@ -514,7 +514,7 @@ Sur `4401` (jeton invalide) ou `4402` (appareil révoqué), `close_step` renvoie
 | Fenêtre | Commandes autorisées |
 |---------|----------------------|
 | `overlay` | `overlay_get_config`, `overlay_renderer_ready`, `overlay_report_error`, `overlay_report_playback_state`, `overlay_report_playback_stop` |
-| `board` | `overlay_get_config`, `overlay_report_error`, `media_board_get_bindings`, `media_board_set_bindings`, `media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `media_board_pause`, `overlay_check_updates`, `overlay_install_update`, `pairing_consume`, `guilds_list`, `guild_select`, `guild_set_muted`, `guild_leave`, `guild_api`, `guild_media_url` |
+| `board` | `overlay_get_config`, `overlay_report_error`, `media_board_get_bindings`, `media_board_set_bindings`, `media_board_trigger`, `media_board_stop`, `media_board_stop_local`, `media_board_pause`, `overlay_check_updates`, `overlay_install_update`, `open_repository`, `pairing_consume`, `guilds_list`, `guild_select`, `guild_set_muted`, `guild_leave`, `guild_api`, `guild_media_url` |
 | `pairing` | `overlay_get_config`, `overlay_report_error`, `pairing_consume` |
 
 Toute autre fenêtre, y compris un libellé vide ou inconnu, n'a aucune commande autorisée.

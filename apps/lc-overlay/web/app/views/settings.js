@@ -901,16 +901,10 @@ function renderUpdates(settings) {
           { class: 'btn', type: 'button', disabled: busy, onClick: checkUpdates },
           busy ? 'Recherche…' : 'Rechercher une mise à jour',
         );
-  const message = updateError || update.message;
   return section(
     'Mise à jour',
-    switchRow(
-      'Installer automatiquement',
-      autoUpdate,
-      'settings-auto-update',
-      'Sans clic, dès que l’overlay est libre ; désactivé, un bandeau en haut de la fenêtre propose l’installation.',
-    ),
-    controlRow('Version', [button, message ? hint(message) : null]),
+    switchRow('Installer automatiquement', autoUpdate, 'settings-auto-update'),
+    controlRow('Version', [button, updateError ? hint(updateError) : null]),
   );
 }
 

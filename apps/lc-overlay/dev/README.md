@@ -141,8 +141,9 @@ Options de l'URL :
 | `?covers` | Donne une image de couverture aux vidéos, comme le serveur une fois qu'il en a fait une (vignette de plateforme ou frame de la vidéo) : leurs cartes affichent une image fixe au lieu d'un `<video>` figé sur une frame, et le panneau de détail montre cette image en `poster`. |
 | `?nozone` | Aucun écran connu : l'éditeur image n'a pas de zone d'affichage et son aperçu « Taille à l'affichage » retombe sur l'estimation 1920 × 1080. |
 | `?latency=1500` | Ajoute 1,5 s à chaque appel `guild_api` (les commandes du shell restent immédiates) : le rail change tout de suite, le board et la file montrent leur squelette. |
-| `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : Paramètres → À propos affiche le statut et le bouton d'installation. Dans le navigateur, l'installation échoue (pas d'installeur) et l'erreur apparaît sous le bouton. |
-| `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : Paramètres → À propos affiche « Téléchargement de la version 3.2.0… » ; la board ne montre plus de bandeau. |
+| `?update=ready` | L'updater démarre sur `ready` (version 3.2.0 disponible) : Paramètres → Mise à jour affiche le statut et le bouton d'installation. Sans `?autoupdate=off`, la board ne montre pas de bandeau (l'installation est automatique). |
+| `?update=downloading` | L'updater démarre sur `downloading` (version 3.2.0) : Paramètres → Mise à jour affiche « Téléchargement de la version 3.2.0… ». |
+| `?autoupdate=off` | Désactive l'installation automatique (`autoUpdate: false`) : avec `?update=downloading` ou `?update=ready`, la board affiche le bandeau de mise à jour. Dans le navigateur, l'installation échoue (pas d'installeur) et l'erreur reste dans le bandeau. |
 
 Depuis la console :
 
@@ -158,6 +159,8 @@ Depuis la console :
 Commandes shell simulées pour les réglages :
 
 - `settings_get` renvoie une copie profonde du `SettingsView` ; `settings_set`
+  valide aussi le booléen `autoUpdate` (installation automatique des mises à
+  jour) ;
   valide les champs du contrat (`selectedDisplayKey`, `volume`,
   `guildVolumes`, `generalMute`, `showText`, `autoStart`, `shortcuts`,
   `layout`, `profile`) et répond `{ ok: false, field, message, settings }` sur

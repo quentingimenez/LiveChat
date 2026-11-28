@@ -634,24 +634,37 @@ après les correctifs `AUD-A6-002/003/004/005/008/015` (task-43).
 
 - `updater.rs` vérifie à chaque ouverture de la board (`windows::show_board`),
   au démarrage puis toutes les 6 h (builds release), télécharge et vérifie la
-  mise à jour en arrière-plan. En release, il l'installe ensuite tout seul dès
-  que l'overlay est resté libre 60 s (aucun média à l'écran ni en file, aucun
-  envoi en cours, board masquée, aucune pose de zone) ; si l'overlay n'a jamais
-  été libre, il l'installe à la fermeture sans relancer LiveChat, pour qu'elle
-  s'applique au démarrage suivant (voir `docs/rust/overlay-release.md` §6).
+  mise à jour en arrière-plan. En release, quand le réglage `autoUpdate` est
+  activé (défaut), il l'installe ensuite tout seul dès que l'overlay est resté
+  libre 60 s (aucun média à l'écran ni en file, aucun envoi en cours, board
+  masquée, aucune pose de zone) ; si l'overlay n'a jamais été libre, il
+  l'installe à la fermeture sans relancer LiveChat, pour qu'elle s'applique au
+  démarrage suivant (voir `docs/rust/overlay-release.md` §6).
+- `autoUpdate: false` désarme ces deux installations : la vérification et le
+  téléchargement restent automatiques, mais la board affiche un bandeau en haut
+  de la fenêtre — progression du téléchargement, puis version prête avec
+  « Redémarrer pour installer » et « Plus tard » (le report ne vaut que pour
+  cette version). Une erreur d'installation y reste visible avec un bouton pour
+  relancer une vérification.
 - `overlay_check_updates` (board) lance une vérification tout de suite et renvoie
   l'`UpdateStatus` final ; rien ne se passe si une vérification tourne déjà ou si
   une version attend d'être installée.
 - `overlay_install_update` (board) installe la version prête immédiatement :
   l'installeur passif quitte l'overlay et le relance. Sans version prête :
   erreur « Aucune mise à jour prête à installer. ».
+- `open_repository` (board) remet l'URL fixe du dépôt public au navigateur par
+  défaut. La board ne peut pas ouvrir de nouvelle fenêtre : le lien GitHub de
+  Paramètres → À propos passe par cette commande plutôt que par `target="_blank"`.
 - `UpdateStatus` = `{state, currentVersion, availableVersion, message}` avec
   `state` ∈ `idle`, `checking`, `downloading`, `up_to_date`, `ready`, `error` ;
   il est aussi publié dans `settings.update` à chaque changement
   (`overlay://device-settings`).
-- L'état n'est affiché que dans Paramètres → À propos : la board n'a plus de
-  bandeau de mise à jour et le tray n'a plus d'entrée d'installation. Le bouton
-  « Redémarrer et installer la version X » des Paramètres installe tout de suite.
+- L'état et le bouton manuel sont dans Paramètres → Mise à jour (section entre
+  Apparence et À propos) ; le bandeau de board complète cet état quand
+  l'installation automatique est désactivée. Le tray n'a plus d'entrée
+  d'installation, et le bouton « Redémarrer et installer la version X » des
+  Paramètres installe tout de suite. Le message `ready` est neutre : « La
+  version X est prête à être installée. »
 
 ### 12.6 Harnais de développement hors bundle (A6-015)
 
@@ -987,6 +1000,7 @@ Aucun payload. Réponse `SettingsView` :
   "generalMute": false,
   "showText": true,
   "autoStart": false,
+  "autoUpdate": true,
   "shortcuts": { "stop": "CommandOrControl+Shift+S", "stopLocal": null, "muteAll": null, "openBoard": null },
   "layout": {
     "zone": { "x": 0, "y": 0, "width": 1, "height": 1 },
@@ -1002,7 +1016,8 @@ résolution du shell Tauri, `displayHardwareId` → `displayKey` → nom → cl�
 legacy → index → principal) : une clé qui ne correspond à aucun écran listé,
 ou `null`, fait retomber le board sur le principal. `generalMute` est
 l'inverse de `enabled`. `guildVolumes` contient toutes les guildes rejointes.
-`autoStart` reflète l'état réel du plugin autostart.
+`autoStart` reflète l'état réel du plugin autostart. `autoUpdate` est le
+réglage d'installation automatique des mises à jour (activé par défaut).
 
 `layout.zone` est le rectangle de l'écran choisi où le cadre média (en-tête,
 média, légende) doit tenir, en fractions de l'écran : `0,0,1,1` est l'écran
@@ -1017,7 +1032,7 @@ fractions arrondies au 1/10 000 ; une valeur non finie remet l'écran entier.
 
 Le payload est un objet partiel. Seules les clés présentes sont modifiées :
 `selectedDisplayKey`, `volume`, `guildVolumes` (fusion par guilde),
-`generalMute`, `showText`, `autoStart`, `shortcuts` (partiel : `stop`,
+`generalMute`, `showText`, `autoStart`, `autoUpdate`, `shortcuts` (partiel : `stop`,
 `stopLocal`, `muteAll`, `openBoard` ; `null` efface un accélérateur), `layout`
 (partiel), `profile` (partiel ; `null` efface un champ).
 

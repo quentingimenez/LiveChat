@@ -44,6 +44,7 @@
   --shadow-detail: 0 18px 40px rgba(8, 10, 16, 0.55);
   --shadow-bar: 0 8px 24px rgba(0, 0, 0, 0.35);
   --shadow-menu: 0 10px 28px rgba(5, 7, 12, 0.45);
+  --shadow-tip: 0 8px 20px rgba(0, 0, 0, 0.38);
   --shadow-toast: 0 10px 28px rgba(0, 0, 0, 0.35);
   --shadow-art: 0 12px 40px rgba(0, 0, 0, 0.45);
   --veil: rgba(13, 16, 23, 0.72);

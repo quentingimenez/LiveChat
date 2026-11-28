@@ -24,6 +24,7 @@
 @import url('./styles/sliders.css');
 @import url('./styles/toast.css');
 @import url('./styles/contextmenu.css');
+@import url('./styles/tooltip.css');
 /* Barre de défilement Atelier : dessinée par l'app, tokens des deux thèmes. */
 @import url('./styles/scrollbar.css');
 /* Thème clair : surcharges de tokens, importé en dernier pour que ses règles

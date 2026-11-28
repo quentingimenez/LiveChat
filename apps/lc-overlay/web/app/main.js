@@ -13,6 +13,7 @@
 
 import { installContextMenuGuard } from './core/contextmenu.js';
 import { settingsControlActive, settingsFormDirty } from './core/dom.js';
+import { initTooltips } from './core/tooltip.js';
 import { initProfileSync } from './core/profile-sync.js';
 import { initSound } from './core/sound.js';
 import { initTheme } from './core/theme.js';
@@ -54,6 +55,9 @@ installContextMenuGuard();
 initSound();
 // The 62ch measure is a fallback: a sentence that fits stays on one line.
 initSingleLineDescriptions();
+// Hover labels: the native title bubble is drawn by the OS, so every title is
+// moved to the board's own layer before the first render.
+initTooltips();
 
 listen('overlay://guilds', applyGuilds);
 
